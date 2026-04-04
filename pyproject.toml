@@ -1,5 +1,5 @@
 [project]
-name = "learning_moments_kinetics"
+name = "learning_option_pricing"
 version = "0.1.0"
 description = "ETCNN for option pricing — extending exact terminal condition neural networks to Bermuda options"
 readme = "README.md"
@@ -50,7 +50,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["learning_moments_kinetics/*"]
+include = ["learning_option_pricing/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
@@ -66,4 +66,4 @@ combine-as-imports = true
 lines-after-imports = 2
 
 [tool.pyright]
-include = ["learning_moments_kinetics", "test"]
+include = ["learning_option_pricing", "test"]
