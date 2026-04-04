@@ -13,7 +13,9 @@ condition design and the linear complementarity loss to the discrete-exercise se
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
-| TODO | TODO | TODO |
+| 2026-04-04 | Use `g2 = Ve1 + Ve2` (Taylor expansion) not full `Ve` for American put | Same accuracy as full `Ve` with input normalization (Table 3), cheaper to compute — no need to evaluate erfc twice |
+| 2026-04-04 | Epsilon floor `tau_eps = 1e-8` on `tau` in all BSM functions | Prevents division by zero as τ→0; verified no NaN at τ=1e-8 in Phase 1 validation |
+| 2026-04-04 | Implement BSM operator via `torch.autograd.grad` | Required for loss computation during training; keeps implementation clean and general |
 
 ---
 
