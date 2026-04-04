@@ -27,3 +27,4 @@ learning_option_pricing/
 * W. Zhang, Y. Guo, B. Lu — *Exact Terminal Condition Neural Network for American
   Option Pricing Based on the Black–Scholes–Merton Equations*,
   J. Comput. Appl. Math. 480 (2026) 117253.
+
