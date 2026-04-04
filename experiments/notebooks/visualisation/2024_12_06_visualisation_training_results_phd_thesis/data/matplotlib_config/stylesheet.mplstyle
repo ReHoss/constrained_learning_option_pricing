@@ -1,0 +1,13 @@
+figure.figsize : 4.7, 3.5
+font.size: 12.0
+font.family: sans-serif
+font.serif: Open Sans
+axes.titlesize: medium
+figure.titlesize: medium
+text.usetex: True
+text.latex.preamble: \usepackage{amsmath}\usepackage{amssymb}\usepackage{mathrsfs}\usepackage{/home/hosseinkhan/Documents/work/phd/git_repositories/control_dde/experiments/notebooks/visualisation/2024_12_06_visualisation_training_results_phd_thesis/data/latex_config/phdthesis_hosseinkhan}
+
+
+pgf.texsystem: pdflatex
+pgf.preamble: \usepackage{amsmath}\usepackage{amssymb}\usepackage{mathrsfs}\usepackage{/home/hosseinkhan/Documents/work/phd/git_repositories/control_dde/experiments/notebooks/visualisation/2024_12_06_visualisation_training_results_phd_thesis/data/latex_config/phdthesis_hosseinkhan}
+pgf.rcfonts: True

@@ -1,0 +1,73 @@
+Bootstrap: docker
+From: firedrakeproject/firedrake-vanilla:2024-04
+Stage: spython-base
+
+%labels
+authors="hosseinkhan"
+
+%post
+# Install git-lfs using apt-get
+echo "Updating system and installing git-lfs..."
+apt-get update && apt-get install -y git-lfs && git lfs install --skip-repo
+
+# Source the firedrake environment
+
+PATH_FIREDRAKE_VENV_ACTIVATION_SCRIPT=/home/firedrake/firedrake/bin/activate
+
+# Create a directory for mounting
+
+mkdir -p /home/firedrake/mount_dir/project_root/
+
+/bin/bash -c "source $PATH_FIREDRAKE_VENV_ACTIVATION_SCRIPT && \
+pip install --upgrade pip==24.0 && \
+pip install beartype \
+control \
+git+https://github.com/ReHoss/iCEM.git@control_dde_dynamics_estimator \
+gymnasium==0.29.1 \
+jaxtyping==0.2.24 \
+matplotlib \
+mlflow==1.27.0 \
+numpy \
+omegaconf \
+pandas \
+pytest \
+pyyaml \
+scipy \
+git+https://github.com/ReHoss/singularity-hydrogym.git@feature/working_environments \
+tensorboard \
+torch==2.1 \
+torchdde \
+torchdiffeq \
+typing_extensions==4.5.0 \
+"
+
+mkdir -p /home/firedrake/mount_dir/project_root
+cd /home/firedrake/mount_dir/project_root
+
+# Set the PYTHONPATH
+
+PYTHONPATH="/home/firedrake/mount_dir/project_root:$PYTHONPATH"
+
+# PRINT THE CURRENT ENVIRONMENT TO THE TERMINAL
+
+/bin/bash -c "echo 'Current python: $(which python)' && \
+echo 'Current pip: $(which pip)' && \
+echo 'Current python version: $(python --version)' && \
+echo 'Current pip version: $(pip --version)' && \
+echo 'Current pip list: $(pip list)'"
+
+%post
+
+# Firedrake chmod approach
+
+# Set firedrake directory useable by all users
+
+chmod -R o+rwx /home/firedrake
+
+%environment
+export PATH_FIREDRAKE_VENV_ACTIVATION_SCRIPT=/home/firedrake/firedrake/bin/activate
+export PYTHONPATH="/home/firedrake/mount_dir/project_root:$PYTHONPATH"
+
+%runscript
+cd /home/firedrake/mount_dir/project_root || exit
+exec /bin/bash -l -c ". /home/firedrake/firedrake/bin/activate && /bin/bash $*"

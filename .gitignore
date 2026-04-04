@@ -1,0 +1,50 @@
+# Debugging code
+**/debug*
+
+# VS Code
+settings.json
+.vscode/ 
+
+# Singularity
+*.sif
+
+
+# Jupyter Notebooks (directory form)
+.ipynb_checkpoints/
+
+# Project tree  (venv/ is proper to Remy)
+data/*
+data/mlruns/*
+venv/
+config/batch
+
+# PyCharm
+*.pyc
+**/*.pyc
+.idea/
+
+# Images
+*.pgf
+
+# PDF
+**/data/**/*.pdf
+
+# Keep the folder
+!data/.gitkeep
+
+# Python (additional)
+__pycache__/
+*.egg-info/
+
+# LaTeX build artifacts
+documents/latex_output/
+
+# Pyright
+# note: in this repository, local, user specific,
+# pyright configuration should be set in "pyrightconfig.json".
+# Notably, the pyright virtual env path can be specified 
+# in this file.
+# Global, repository wise configutation must be set in
+# the pyproject.toml file
+pyrightconfig.json
+

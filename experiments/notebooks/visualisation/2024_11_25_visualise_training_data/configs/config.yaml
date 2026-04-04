@@ -1,0 +1,5 @@
+id_xp_dataset: 29
+path_project: "/gpfs/workdir/hosseinkhanr/pycharm_remote_project/control_dde"
+n_max_trajectories: 20
+offset_time: 0
+name_mlflow_store: "mlruns"

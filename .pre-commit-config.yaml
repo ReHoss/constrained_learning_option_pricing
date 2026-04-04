@@ -1,0 +1,35 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      - id: ruff  # linter
+        types_or: [ python, pyi, jupyter ]
+        args: [ --fix, --exit-non-zero-on-fix ]
+        exclude: 'oderl/.*'
+      - id: ruff-format  # formatter
+        # exclude : 'oderl/.*'
+        types_or: [ python, pyi, jupyter ]
+
+  - repo: local
+    hooks:
+      - id: install-local-package-torchbnn
+        name: Install Local Package torchbnn
+        entry: pip install torchbnn/
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: install-local-package-oderl
+        name: Install Local Package oderl
+        entry: pip install oderl/
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.389
+    hooks:
+      - id: pyright
+        exclude: 'oderl/.*'
+        files: "."
+        args: ["--pythonpath", "."]
+        additional_dependencies: [ torch, pytest, typing_extensions, jaxtyping, matplotlib, gymnasium, seaborn, torchvision, scipy ]

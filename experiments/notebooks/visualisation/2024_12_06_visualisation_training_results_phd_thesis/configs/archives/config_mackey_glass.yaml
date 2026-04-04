@@ -1,0 +1,5 @@
+path_project: /home/hosseinkhan/Documents/work/phd/git_repositories/control_dde
+id_xp_dataset: 18
+id_xp: 27
+relative_path_inference_folder_run_id:  experiments/notebooks/visualisation/2024_12_10_inference_on_training_data/data/mlflow/d028141344584379890de35fb6d7769b/generated_data/run_id
+name_mlflow_store: mlruns_ruche_downloaded

@@ -1,0 +1,21 @@
+---
+description: Follow Google Python Style Guide
+globs: **/*.py
+alwaysApply: false
+---
+
+# Google Python Style Guide
+
+When editing or adding Python code, follow the Google Python Style Guide:
+https://google.github.io/styleguide/pyguide.html
+
+Local offline copy (for Cursor context):
+`documents/cursor_rules_docs/google-python-styleguide_pyguide.html`
+
+Key requirements to respect:
+- Follow Google naming, formatting, and import conventions.
+- Use `import x` / `from x import y` (module imports, not direct type/function imports from third-party modules when possible).
+- Use docstrings for public and non-trivial functions/classes, in Google format.
+- Prefer explicit `X | None` for nullable types, and avoid mutable defaults.
+- Use Google-style logging: `logger.info('Message with %s', value)` (not f-strings as the pattern string).
+

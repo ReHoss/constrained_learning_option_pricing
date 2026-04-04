@@ -1,0 +1,11 @@
+id_xp_dataset: 18
+id_xp: 27
+path_project: "/home/hosseinkhan/Documents/work/phd/git_repositories/control_dde"
+
+dict_filters:
+#  env_name:
+#    - "pinball"
+name_seaborn_column: "env_params_max_control"
+name_seaborn_row: "data_type"
+name_seaborn_hue: "trainer_name"
+name_mlflow_store: "mlruns_ruche_downloaded"

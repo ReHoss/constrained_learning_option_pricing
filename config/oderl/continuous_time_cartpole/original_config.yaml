@@ -1,0 +1,38 @@
+# ----- MLFlow Experiment -----
+mlflow_experiment_name: debug
+device: cpu
+dtype: float32
+
+# ----- Environment and Dataset -----
+dict_environment:
+  name: continuous_time_cartpole
+  mean_dt: 0.1
+  observation_noise: 0.0
+  distribution_time_delta: fixed
+  continuous_horizon_initial_data: 5.0
+  continuous_horizon_training: 2.0
+
+# ----- Models -----
+dict_models:
+  dict_differential_function:
+    neural_ode_type: enode
+    ensemble_size: 5
+    n_hidden_layers_differential_function: 3
+    n_hidden_neurons_differential_function: 200
+    activation_function_differential_function: elu
+    dropout_differential_function: 0.0  # Only used for PILCO
+    learn_observation_noise: False
+
+  dict_policy_function:
+    n_hidden_layers_policy_function: 2
+    n_hidden_neurons_policy_function: 200
+    activation_function_policy_function: relu
+
+  dict_value_function:
+    n_hidden_layers_state_value_function: 2
+    n_hidden_neurons_state_value_function: 200
+    activation_function_state_value_function: tanh
+
+# ----- Training -----
+dict_training:
+  n_learning_iterations: 100

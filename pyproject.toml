@@ -1,0 +1,69 @@
+[project]
+name = "learning_moments_kinetics"
+version = "0.1.0"
+description = "ETCNN for option pricing — extending exact terminal condition neural networks to Bermuda options"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Rémy Hosseinkhan Boucher", email = "remy.hosseinkhan@universite-paris-saclay.fr" },
+]
+keywords = [
+    "option-pricing",
+    "american-options",
+    "bermuda-options",
+    "black-scholes",
+    "physics-informed-neural-networks",
+    "machine-learning",
+    "computational-finance",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Office/Business :: Financial",
+]
+dependencies = [
+    "matplotlib",
+    "numpy",
+    "scipy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+ml = [
+    "torch>=2.0",
+]
+notebook = [
+    "notebook",
+    "seaborn",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["learning_moments_kinetics/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+
+[tool.ruff]
+extend-include = ["*.ipynb"]
+lint.fixable = ["I001", "F401"]
+lint.ignore = ["E402", "E721", "E731", "E741", "F722"]
+lint.select = ["E", "F", "I001"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+lines-after-imports = 2
+
+[tool.pyright]
+include = ["learning_moments_kinetics", "test"]

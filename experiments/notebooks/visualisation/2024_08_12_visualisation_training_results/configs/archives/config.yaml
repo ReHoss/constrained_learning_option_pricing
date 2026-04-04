@@ -1,0 +1,11 @@
+id_xp_dataset: 21
+id_xp: 24
+path_project: "/gpfs/workdir/hosseinkhanr/pycharm_remote_project/control_dde"
+
+dict_filters:
+#  env_name:
+#    - "pinball"
+name_seaborn_column: "env_params_max_control"
+#name_seaborn_row: "env_params_reynolds"
+name_seaborn_hue: "trainer_name"
+name_mlflow_store: "mlruns"

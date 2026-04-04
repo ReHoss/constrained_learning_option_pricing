@@ -1,0 +1,98 @@
+# ----- MLFlow Experiment -----
+mlflow_experiment_name: debug2
+device: cpu
+dtype: float32
+seed: 94
+
+append_data: false
+append_data_eval: false
+
+# Checkpoints
+checkpoints:
+  load: false
+  restart_every_n_iter: null
+  save: true
+  save_every_n_iter: 1
+
+# Controller type and parameters
+controller: mpc-icem
+controller_params:
+  action_sampler_params:
+    alpha: 0.1
+    elites_size: 10
+    fraction_elites_reused: 0.3
+    init_std: 0.5
+    keep_previous_elites: true
+    noise_beta: 2.5
+    opt_iterations: 3
+    shift_elites_over_time: true
+    use_mean_actions: true
+  cost_along_trajectory: sum
+  do_visualize_plan: true
+  factor_decrease_num: 1.25
+  horizon: 20
+  num_simulated_trajectories: 5  # TODO RESET
+  verbose: true
+  use_env_reward_as_cost: true
+
+# Ground truth environment
+env:
+  name: pendulum
+  params: {}
+
+#mpc_env:
+#  name: pendulum
+#  params: {}
+
+# Model used for MPC
+mpc_env:
+  name: ncde
+  path_model: data/examples/python_scripts/training_on_trajectory_data/node_max_epochs-5000/generated_data/trainer_data/model_data
+  params: {}
+  model:
+    name: ncde
+    params:
+      width_size: 64
+      depth: 2
+      dropout: 0
+      activation: elu
+      final_activation: identity
+  trainer:
+    name: ncde
+    params:
+      name_node_interface: torchdde
+      solver: euler
+      lr_init: 0.0005
+      lr_final: 0.0005
+      max_epochs: 5000
+      bool_discretize_then_optimize: false
+      rate_test_set_size: 0.1
+      pct_trajectory_size: 0.25
+
+
+evaluation_rollouts: 0
+
+# Forward model
+#forward_model: ParallelGroundTruthModel  # This allows to paralellise computation
+forward_model: GroundTruthModel  # This allows to paralellise computation
+forward_model_params: {}
+#  num_parallel: 8
+
+# Initial controller (@ReHoss: I don't know yet what this is, but set it to none)
+initial_controller: none
+initial_controller_params: { }
+initial_number_of_rollouts: 0
+
+# Rollouts (number of independant runs of MPC control
+number_of_rollouts: 1
+rollout_params:
+  only_final_reward: false
+  record: false
+  render: false
+  render_eval: false
+  render_initial: false
+  task_horizon: 80  # TODO RESET
+  use_env_states: true   # Always set to true otherwise it triggers state from obs
+
+# Training (an interface is provided to train and improve the forward model)
+training_iterations: 1
