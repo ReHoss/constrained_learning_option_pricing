@@ -6,7 +6,7 @@ Clone and install in development mode with the ML and dev extras:
 
 ```bash
 git clone <repo-url>
-cd constrained_learning_option_price
+cd constrained_learning_option_pricing
 pip install -e ".[ml,dev]"
 ```
 
