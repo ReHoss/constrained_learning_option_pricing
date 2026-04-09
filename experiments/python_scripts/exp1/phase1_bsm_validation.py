@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import sys
+import yaml
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -53,6 +54,22 @@ SQRT_2PI = math.sqrt(2.0 * math.pi)
 timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 OUT_DIR = Path("data/phase1_bsm_validation") / f"{timestamp}_K{K:.0f}_r{r}_sig{sigma}_T{T:.0f}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Save metadata
+metadata = {
+    "command": " ".join(sys.argv),
+    "timestamp": datetime.now(timezone.utc).isoformat(),
+    "parameters": {
+        "K": K,
+        "r": r,
+        "sigma": sigma,
+        "T": T,
+        "q": q,
+    }
+}
+with open(OUT_DIR / "metadata.yaml", "w") as f:
+    yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
+
 print(f"Saving plots to: {OUT_DIR}")
 
 
@@ -77,7 +94,7 @@ def plot1_payoff():
     ax.axvline(K, color="gray", linestyle=":", alpha=0.6, label=f"K = {K:.0f}")
     ax.set_xlabel("s (underlying price)")
     ax.set_ylabel(r"$\Phi(s)$")
-    ax.set_title("Plot 1 — Payoff functions")
+    ax.set_title(f"Plot 1 — Payoff functions (European/American Call and Put Options, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -100,12 +117,12 @@ def plot2_european_put_surface():
 
     fig, ax = plt.subplots(figsize=(8, 5))
     im = ax.pcolormesh(
-        to_np(t_vals), to_np(s_vals), to_np(Ve), shading="auto", cmap="viridis"
+        to_np(t_vals), to_np(s_vals), to_np(Ve), shading="auto", cmap="Blues"
     )
     fig.colorbar(im, ax=ax, label=r"$V^e(s, t)$")
     ax.set_xlabel("t")
     ax.set_ylabel("s")
-    ax.set_title(r"Plot 2 — European put price $V^e(s, t)$")
+    ax.set_title(rf"Plot 2 — European Put Option price $V^e(s, t)$ (K={K}, r={r}, $\sigma$={sigma}, T={T})")
     fig.tight_layout()
     fig.savefig(OUT_DIR / "plot2_european_put_surface.png", dpi=150)
     plt.close(fig)
@@ -141,7 +158,7 @@ def plot3_terminal_recovery():
     axes[1].grid(True, alpha=0.3)
     axes[1].ticklabel_format(style="scientific", axis="y", scilimits=(-3, 3))
 
-    fig.suptitle("Plot 3 — Terminal condition recovery (should be ~0 everywhere)")
+    fig.suptitle(f"Plot 3 — Terminal condition recovery (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T}, should be ~0 everywhere)")
     fig.tight_layout()
     fig.savefig(OUT_DIR / "plot3_terminal_recovery.png", dpi=150)
     plt.close(fig)
@@ -173,7 +190,7 @@ def plot4_singularity():
             linewidth=2, linestyle=":", color="black")
     ax.set_xlabel(r"$\tau = T - t$")
     ax.set_ylabel("Option value at s=K")
-    ax.set_title(r"Plot 4 — Singularity behavior near expiry ($s = K = 100$)")
+    ax.set_title(rf"Plot 4 — Singularity behavior near expiry ($s = K = {K}$, European Put Option, r={r}, $\sigma$={sigma}, T={T})")
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -198,7 +215,7 @@ def plot5_g2_vs_Ve():
             linewidth=2, linestyle="--")
     ax.set_xlabel("s")
     ax.set_ylabel("Option value")
-    ax.set_title("Plot 5 — $g_2$ vs $V^e$ at $t = 0.5$")
+    ax.set_title(f"Plot 5 — $g_2$ vs $V^e$ at $t = 0.5$ (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -218,7 +235,7 @@ def plot6_g1():
     ax.plot(to_np(t_vals), to_np(g1_vals), linewidth=2)
     ax.set_xlabel("t")
     ax.set_ylabel(r"$g_1(t) = T - t$")
-    ax.set_title("Plot 6 — $g_1(s, t) = T - t$")
+    ax.set_title(f"Plot 6 — $g_1(s, t) = T - t$ (K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     ax.axhline(0, color="gray", linestyle=":", alpha=0.5)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -247,7 +264,7 @@ def plot7_residual():
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     # Left: Ve itself (for magnitude reference)
-    im0 = axes[0].pcolormesh(to_np(t_vals), to_np(s_vals), to_np(Ve), shading="auto", cmap="viridis")
+    im0 = axes[0].pcolormesh(to_np(t_vals), to_np(s_vals), to_np(Ve), shading="auto", cmap="Blues")
     fig.colorbar(im0, ax=axes[0], label=r"$V^e(s,t)$")
     axes[0].set_xlabel("t")
     axes[0].set_ylabel("s")
@@ -264,7 +281,7 @@ def plot7_residual():
     axes[1].set_ylabel("s")
     axes[1].set_title(r"$V^e(s,t) - g_2(s,t)$ (residual for NN to learn)")
 
-    fig.suptitle("Plot 7 — Residual smoothness check")
+    fig.suptitle(f"Plot 7 — Residual smoothness check (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     fig.tight_layout()
     fig.savefig(OUT_DIR / "plot7_residual.png", dpi=150)
     plt.close(fig)
@@ -297,7 +314,7 @@ def plot8_tau_guard():
 
     ax.set_xlabel("s")
     ax.set_ylabel(r"$V^e(s, t)$")
-    ax.set_title(r"Plot 8 — $V^e$ near $\tau \to 0$ (epsilon guard check)")
+    ax.set_title(rf"Plot 8 — $V^e$ near $\tau \to 0$ (epsilon guard check, European Put Option, K={K}, r={r}, $\sigma$={sigma}, T={T})")
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()

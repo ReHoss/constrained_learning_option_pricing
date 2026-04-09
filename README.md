@@ -11,6 +11,23 @@ pip install -e .
 pip install -e ".[ml]"
 ```
 
+## Usage
+
+### Unit tests
+
+```bash
+pip install -e ".[dev,ml]"
+pytest
+```
+
+### Experiments
+
+**Phase 1 — BSM mathematical components validation:**
+
+```bash
+python experiments/python_scripts/exp1/phase1_bsm_validation.py
+```
+
 ## Package structure
 
 ```

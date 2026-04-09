@@ -11,7 +11,10 @@ For an American put (recommended g2):
     where V1^e and V2^e are the zeroth- and first-order terms of the
     Taylor expansion of the European put price around d_tilde_0.
 
-Bermuda options require a piecewise generalisation — TODO.
+Bermuda options require a piecewise generalisation: see
+:mod:`learning_option_pricing.pricing.interpolation` for C² cubic spline
+and C⁰ piecewise-linear interpolators used to build g2 from tabulated
+continuation values at intermediate exercise dates.
 """
 from __future__ import annotations
 

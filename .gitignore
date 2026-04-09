@@ -48,3 +48,4 @@ documents/latex_output/
 # the pyproject.toml file
 pyrightconfig.json
 
+venv*

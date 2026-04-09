@@ -44,11 +44,7 @@ payoff_call(s, K)  # -> torch.Tensor, same shape as s
 
 For a single-asset option with continuous dividend yield $q$ (Eq. 2 of the paper):
 
-$$\mathcal{F}(V)(s,t)
-  = \frac{\partial V}{\partial t}
-  + \frac{1}{2}\sigma^2 s^2 \frac{\partial^2 V}{\partial s^2}
-  + (r - q)\,s\,\frac{\partial V}{\partial s}
-  - r V$$
+$$\mathcal{F}(V)(s,t) = \frac{\partial V}{\partial t} + \frac{1}{2}\sigma^2 s^2 \frac{\partial^2 V}{\partial s^2} + (r - q)\,s\,\frac{\partial V}{\partial s} - r V$$
 
 The American BSM complementarity conditions require $\mathcal{F}(V) \le 0$ everywhere,
 with equality in the continuation region.
@@ -266,3 +262,166 @@ Run: `experiments/python_scripts/exp1/phase1_bsm_validation.py`
 | $\mathcal{L}_{bs}$ | BSM penalty loss | `loss_bs` |
 | $\mathcal{L}_{tv}$ | Time-value penalty loss | `loss_tv` |
 | $\mathcal{L}_{eq}$ | Complementarity loss | `loss_eq` |
+
+
+
+# Phase 3 — Training and Validation
+
+> Math rendering: open in a Markdown+KaTeX/MathJax renderer for rendered equations.
+
+This document describes the training procedure for the ETCNN on two toy problems:
+a European put (analytical ground truth) and a Bermudan put with one intermediate
+exercise date (binomial tree ground truth).
+
+Key reference:
+
+* W. Zhang, Y. Guo, B. Lu — *Exact Terminal Condition Neural Network for American
+  Option Pricing Based on the Black–Scholes–Merton Equations*, J. Comput. Appl. Math.
+  480 (2026) 117253, Section 3.4 (training), Section 4.1.2 (parameters).
+
+---
+
+## 1. Common parameters
+
+$$
+K = 100, \quad r = 0.02, \quad \sigma = 0.25, \quad T = 1, \quad q = 0
+$$
+
+Network: $M = 4$ residual blocks, $L = 2$ layers per block, $n = 50$ neurons (20,601 parameters).
+
+---
+
+## 2. Loss function (European / BSM equality case)
+
+For a European option (or any sub-interval with no early exercise), the loss is:
+
+$$
+\mathcal{L}(\theta) = \lambda_f \, \mathcal{L}_f(\theta) + \lambda_{tc} \, \mathcal{L}_{tc}(\theta)
+$$
+
+| Term | Formula | Description |
+|------|---------|-------------|
+| $\mathcal{L}_f$ | $\frac{1}{N_f} \sum_{i=1}^{N_f} \left[\mathcal{F}(\tilde{u}_{NN})(s_i, t_i)\right]^2$ | Mean squared PDE residual at interior collocation points |
+| $\mathcal{L}_{tc}$ | $\frac{1}{N_{tc}} \sum_{j=1}^{N_{tc}} \left[\tilde{u}_{NN}(s_j, T) - \Phi(s_j)\right]^2$ | Mean squared terminal error (identically zero for ETCNN) |
+
+Weights: $\lambda_f = 20$, $\lambda_{tc} = 1$ (Section 3.4).
+
+Sampling: $N_{tc} = 1024$ terminal points, $N_f = 4 N_{tc} = 4096$ interior points, resampled uniformly each iteration.
+
+Training domain: $s \in [20, 160]$, $t \in [0, T]$.  
+Evaluation domain: $s \in [60, 120]$, $t \in [0, T]$.
+
+Code: `experiments/python_scripts/exp1/phase3_training.py` — `compute_losses`, `train_model`.
+
+---
+
+## 3. Optimiser and learning rate schedule
+
+- **Optimiser:** Adam with $\beta_1 = 0.9$, $\beta_2 = 0.999$
+- **Initial learning rate:** $\mathrm{lr}_0 = 0.01$
+- **Two-stage exponential decay** (Section 3.4):
+  - First 10,000 iterations: decay by $\gamma = 0.85$ every 2,000 steps
+  - Remaining iterations: decay by $\gamma = 0.85$ every 5,000 steps
+- **Total iterations:** 50,000
+
+Code: `phase3_training.py` — `build_lr_lambda`.
+
+---
+
+## 4. Problem 1 — European put
+
+The European put has an analytical solution $V^e(s, t)$ (Black–Scholes, Eq. 16), enabling exact error measurement.
+
+Both ETCNN and PINN are trained on the same domain with the same hyperparameters. The PINN uses a standard output layer (no $g_1/g_2$ modification), so it must learn the terminal condition from the $\mathcal{L}_{tc}$ penalty alone.
+
+### Expected results
+
+- ETCNN's $\mathcal{L}_{tc}$ should be at or near machine zero throughout training (enforced by architecture).
+- ETCNN relative $L^2$ error should be $< 5 \times 10^{-4}$.
+- PINN relative $L^2$ error should be roughly one order of magnitude larger.
+- Largest pointwise errors concentrate near the kink at $(s, t) = (K, T)$.
+
+### Plots produced
+
+| Plot | Description |
+|------|-------------|
+| E1 | Loss curves ($\mathcal{L}_f$, $\mathcal{L}_{tc}$) for ETCNN and PINN |
+| E2 | Predicted vs analytical price surface heatmaps |
+| E3 | ETCNN pointwise error heatmap |
+| E4 | PINN pointwise error heatmap |
+| E5 | Slice comparison at $t = 0.25, 0.5, 0.75$ |
+| E6 | Greeks ($\Delta, \Gamma, \Theta$) at $t = 0$ compared to analytical |
+
+---
+
+## 5. Problem 2 — Bermudan put (one intermediate exercise date)
+
+A Bermudan put with one intermediate exercise date $t_1 = 0.5$ is solved by piecewise backward induction over two European-type sub-problems.
+
+### Two-stage backward solving
+
+| Stage | Domain | Terminal condition | Network |
+|-------|--------|--------------------|---------|
+| A | $[t_1, T]$ | $\Phi(s) = (K - s)^+$ at $t = T$ | ETCNN$_A$ |
+| B (intermediate) | — | $V(s, t_1) = \max\!\bigl(\Phi(s),\;\mathrm{ETCNN}_A(s, t_1)\bigr)$ | — |
+| C+D | $[0, t_1]$ | $V(s, t_1)$ at $t = t_1$ | ETCNN$_B$ |
+
+**Stage B — intermediate condition:** At $t = t_1$, the Bermudan holder compares immediate exercise $\Phi(s)$ with the continuation value $\mathrm{ETCNN}_A(s, t_1)$. The maximum defines the terminal condition for Stage D.
+
+**Interpolation:** $V(s, t_1)$ is evaluated on a dense grid of 2,000 points and stored as a look-up table with linear interpolation via `numpy.interp`.
+
+**Terminal functions for Stage D:**
+
+$$
+g_1(s, t) = t_1 - t, \qquad g_2(s, t) = V(s, t_1)
+$$
+
+Note: $g_2$ is constant in $t$ and does not capture $\sqrt{\tau}$ singularities. This is acceptable because $V(s, t_1)$ is already a smooth continuation value (not a raw payoff), so the near-terminal behaviour is milder. The only non-smooth point is the kink at $s = s^*$ where exercise becomes optimal.
+
+**Implementation note — differentiable interpolation (critical):** $g_2(s) = V(s, t_1)$ must be computed via a fully PyTorch-differentiable operation so that `bsm_operator` can compute $\partial g_2 / \partial s$ and $\partial^2 g_2 / \partial s^2$ through autograd. Using `numpy.interp` breaks the computational graph: the PDE residual then misses the $g_2$ spatial derivative terms, causing the network to converge to $u_{NN} \approx 0$ (i.e. output $\approx V(s, t_1)$ for all $t$, ignoring time evolution). The fix is a piecewise-linear torch interpolation using `torch.searchsorted`. Code: `phase3_training.v_interp_t1`.
+
+### Exercise boundary
+
+The exercise boundary $s^*$ at $t_1$ is the asset price where $\Phi(s) = \mathrm{ETCNN}_A(s, t_1)$, found by sign-change detection. For these parameters, $s^* < K = 100$.
+
+### Reference solution
+
+Binomial tree with $N = 2000$ steps and exercise dates $\{t_1, T\}$.
+
+Code: `learning_option_pricing/solvers/binomial_tree.py` — `bermuda_put_binomial_tree`.
+
+### Financial consistency
+
+The Bermudan price must satisfy:
+
+$$
+V^{\text{European}}(s, 0) \;\le\; V^{\text{Bermudan}}(s, 0) \;\le\; V^{\text{American}}(s, 0)
+$$
+
+The early exercise opportunity at $t_1$ adds value relative to the European option but less than continuous exercise (American). This ordering is verified in the script.
+
+### Plots produced
+
+| Plot | Description |
+|------|-------------|
+| B1 | Intermediate terminal condition: hold, exercise, and $V(s, t_1)$ at $t_1$ |
+| B2 | Exercise boundary $s^*$ at $t_1$ |
+| B3 | Stage A loss curves |
+| B4 | Stage D loss curves |
+| B5 | Price at $t = 0$: ETCNN$_B$, binomial tree, European |
+| B6 | Full piecewise Bermudan price surface |
+| B7 | Error vs binomial tree at $t = 0$ |
+| B8 | Greeks ($\Delta, \Gamma, \Theta$) at $t = 0$ compared to European analytical |
+
+---
+
+## 6. Math → code mapping (Phase 3 additions)
+
+| Symbol | Description | Code location |
+|--------|-------------|---------------|
+| $\mathcal{L}_f$ | PDE residual loss | `phase3_training.compute_losses` |
+| $\mathcal{L}_{tc}$ | Terminal condition loss | `phase3_training.compute_losses` |
+| $V(s, t_1)$ | Intermediate terminal condition | `phase3_training.bermudan_problem` — `v_interp_t1` |
+| $\Delta, \Gamma, \Theta$ | Option Greeks computation | `phase3_training.compute_greeks_nn`, `compute_greeks_analytical` |
+| BT reference | Bermudan binomial tree | `solvers.bermuda_put_binomial_tree` |
+| $s^*$ | Exercise boundary at $t_1$ | Sign-change detection in `bermudan_problem` |

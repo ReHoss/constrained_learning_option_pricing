@@ -1,1 +1,1 @@
-"""Loss functions and exact terminal/exercise-date functions for BSM equations."""
+"""Loss functions, exact terminal/exercise-date functions, and interpolation for BSM equations."""

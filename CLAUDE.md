@@ -6,3 +6,4 @@
 - Please update `pyproject.toml` when needed and also the contribution guidelines in `CONTRIBUTING.md`.
 - Document the implementation in some manual under documents/methodology/ !
 - In markdown files, please use LaTeX for mathematical expressions.
+- Log as much information as possible in experiments and scripts.
