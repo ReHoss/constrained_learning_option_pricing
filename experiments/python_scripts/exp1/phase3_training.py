@@ -229,7 +229,7 @@ def train_model(
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01, betas=(0.9, 0.999))
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, build_lr_lambda(total_iters))
 
-    history = {"loss": [], "loss_f": [], "loss_tc": [], "iter": []}
+    history = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [], "grad_norm": [], "lr": []}
     model.train()
 
     t0 = time.time()
@@ -242,26 +242,81 @@ def train_model(
             model, s_f, t_f, s_tc, t_tc, payoff_fn, LAMBDA_F, LAMBDA_TC,
         )
         loss.backward()
+        
+        # Calculate gradient norm
+        total_norm = 0.0
+        for p in model.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.detach().data.norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
+        
         optimizer.step()
         scheduler.step()
 
         if it % log_every == 0 or it == 1:
+            lr_now = optimizer.param_groups[0]["lr"]
             history["loss"].append(loss.item())
             history["loss_f"].append(lf)
             history["loss_tc"].append(ltc)
+            history["grad_norm"].append(total_norm)
+            history["lr"].append(lr_now)
             history["iter"].append(it)
+            
             elapsed = time.time() - t0
-            lr_now = optimizer.param_groups[0]["lr"]
             logger.info(
                 f"[{label}] iter {it:>6d}/{total_iters}  "
                 f"loss={loss.item():.6e}  L_f={lf:.6e}  L_tc={ltc:.6e}  "
-                f"lr={lr_now:.6f}  ({elapsed:.1f}s)"
+                f"|grad|={total_norm:.2e}  lr={lr_now:.6f}  ({elapsed:.1f}s)"
             )
 
     model.eval()
     elapsed = time.time() - t0
     logger.info(f"[{label}] Training done in {elapsed:.1f}s")
     return history
+
+
+def plot_training_metrics(hist: dict, label: str, out_dir: Path):
+    """Plot comprehensive training metrics including gradient norm and LR."""
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    
+    # Loss curves
+    axes[0, 0].semilogy(hist["iter"], hist["loss_f"], label="$L_f$")
+    axes[0, 0].semilogy(hist["iter"], hist["loss_tc"], label="$L_{tc}$", color="tab:orange")
+    axes[0, 0].set_xlabel("Iteration")
+    axes[0, 0].set_ylabel("Loss")
+    axes[0, 0].set_title("Loss Components")
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # Total loss
+    axes[0, 1].semilogy(hist["iter"], hist["loss"], label="Total Loss", color="tab:green")
+    axes[0, 1].set_xlabel("Iteration")
+    axes[0, 1].set_ylabel("Total Loss")
+    axes[0, 1].set_title("Total Loss")
+    axes[0, 1].legend()
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # Gradient norm
+    axes[1, 0].semilogy(hist["iter"], hist["grad_norm"], label="Gradient Norm", color="tab:red")
+    axes[1, 0].set_xlabel("Iteration")
+    axes[1, 0].set_ylabel("L2 Norm")
+    axes[1, 0].set_title("Gradient Magnitude")
+    axes[1, 0].legend()
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    # Learning rate
+    axes[1, 1].plot(hist["iter"], hist["lr"], label="Learning Rate", color="tab:purple")
+    axes[1, 1].set_xlabel("Iteration")
+    axes[1, 1].set_ylabel("LR")
+    axes[1, 1].set_title("Learning Rate Schedule")
+    axes[1, 1].legend()
+    axes[1, 1].grid(True, alpha=0.3)
+    
+    fig.suptitle(f"Training Metrics: {label}")
+    fig.tight_layout()
+    fig.savefig(out_dir / "training_metrics" / f"metrics_{label}.png", dpi=150)
+    plt.close(fig)
 
 
 # ===================================================================
@@ -325,6 +380,9 @@ def european_problem(out_dir: Path, total_iters: int):
     mae_pinn = float(torch.mean(err_pinn))
 
     # === Plot E1 — Loss curves ===
+    plot_training_metrics(hist_etcnn, "ETCNN-Eur", out_dir)
+    plot_training_metrics(hist_pinn, "PINN-Eur", out_dir)
+
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     axes[0].semilogy(hist_etcnn["iter"], hist_etcnn["loss_f"], label="ETCNN $L_f$")
     axes[0].semilogy(hist_pinn["iter"], hist_pinn["loss_f"], label="PINN $L_f$", linestyle="--")
@@ -344,7 +402,7 @@ def european_problem(out_dir: Path, total_iters: int):
 
     fig.suptitle(f"Plot E1 — Loss curves (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     fig.tight_layout()
-    fig.savefig(out_dir / "plotE1_loss_curves.png", dpi=150)
+    fig.savefig(out_dir / "training_metrics" / "plotE1_loss_curves.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] Plot E1 — Loss curves")
 
@@ -366,7 +424,7 @@ def european_problem(out_dir: Path, total_iters: int):
 
     fig.suptitle(f"Plot E2 — ETCNN vs analytical (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     fig.tight_layout()
-    fig.savefig(out_dir / "plotE2_surface_comparison.png", dpi=150)
+    fig.savefig(out_dir / "pricing" / "plotE2_surface_comparison.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] Plot E2 — Surface comparison")
 
@@ -378,7 +436,7 @@ def european_problem(out_dir: Path, total_iters: int):
     ax.set_xlabel("t"); ax.set_ylabel("s")
     ax.set_title(f"Plot E3 — ETCNN pointwise error (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T}, max={float(err_etcnn.max()):.2e})")
     fig.tight_layout()
-    fig.savefig(out_dir / "plotE3_etcnn_error.png", dpi=150)
+    fig.savefig(out_dir / "diagnostics" / "plotE3_etcnn_error.png", dpi=150)
     plt.close(fig)
     logger.info(f"[OK] Plot E3 — ETCNN error: max={float(err_etcnn.max()):.2e}")
 
@@ -390,7 +448,7 @@ def european_problem(out_dir: Path, total_iters: int):
     ax.set_xlabel("t"); ax.set_ylabel("s")
     ax.set_title(f"Plot E4 — PINN pointwise error (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T}, max={float(err_pinn.max()):.2e})")
     fig.tight_layout()
-    fig.savefig(out_dir / "plotE4_pinn_error.png", dpi=150)
+    fig.savefig(out_dir / "diagnostics" / "plotE4_pinn_error.png", dpi=150)
     plt.close(fig)
     logger.info(f"[OK] Plot E4 — PINN error: max={float(err_pinn.max()):.2e}")
 
@@ -418,7 +476,7 @@ def european_problem(out_dir: Path, total_iters: int):
 
     fig.suptitle(f"Plot E5 — Slice comparison at fixed $t$ (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     fig.tight_layout()
-    fig.savefig(out_dir / "plotE5_slices.png", dpi=150)
+    fig.savefig(out_dir / "pricing" / "plotE5_slices.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] Plot E5 — Slice comparison")
 
@@ -464,7 +522,7 @@ def european_problem(out_dir: Path, total_iters: int):
     
     fig.suptitle(f"Plot E6 — Greeks at $t=0$ (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     fig.tight_layout()
-    fig.savefig(out_dir / "plotE6_greeks.png", dpi=150)
+    fig.savefig(out_dir / "greeks" / "plotE6_greeks.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] Plot E6 — Greeks at t=0")
 
@@ -605,7 +663,7 @@ def _plot_interp_diagnostic(
         fontsize=13,
     )
     fig.tight_layout()
-    fig.savefig(out_dir / "plotB1b_interp_diagnostic.png", dpi=150)
+    fig.savefig(out_dir / "diagnostics" / "plotB1b_interp_diagnostic.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] Plot B1b — Interpolation diagnostic (C² vs C⁰)")
 
@@ -641,6 +699,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
         etcnn_a, total_iters, S_TRAIN_LO, S_TRAIN_HI, t1, T,
         payoff_fn, label="ETCNN_A",
     )
+    plot_training_metrics(hist_a, "ETCNN_A", out_dir)
 
     # ---------------------------------------------------------------
     # Stage B — construct intermediate terminal condition at t1
@@ -713,7 +772,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(out_dir / "plotB1_intermediate.png", dpi=150)
+    fig.savefig(out_dir / "pricing" / "plotB1_intermediate.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] Plot B1 — Intermediate terminal condition")
 
@@ -737,7 +796,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(out_dir / "plotB2_exercise_boundary.png", dpi=150)
+    fig.savefig(out_dir / "pricing" / "plotB2_exercise_boundary.png", dpi=150)
     plt.close(fig)
     logger.info(f"[OK] Plot B2 — Exercise boundary: s* ≈ {s_star:.2f}")
 
@@ -751,7 +810,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     axes[1].set_title("Stage A: Terminal loss"); axes[1].legend(); axes[1].grid(True, alpha=0.3)
     fig.suptitle(f"Stage A loss curves (ETCNN$_A$ on $[t_1, T]$, Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     fig.tight_layout()
-    fig.savefig(out_dir / "plotB3_stageA_loss.png", dpi=150)
+    fig.savefig(out_dir / "training_metrics" / "plotB3_stageA_loss.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] Plot B3 — Stage A loss curves")
 
@@ -786,6 +845,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
         etcnn_b, total_iters, S_TRAIN_LO, S_TRAIN_HI, 0.0, t1,
         payoff_t1, label="ETCNN_B",
     )
+    plot_training_metrics(hist_b, "ETCNN_B", out_dir)
 
     # === Plot B4 — Stage B loss curves ===
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -797,7 +857,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     axes[1].set_title("Stage D: Terminal loss"); axes[1].legend(); axes[1].grid(True, alpha=0.3)
     fig.suptitle(f"Stage D loss curves (ETCNN$_B$ on $[0, t_1]$, Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     fig.tight_layout()
-    fig.savefig(out_dir / "plotB4_stageD_loss.png", dpi=150)
+    fig.savefig(out_dir / "training_metrics" / "plotB4_stageD_loss.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] Plot B4 — Stage D loss curves")
 
@@ -838,7 +898,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(out_dir / "plotB5_price_comparison.png", dpi=150)
+    fig.savefig(out_dir / "pricing" / "plotB5_price_comparison.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] Plot B5 — Price comparison")
 
@@ -887,7 +947,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     ax.set_title(f"Full Bermudan Put Option price surface (piecewise, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     ax.legend()
     fig.tight_layout()
-    fig.savefig(out_dir / "plotB6_bermudan_surface.png", dpi=150)
+    fig.savefig(out_dir / "pricing" / "plotB6_bermudan_surface.png", dpi=150)
     plt.close(fig)
 
     # Check continuity at t1
@@ -908,7 +968,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     ax.set_title(f"Error vs binomial tree at $t=0$ (Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T}, max={err_vs_bt.max():.2e})")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(out_dir / "plotB7_error_vs_bt.png", dpi=150)
+    fig.savefig(out_dir / "diagnostics" / "plotB7_error_vs_bt.png", dpi=150)
     plt.close(fig)
     logger.info(f"[OK] Plot B7 — Error vs BT: max={err_vs_bt.max():.2e}")
 
@@ -950,7 +1010,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     
     fig.suptitle(f"Greeks at $t=0$ (Bermudan vs European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     fig.tight_layout()
-    fig.savefig(out_dir / "plotB8_greeks.png", dpi=150)
+    fig.savefig(out_dir / "greeks" / "plotB8_greeks.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] Plot B8 — Greeks at t=0")
 
@@ -1016,6 +1076,12 @@ def main():
     timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
     out_dir = Path("data/phase3_training") / f"{timestamp}_iters{args.iters}_K{K:.0f}_interp{args.interp}"
     out_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create subdirectories for grouped plots
+    (out_dir / "training_metrics").mkdir(exist_ok=True)
+    (out_dir / "pricing").mkdir(exist_ok=True)
+    (out_dir / "greeks").mkdir(exist_ok=True)
+    (out_dir / "diagnostics").mkdir(exist_ok=True)
 
     # Save metadata
     metadata = {
