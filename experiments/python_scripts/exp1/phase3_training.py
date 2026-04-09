@@ -600,7 +600,7 @@ def _plot_interp_diagnostic(
     ax.grid(True, alpha=0.3)
 
     fig.suptitle(
-        "Plot B1b — Interpolation diagnostic: cubic ($C^2$) vs linear ($C^0$)\n"
+        "Interpolation diagnostic: cubic ($C^2$) vs linear ($C^0$)\n"
         f"(Bermudan Put, K={K}, r={r}, $\\sigma$={sigma})",
         fontsize=13,
     )
@@ -709,7 +709,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
         ax.axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"$s^* \\approx {s_star:.1f}$")
     ax.set_xlabel("s")
     ax.set_ylabel("Value")
-    ax.set_title(f"Plot B1 — Intermediate terminal condition at $t_1 = {t1}$ (Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    ax.set_title(f"Intermediate terminal condition at $t_1 = {t1}$ (Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -733,7 +733,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
                     arrowprops=dict(arrowstyle="->", color="red"))
     ax.set_xlabel("s")
     ax.set_ylabel("Value")
-    ax.set_title(f"Plot B2 — Exercise boundary at $t_1 = {t1}$ (Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    ax.set_title(f"Exercise boundary at $t_1 = {t1}$ (Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -749,7 +749,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     axes[1].semilogy(hist_a["iter"], hist_a["loss_tc"], label="$L_{tc}$", color="tab:orange")
     axes[1].set_xlabel("Iteration"); axes[1].set_ylabel("$L_{tc}$")
     axes[1].set_title("Stage A: Terminal loss"); axes[1].legend(); axes[1].grid(True, alpha=0.3)
-    fig.suptitle(f"Plot B3 — Stage A loss curves (ETCNN$_A$ on $[t_1, T]$, Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    fig.suptitle(f"Stage A loss curves (ETCNN$_A$ on $[t_1, T]$, Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     fig.tight_layout()
     fig.savefig(out_dir / "plotB3_stageA_loss.png", dpi=150)
     plt.close(fig)
@@ -795,7 +795,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     axes[1].semilogy(hist_b["iter"], hist_b["loss_tc"], label="$L_{tc}$", color="tab:orange")
     axes[1].set_xlabel("Iteration"); axes[1].set_ylabel("$L_{tc}$")
     axes[1].set_title("Stage D: Terminal loss"); axes[1].legend(); axes[1].grid(True, alpha=0.3)
-    fig.suptitle(f"Plot B4 — Stage D loss curves (ETCNN$_B$ on $[0, t_1]$, Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    fig.suptitle(f"Stage D loss curves (ETCNN$_B$ on $[0, t_1]$, Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     fig.tight_layout()
     fig.savefig(out_dir / "plotB4_stageD_loss.png", dpi=150)
     plt.close(fig)
@@ -834,7 +834,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     ax.plot(s_eval_arr, ve_prices, label=r"European $V^e(s, 0)$", linewidth=2, linestyle=":")
     ax.set_xlabel("s")
     ax.set_ylabel("Option price at $t=0$")
-    ax.set_title(f"Plot B5 — Bermudan Put vs European Put vs BT at $t=0$ (K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    ax.set_title(f"Bermudan Put vs European Put vs BT at $t=0$ (K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -884,7 +884,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     fig.colorbar(im, ax=ax, label="Bermudan put price")
     ax.axvline(t1, color="red", linestyle="--", linewidth=1.5, label=f"$t_1 = {t1}$")
     ax.set_xlabel("t"); ax.set_ylabel("s")
-    ax.set_title(f"Plot B6 — Full Bermudan Put Option price surface (piecewise, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    ax.set_title(f"Full Bermudan Put Option price surface (piecewise, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     ax.legend()
     fig.tight_layout()
     fig.savefig(out_dir / "plotB6_bermudan_surface.png", dpi=150)
@@ -905,7 +905,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     ax.plot(s_eval_arr, err_vs_bt, linewidth=2)
     ax.set_xlabel("s")
     ax.set_ylabel("$|$ETCNN$_B(s,0) - $BT$(s,0)|$")
-    ax.set_title(f"Plot B7 — Error vs binomial tree at $t=0$ (Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T}, max={err_vs_bt.max():.2e})")
+    ax.set_title(f"Error vs binomial tree at $t=0$ (Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T}, max={err_vs_bt.max():.2e})")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(out_dir / "plotB7_error_vs_bt.png", dpi=150)
@@ -948,7 +948,7 @@ def bermudan_problem(out_dir: Path, total_iters: int, interp_method: str = "cubi
     axes[2].legend()
     axes[2].grid(True, alpha=0.3)
     
-    fig.suptitle(f"Plot B8 — Greeks at $t=0$ (Bermudan vs European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    fig.suptitle(f"Greeks at $t=0$ (Bermudan vs European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     fig.tight_layout()
     fig.savefig(out_dir / "plotB8_greeks.png", dpi=150)
     plt.close(fig)
