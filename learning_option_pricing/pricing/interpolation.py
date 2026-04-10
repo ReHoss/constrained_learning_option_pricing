@@ -134,6 +134,107 @@ class CubicSplineInterpolator:
         )
 
 
+class PchipInterpolator:
+    """Piecewise Cubic Hermite Interpolating Polynomial (PCHIP), :math:`C^1`-differentiable.
+
+    PCHIP is **shape-preserving** and **strictly local**: it is mathematically
+    impossible for the interpolant to overshoot or oscillate in a flat region.
+    Unlike a global :math:`C^2` natural cubic spline, PCHIP sacrifices second-
+    derivative continuity for monotonicity preservation.
+
+    Each sub-interval uses a cubic Hermite basis with slopes :math:`d_i` chosen
+    by the Fritsch–Carlson algorithm (weighted harmonic mean of neighbouring
+    secants, with zero slopes at local extrema).
+
+    **Regularity:** :math:`S \\in C^1` (first derivative is continuous).
+    :math:`S''` exists a.e. and is piecewise-linear per interval, but may
+    have jumps at the knots (only :math:`C^1`, not :math:`C^2`).
+
+    Args:
+        x_nodes: Strictly increasing 1-D tensor of abscissae, shape ``(n,)``.
+        y_nodes: Corresponding ordinates, shape ``(n,)``.
+    """
+
+    def __init__(self, x_nodes: torch.Tensor, y_nodes: torch.Tensor) -> None:
+        if x_nodes.ndim != 1 or y_nodes.ndim != 1:
+            raise ValueError("x_nodes and y_nodes must be 1-D tensors")
+        n = x_nodes.shape[0]
+        if n < 3:
+            raise ValueError("Need at least 3 nodes for PCHIP")
+        if y_nodes.shape[0] != n:
+            raise ValueError("x_nodes and y_nodes must have the same length")
+
+        x = x_nodes.detach().double()
+        y = y_nodes.detach().double()
+        h = x[1:] - x[:-1]  # (n-1,)
+        delta = (y[1:] - y[:-1]) / h  # secant slopes (n-1,)
+
+        # Fritsch–Carlson slopes
+        d = torch.zeros(n, dtype=torch.float64)
+        for i in range(1, n - 1):
+            if delta[i - 1] * delta[i] <= 0:
+                d[i] = 0.0
+            else:
+                w1 = 2.0 * h[i] + h[i - 1]
+                w2 = h[i] + 2.0 * h[i - 1]
+                d[i] = (w1 + w2) / (w1 / delta[i - 1] + w2 / delta[i])
+        # One-sided slopes at endpoints
+        d[0] = _pchip_edge_slope(h[0], h[1], delta[0], delta[1])
+        d[-1] = _pchip_edge_slope(h[-2], h[-1], delta[-2], delta[-1])
+
+        # Hermite basis coefficients per interval:
+        # S_i(x) = a_i + b_i*dx + c_i*dx^2 + d_coeff_i*dx^3,  dx = x - x_i
+        a = y[:-1]
+        b = d[:-1]
+        c = (3.0 * delta - 2.0 * d[:-1] - d[1:]) / h
+        d_coeff = (d[:-1] + d[1:] - 2.0 * delta) / (h * h)
+
+        self._x_nodes = x.float().cpu()
+        self._a = a.float().cpu()
+        self._b = b.float().cpu()
+        self._c = c.float().cpu()
+        self._d = d_coeff.float().cpu()
+
+    def __call__(self, x_query: torch.Tensor) -> torch.Tensor:
+        """Evaluate the PCHIP interpolant at *x_query* (autograd-compatible)."""
+        dev = x_query.device
+        shape = x_query.shape
+        xq = x_query.reshape(-1)
+
+        x_nodes = self._x_nodes.to(dev)
+        a = self._a.to(dev)
+        b = self._b.to(dev)
+        c = self._c.to(dev)
+        d = self._d.to(dev)
+
+        idx = torch.searchsorted(x_nodes.contiguous(), xq.contiguous()) - 1
+        idx = idx.clamp(0, len(x_nodes) - 2)
+
+        dx = xq - x_nodes[idx]
+        result = a[idx] + dx * (b[idx] + dx * (c[idx] + dx * d[idx]))
+        return result.reshape(shape)
+
+    def __repr__(self) -> str:
+        n = self._x_nodes.shape[0]
+        return (
+            f"PchipInterpolator(n_nodes={n}, "
+            f"x=[{self._x_nodes[0]:.4g}, {self._x_nodes[-1]:.4g}])"
+        )
+
+
+def _pchip_edge_slope(
+    h0: torch.Tensor, h1: torch.Tensor,
+    d0: torch.Tensor, d1: torch.Tensor,
+) -> torch.Tensor:
+    """Non-centered three-point slope for PCHIP endpoints."""
+    slope = ((2.0 * h0 + h1) * d0 - h0 * d1) / (h0 + h1)
+    if slope.sign() != d0.sign():
+        slope = torch.tensor(0.0, dtype=slope.dtype)
+    elif d0.sign() != d1.sign() and abs(slope) > abs(3.0 * d0):
+        slope = 3.0 * d0
+    return slope
+
+
 class PiecewiseLinearInterpolator:
     """Piecewise-linear interpolation, :math:`C^0` only.
 

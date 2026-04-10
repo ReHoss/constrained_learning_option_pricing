@@ -115,9 +115,14 @@ class AmericanPutETCNN(ETCNN):
     """ETCNN for a single-asset American put option (no dividends).
 
     g1(s, t) = T - t
-    g2(s, t) = V1^e(s, t) + V2^e(s, t)
+    g2(s, t) depends on *g2_type*:
 
-    See Zhang, Guo, Lu (2026), Section 4.1.1.
+    - ``"taylor"`` (default): $g_2 = V_1^e + V_2^e$, the first-order Taylor
+      expansion of the European put around $\\tilde{d}_0$.  Captures the
+      $\\sqrt{\\tau}$ singularity near expiry (Zhang, Guo, Lu 2026, Sec. 4.1.1).
+    - ``"bs"``: $g_2 = V^e(s, t)$, the exact Black–Scholes European put price.
+      Smoother than the Taylor form but does not explicitly decompose the
+      singular behaviour.
 
     Args:
         K:      Strike price.
@@ -126,6 +131,7 @@ class AmericanPutETCNN(ETCNN):
         T:      Expiration time.
         resnet: ResNet backbone (uses defaults if None).
         normalize_input: Whether to apply s/K normalisation.
+        g2_type: Terminal function type — ``"taylor"`` or ``"bs"``.
     """
 
     def __init__(
@@ -136,8 +142,10 @@ class AmericanPutETCNN(ETCNN):
         T: float = 1.0,
         resnet: ResNet | None = None,
         normalize_input: bool = True,
+        g2_type: str = "taylor",
     ) -> None:
         from learning_option_pricing.pricing.terminal import (
+            black_scholes_put,
             g1_linear,
             g2_american_put,
         )
@@ -146,13 +154,23 @@ class AmericanPutETCNN(ETCNN):
         self._r = r
         self._sigma = sigma
         self._T = T
+        self._g2_type = g2_type
 
         def g1(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
             return g1_linear(T, t)
 
-        def g2(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-            tau = T - t
-            return g2_american_put(s, K, r, sigma, tau)
+        if g2_type == "taylor":
+            def g2(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+                tau = T - t
+                return g2_american_put(s, K, r, sigma, tau)
+        elif g2_type == "bs":
+            def g2(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+                tau = T - t
+                return black_scholes_put(s, K, r, sigma, tau)
+        else:
+            raise ValueError(
+                f"Unknown g2_type: {g2_type!r}. Choose 'taylor' or 'bs'."
+            )
 
         if resnet is None:
             resnet = ResNet()
@@ -195,11 +213,60 @@ class PINN(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Bermuda (placeholder)
+# Bermuda — singularity extraction ansatz
 # ---------------------------------------------------------------------------
 
-class BermudaETCNN(ETCNN):
-    """ETCNN for a single-asset Bermuda option with discrete exercise dates.
+class BermudaETCNN(nn.Module):
+    r"""ETCNN with singularity extraction for Bermudan put options.
 
-    TODO: define g1 and g2 for the piecewise-in-time setting.
+    Decomposes the solution on $[0, t_1]$ as
+
+    $$U_B(s, t) = v(s, t) + \tilde{u}_\theta(s, t)$$
+
+    where
+
+    * $v(s, t) = c \cdot P^{\text{BS}}(s, s^*, r, \sigma, t_1 - t)$ is a
+      fictitious European put that analytically absorbs the $C^0$ kink at
+      the exercise boundary $s^*$.  It is an exact BSM solution
+      ($\mathcal{L}v = 0$).
+    * $\tilde{u}_\theta$ is a standard :class:`ETCNN` whose $g_2$ equals the
+      $C^1$-smooth residual $V_{\text{target}} - v|_{t_1}$.
+
+    Because $\mathcal{L}$ is linear and $\mathcal{L}v = 0$, the PDE residual
+    $\mathcal{L}U_B = \mathcal{L}\tilde{u}_\theta$.  The training loop can
+    therefore operate on the *full* output without any special handling.
+
+    Args:
+        etcnn:          Residual ETCNN learning $\tilde{u}_\theta$.
+        fictitious_put: :class:`~learning_option_pricing.pricing.singularity.FictitiousEuropeanPut`.
     """
+
+    def __init__(
+        self,
+        etcnn: ETCNN,
+        fictitious_put: nn.Module,
+    ) -> None:
+        super().__init__()
+        self.etcnn = etcnn
+        self.fictitious_put = fictitious_put
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass: $U_B = v + \tilde{u}_\theta$.
+
+        Args:
+            x: Input tensor ``(batch, 2)`` with columns ``[s, t]``.
+
+        Returns:
+            $U_B(s, t)$ of shape ``(batch, 1)``.
+        """
+        s = x[:, 0:1]
+        t = x[:, 1:2]
+        v = self.fictitious_put(s, t)
+        u_tilde = self.etcnn(x)
+        return v + u_tilde
+
+    # convenience accessors
+    @property
+    def resnet(self) -> ResNet:
+        """Access the underlying ResNet (for weight diagnostics etc.)."""
+        return self.etcnn.resnet
