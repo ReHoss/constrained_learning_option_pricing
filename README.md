@@ -28,6 +28,18 @@ pytest
 python experiments/python_scripts/exp1/phase1_bsm_validation.py
 ```
 
+**Phase 3 — ETCNN training (European + Bermudan puts):**
+
+```bash
+# Default (cubic interpolation, Taylor g2, 50k iters)
+python experiments/python_scripts/exp1/phase3_training.py
+
+# Singularity extraction ansatz, 20k + 5k iters
+python experiments/python_scripts/exp1/phase3_training.py --extraction --iters 20000 5000
+```
+
+See [`documents/methodology/reproducibility.md`](documents/methodology/reproducibility.md) for the full flag reference and example commands.
+
 ## Package structure
 
 ```

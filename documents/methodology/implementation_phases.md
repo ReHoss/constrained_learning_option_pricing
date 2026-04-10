@@ -117,7 +117,7 @@ A Bermudan put with one intermediate exercise date $t_1 = 0.5$ is solved by piec
 
 **Stage B — intermediate condition:** At $t = t_1$, the Bermudan holder compares immediate exercise $\Phi(s)$ with the continuation value $\mathrm{ETCNN}_A(s, t_1)$. The maximum defines the terminal condition for Stage D.
 
-**Interpolation:** $V(s, t_1)$ is evaluated on a dense grid of 2,000 points and stored as a look-up table. As detailed in [`architecture.md`](architecture.md), this is interpolated using a natural cubic spline to preserve the diffusion term $\frac{\partial^2 g_2}{\partial s^2}$.
+**Interpolation:** $V(s, t_1)$ is evaluated on a dense grid of 2,000 points and stored as a look-up table. As detailed in [`architecture.md`](architecture.md), this is interpolated using either a natural cubic spline ($C^2$) or a PCHIP interpolant ($C^1$, shape-preserving) to preserve the diffusion term $\frac{\partial^2 g_2}{\partial s^2}$. PCHIP is recommended near kinks (exercise boundaries) where the global cubic spline can overshoot.
 
 **Terminal functions for Stage D:**
 $$
@@ -140,10 +140,85 @@ The exercise boundary $s^*$ at $t_1$ is the asset price where $\Phi(s) = \mathrm
 | B6 | Full piecewise Bermudan price surface |
 | B7 | Error vs binomial tree at $t = 0$ |
 | B8 | Greeks ($\Delta, \Gamma, \Theta$) at $t = 0$ compared to European analytical |
+| B9 | Spatial distribution of PDE residual at $t_1^-$ |
+| B10 | Neuron weight magnitude distribution in ETCNN$^{(A)}$ |
 
 ---
 
-## 4. Math → code mapping (Phase 3 additions)
+## 4. Running experiments
+
+### 4.1 Full training run (GPU recommended)
+
+```bash
+python3 experiments/python_scripts/exp1/phase3_training.py \
+    --iters 50000 \
+    --device auto
+```
+
+### 4.2 Fast diagnostic run (CPU, ~20 min)
+
+Reduced batch sizes and iterations for quick debugging:
+
+```bash
+python3 experiments/python_scripts/exp1/phase3_training.py \
+    --device cpu \
+    --iters 2000 \
+    --n-f 1024 \
+    --n-tc 256
+```
+
+### 4.3 Bermudan-only with PCHIP interpolation
+
+Skip the European problem and use shape-preserving PCHIP interpolation to avoid
+Gamma explosions from the global cubic spline near the exercise boundary:
+
+```bash
+python3 experiments/python_scripts/exp1/phase3_training.py \
+    --bermudan-only \
+    --interp pchip \
+    --iters 20000
+```
+
+### 4.4 Two-stage iterations with weight decay
+
+Use different iteration counts for Stage A and Stage B, with L2 regularisation:
+
+```bash
+python3 experiments/python_scripts/exp1/phase3_training.py \
+    --iters 20000 5000 \
+    --weight-decay 0.01 \
+    --interp pchip
+```
+
+### 4.5 Resume from a pre-trained Stage A model
+
+Skip Stage A training by loading a saved `etcnn_a.pt`:
+
+```bash
+python3 experiments/python_scripts/exp1/phase3_training.py \
+    --bermudan-only \
+    --load-etcnn-a data/phase3_training/<run_folder>/etcnn_a.pt \
+    --iters 10000 \
+    --interp pchip
+```
+
+### 4.6 CLI reference
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--iters N [M]` | `50000` | Training iterations. One value = same for all stages; two values = Stage A, Stage B. |
+| `--interp {cubic,pchip,linear}` | `cubic` | Interpolation method for $V(s, t_1)$. `pchip` is shape-preserving ($C^1$). |
+| `--device {auto,cuda,cpu}` | `auto` | Compute device. |
+| `--bermudan-only` | off | Skip European problem. |
+| `--weight-decay` | `0.0` | L2 regularisation penalty for Adam. |
+| `--load-etcnn-a PATH` | — | Path to pre-trained `etcnn_a.pt` to skip Stage A. |
+| `--n-tc N` | `1024` | Number of terminal condition boundary points. |
+| `--n-f N` | `4096` | Number of interior PDE collocation points. |
+| `--log-every N` | `1000` | Logging interval (iterations). |
+
+---
+
+## 5. Math → code mapping (Phase 3 additions)
 
 | Symbol | Description | Code location |
 |--------|-------------|---------------|

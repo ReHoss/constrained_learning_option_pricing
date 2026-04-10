@@ -86,48 +86,100 @@ where $\tilde{d}_0 = -\frac{1}{\sigma\sqrt{\tau}}\!\left(\ln\frac{s}{K} + r\tau\
 
 This choice (i) satisfies the terminal condition exactly, (ii) captures the $\sqrt{\tau}$ singularity near expiry at-the-money, and (iii) preserves the non-differentiability at $s = K, t = T$.
 
-Code: `learning_option_pricing/pricing/terminal.py` — `g1_linear`, `g2_american_put`, `european_put_ve1`, `european_put_ve2`.
+An alternative is $g_2(s,t) = P^{\text{BS}}(s, K, r, \sigma, \tau)$, the **exact** Black-Scholes European put price. This is smoother (fully analytic) but does not explicitly decompose the $\sqrt{\tau}$ singular behaviour. Both variants are available via the `g2_type` constructor argument of `AmericanPutETCNN` (`"taylor"` — default, or `"bs"`) and via the `--g2 {taylor,bs}` CLI flag of `phase3_training.py`.
 
-### 2.2 Bermuda options — interpolation of $g_2$
+Code: `learning_option_pricing/pricing/terminal.py` — `g1_linear`, `g2_american_put`, `european_put_ve1`, `european_put_ve2`, `black_scholes_put`.
 
-For the sub-interval $[t_{k-1}, t_k]$ the terminal condition is the tabulated continuation
-value $V(s, t_k) = \max(\Phi(s), V^{\text{hold}}(s, t_k))$. Since no closed-form expression
-exists, $g_2(s, t) = V_{\text{interp}}(s)$ is constructed by interpolating the tabulated
-values.
+### 2.2 Bermuda options — singularity extraction ansatz
 
-**Regularity requirement.** Applying the BSM operator to the trial solution
-$\tilde{u}_{NN} = g_1 u_{NN} + g_2$ yields (by linearity):
+For the sub-interval $[t_{k-1}, t_k]$ the terminal condition is
 
 $$
-\mathcal{F}(\tilde{u}_{NN}) = \mathcal{F}(g_1 u_{NN}) + \mathcal{F}(g_2)
+V_{\text{target}}(s, t_k) = \max\!\bigl(\Phi(s),\; V^{\text{hold}}(s, t_k)\bigr)
 $$
 
-Since $g_2$ is independent of $t$, the operator reduces to:
+**The pathology.** At the optimal exercise boundary $s^*$ (where $\Phi(s^*) = V^{\text{hold}}(s^*, t_k)$), $V_{\text{target}}$ is only $C^0$:
+
+- For $s < s^*$ (exercise region, put): $\partial V_{\text{target}}/\partial s = -1$
+- For $s > s^*$ (hold region): $\partial V_{\text{target}}/\partial s = \delta_A$, the hold delta
+
+The first derivative has a finite jump $\Delta = \delta_A + 1$ at $s^*$. Consequently, $\partial^2 V_{\text{target}}/\partial s^2$ contains a **Dirac delta** at $s^*$. If a neural network is forced to learn this boundary condition, the infinite curvature causes the BSM PDE residual to explode (stiffness), destroying the optimisation.
+
+**Solution: singularity extraction ansatz.**
+Instead of smoothing $V_{\text{target}}$ with an interpolant (which either introduces oscillations or drops the diffusion term), we analytically extract the singularity. The solution on $[t_{k-1}, t_k]$ is decomposed as
 
 $$
-\mathcal{F}(g_2) = \tfrac{1}{2}\sigma^2 s^2 \frac{\partial^2 g_2}{\partial s^2}
-  + r\,s \frac{\partial g_2}{\partial s} - r\,g_2
+U_B(s, t) = v(s, t) + \tilde{u}_\theta(s, t)
 $$
 
-If $g_2$ is only $C^0$ (piecewise linear), then $\frac{\partial^2 g_2}{\partial s^2} = 0$
-almost everywhere, and the **diffusion term** $\tfrac{1}{2}\sigma^2 s^2 g_2''$ is entirely
-lost. This means the volatility of the underlying does not propagate through the boundary
-condition — a structural defect.
+where $v(s, t)$ is a **fictitious European put** designed to perfectly absorb the $C^0$ kink:
 
-**Solution: natural cubic spline ($C^2$).** A cubic spline $S(x)$ is piecewise cubic on each
-sub-interval, with $S, S', S'' \in C^0$. The second derivative $S''(x)$ is piecewise-linear
-(not identically zero), so the full BSM operator applies correctly.
+$$
+v(s, t) = c \cdot P^{\text{BS}}(s,\; s^*,\; r,\; \sigma,\; t_k - t)
+$$
 
-The spline coefficients are computed once from the tabulated nodes via the Thomas algorithm
-(tridiagonal solve), and evaluation uses polynomial torch ops so that `torch.autograd.grad`
-can compute $S'$ and $S''$.
+with:
 
-Code: `learning_option_pricing/pricing/interpolation.py` — `CubicSplineInterpolator` (default),
-`PiecewiseLinearInterpolator` (for benchmarking).
+- **Fictitious strike** $= s^*$ (the exercise boundary, not the contract strike $K$).
+- **Fictitious maturity** $= t_k$ (the exercise date).
+- **Scaling constant** $c = \delta_A + 1$ (cancels the derivative jump).
 
-CLI flag: `--interp cubic` (default) or `--interp linear`.
+**Why this works:** At $t = t_k$, the fictitious put reduces to $v(s, t_k) = c \cdot (s^* - s)^+$, whose derivative jump at $s^*$ is exactly $c$. Since we set $c$ equal to the derivative jump of $V_{\text{target}}$, the residual
 
-See also: `BermudaETCNN` stub in `learning_option_pricing/models/etcnn.py`.
+$$
+\tilde{u}_\theta(s, t_k) = V_{\text{target}}(s, t_k) - v(s, t_k)
+$$
+
+is **strictly $C^1$** at $s^*$. The Dirac delta in the second derivative is removed entirely.
+
+**PDE structure.** Because the BSM operator $\mathcal{L}$ is linear and $v$ is an exact Black-Scholes solution ($\mathcal{L}v = 0$), we have
+
+$$
+\mathcal{L}(U_B) = \mathcal{L}(v) + \mathcal{L}(\tilde{u}_\theta) = 0 + \mathcal{L}(\tilde{u}_\theta) = \mathcal{L}(\tilde{u}_\theta)
+$$
+
+The network only needs to minimise $\mathcal{L}(\tilde{u}_\theta) = 0$, and the training loop requires no special handling — the PDE residual on the full output $U_B$ equals the ETCNN residual.
+
+**Computing $c$ analytically.** The scaling constant is determined by the hold-value delta at the exercise boundary:
+
+$$
+c = \frac{\partial U_A}{\partial s}\bigg|_{s = s^*} + 1
+$$
+
+where $\partial U_A/\partial s$ is computed via `torch.autograd.grad` on the trained Stage A network. For a well-trained put, $-1 < \delta_A < 0$, so $0 < c < 1$.
+
+**Residual interpolation.** The $C^1$ residual $V_{\text{target}} - v|_{t_k}$ is interpolated using **PCHIP** ($C^1$, shape-preserving), which exactly matches the regularity of the residual (no attempt to enforce spurious $C^2$ smoothness at the remaining curvature jump).
+
+**Backward-compatible opt-in.** The singularity extraction ansatz is activated by the `--extraction` flag in `experiments/python_scripts/exp1/phase3_training.py`. When the flag is *not* set (default), Stage B falls back to the classical approach of directly interpolating $V_{\text{target}}(s, t_k)$ without extraction, and the interpolator is controlled by `--interp` (`cubic`, `pchip`, or `linear`).
+
+Code:
+- `learning_option_pricing/pricing/singularity.py` — `find_exercise_boundary`, `compute_scaling_constant`, `FictitiousEuropeanPut`, `build_singularity_extraction`
+- `learning_option_pricing/models/etcnn.py` — `BermudaETCNN`
+- `learning_option_pricing/pricing/interpolation.py` — `PchipInterpolator` (for the $C^1$ residual)
+
+#### 2.2.1 Interpolation utilities (reference)
+
+The interpolation module provides three interpolators for general use, though the singularity extraction ansatz now uses PCHIP exclusively for the extracted residual:
+
+| Interpolator | Regularity | Scope | Shape-preserving | Use case |
+|-------------|-----------|-------|-----------------|----------|
+| `CubicSplineInterpolator` | $C^2$ | Global | No | Smooth data without kinks |
+| `PchipInterpolator` | $C^1$ | Local | Yes | Extracted residual, data with kinks |
+| `PiecewiseLinearInterpolator` | $C^0$ | Local | Yes | Benchmarking only (drops diffusion) |
+
+Code: `learning_option_pricing/pricing/interpolation.py`.
+
+#### 2.2.2 CLI flags for `phase3_training.py`
+
+The Phase 3 experiment exposes the design choices of §2.1–§2.2 as command-line flags so that different configurations can be benchmarked without touching the code:
+
+| Flag | Default | Scope | Effect |
+|------|---------|-------|--------|
+| `--g2 {taylor,bs}` | `taylor` | Stage A + European | Sets $g_2$ in `AmericanPutETCNN`: `taylor` uses $V_1^e + V_2^e$ (§2.1); `bs` uses the exact BS European put price. |
+| `--extraction` | *off* | Stage B+ | If set, decomposes $U_B = v + \tilde{u}_\theta$ via the singularity extraction ansatz (§2.2). If unset, Stage B directly interpolates $V_{\text{target}}(s, t_1)$ (legacy path). |
+| `--interp {cubic,pchip,linear}` | `cubic` | Stage B+ (only when `--extraction` is NOT set) | Interpolator used for $V_{\text{target}}(s, t_1)$ in the legacy path. Ignored under `--extraction` (which always uses PCHIP on the $C^1$ residual). |
+
+The output directory is tagged with the active mode and `g2` variant, e.g. `20260410_120000_iters50000_K100_extraction_g2-taylor` or `20260410_120000_iters50000_K100_interp-cubic_g2-bs`, so that benchmarks over the combinatorial grid do not collide.
 
 ---
 
@@ -241,7 +293,11 @@ Where:
 | $V_2^e$ | first-order Taylor term (√τ singularity) | `terminal.european_put_ve2` |
 | $g_1(s,t)$ | terminal vanishing factor | `terminal.g1_linear` |
 | $g_2(s,t)$ | exact terminal function (American) | `terminal.g2_american_put` |
-| $g_2(s,t)$ | interpolated terminal (Bermudan) | `interpolation.CubicSplineInterpolator` |
+| $g_2(s,t)$ | interpolated residual (Bermudan) | `interpolation.PchipInterpolator` (of $V_{\text{target}} - v$) |
+| $v(s,t)$ | fictitious European put | `singularity.FictitiousEuropeanPut` |
+| $s^*$ | exercise boundary | `singularity.find_exercise_boundary` |
+| $c$ | scaling constant $\delta_A + 1$ | `singularity.compute_scaling_constant` |
+| $U_B(s,t)$ | Bermudan solution $v + \tilde{u}_\theta$ | `etcnn.BermudaETCNN.forward` |
 | $\mathcal{L}_{bs}$ | BSM penalty loss | `loss.loss_bs` |
 | $\mathcal{L}_{tv}$ | time-value penalty loss | `loss.loss_tv` |
 | $\mathcal{L}_{eq}$ | complementarity loss | `loss.loss_eq` |
