@@ -31,6 +31,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from learning_option_pricing.models.etcnn import (
+    BermudaETCNN,
     ETCNN,
     AmericanPutETCNN,
     InputNormalization,
@@ -39,7 +40,11 @@ from learning_option_pricing.models.etcnn import (
 from learning_option_pricing.models.resnet import ResNet
 from learning_option_pricing.pricing.interpolation import (
     CubicSplineInterpolator,
+    PchipInterpolator,
     PiecewiseLinearInterpolator,
+)
+from learning_option_pricing.pricing.singularity import (
+    build_singularity_extraction,
 )
 from learning_option_pricing.pricing.terminal import (
     black_scholes_put,
@@ -323,15 +328,28 @@ def plot_training_metrics(hist: dict, label: str, out_dir: Path):
 # ===================================================================
 #  EUROPEAN PROBLEM
 # ===================================================================
-def european_problem(out_dir: Path, total_iters: int, weight_decay: float = 0.0):
-    """Train ETCNN and PINN on the European put, produce plots E1–E5."""
+def european_problem(
+    out_dir: Path,
+    total_iters: int,
+    weight_decay: float = 0.0,
+    g2_type: str = "taylor",
+):
+    """Train ETCNN and PINN on the European put, produce plots E1–E5.
+
+    Args:
+        out_dir: Output directory for plots.
+        total_iters: Number of training iterations.
+        weight_decay: L2 regularization penalty for Adam.
+        g2_type: Terminal function type for ETCNN — ``"taylor"`` or ``"bs"``.
+    """
     logger.info("=" * 70)
     logger.info("EUROPEAN PUT PROBLEM")
     logger.info("=" * 70)
+    logger.info(f"  ETCNN g2 type: {g2_type}")
 
     # --- Build models ---
     torch.manual_seed(SEED)
-    etcnn = AmericanPutETCNN(K=K, r=r, sigma=sigma, T=T, normalize_input=True)
+    etcnn = AmericanPutETCNN(K=K, r=r, sigma=sigma, T=T, normalize_input=True, g2_type=g2_type)
 
     torch.manual_seed(SEED)
     pinn = PINN(
@@ -672,17 +690,30 @@ def _plot_interp_diagnostic(
 # ===================================================================
 #  BERMUDAN PROBLEM (two-stage backward solving)
 # ===================================================================
-def bermudan_problem(out_dir: Path, total_iters: list[int], interp_method: str = "cubic", weight_decay: float = 0.0, load_etcnn_a: Path | None = None):
+def bermudan_problem(
+    out_dir: Path,
+    total_iters: list[int],
+    interp_method: str = "cubic",
+    extraction: bool = False,
+    weight_decay: float = 0.0,
+    load_etcnn_a: Path | None = None,
+    g2_type: str = "taylor",
+):
     """Two-stage Bermudan put with exercise date t1=0.5.
 
     Args:
         out_dir: Output directory for plots and logs.
         total_iters: List of training iterations per stage [Stage A, Stage B].
-        interp_method: Interpolation for V(s, t1).
-            ``"cubic"`` (default) uses a C² natural cubic spline;
-            ``"linear"`` uses the original C⁰ piecewise-linear interpolant.
+        interp_method: Interpolation for V(s, t1) when *extraction* is False.
+            ``"cubic"`` (default) uses a C^2 natural cubic spline;
+            ``"pchip"`` uses a C^1 PCHIP interpolant;
+            ``"linear"`` uses the original C^0 piecewise-linear interpolant.
+        extraction: If True, use the singularity extraction ansatz to
+            decompose U_B = v + u_tilde, removing the C^0 kink at s*.
+            Default False (standard interpolation approach).
         weight_decay: L2 regularization penalty for Adam.
         load_etcnn_a: Path to pre-trained ETCNN_A model to skip Stage A training.
+        g2_type: Terminal function type for Stage A — ``"taylor"`` or ``"bs"``.
     """
     logger.info("")
     logger.info("=" * 70)
@@ -698,8 +729,9 @@ def bermudan_problem(out_dir: Path, total_iters: list[int], interp_method: str =
     # Stage A — train ETCNN on [t1, T]
     # ---------------------------------------------------------------
     torch.manual_seed(SEED)
-    etcnn_a = AmericanPutETCNN(K=K, r=r, sigma=sigma, T=T, normalize_input=True)
+    etcnn_a = AmericanPutETCNN(K=K, r=r, sigma=sigma, T=T, normalize_input=True, g2_type=g2_type)
     etcnn_a.to(DEVICE)
+    logger.info(f"  Stage A g2 type: {g2_type}")
 
     if load_etcnn_a is not None and load_etcnn_a.exists():
         logger.info(f"Stage A: Loading pre-trained ETCNN_A from {load_etcnn_a} ...")
@@ -729,7 +761,6 @@ def bermudan_problem(out_dir: Path, total_iters: list[int], interp_method: str =
 
     # Find exercise boundary s*: where Phi(s) = hold(s)
     diff_ex = exercise_val - hold_val
-    # s* is approximately where diff_ex changes sign (from positive to negative)
     sign_changes = torch.where(diff_ex[:-1] * diff_ex[1:] < 0)[0]
     if len(sign_changes) > 0:
         idx = sign_changes[0].item()
@@ -738,25 +769,49 @@ def bermudan_problem(out_dir: Path, total_iters: list[int], interp_method: str =
         s_star = float("nan")
     logger.info(f"  Exercise boundary at t1: s* ≈ {s_star:.2f}")
 
-    # Build differentiable interpolation of V(s, t1).
-    # bsm_operator computes d²g2/ds² via autograd, so the interpolant must be
-    # at least C² for the diffusion term σ²s²/2 · ∂²g2/∂s² to survive.
-    # A C⁰ piecewise-linear interpolant has zero second derivative a.e.,
-    # silently dropping the volatility contribution from g2.
     s_nodes_cpu = s_dense.detach().cpu()
     v_nodes_cpu = v_t1_vals.detach().cpu()
 
+    # Build interpolants of V_target (for diagnostics and non-extraction path)
     interp_cubic = CubicSplineInterpolator(s_nodes_cpu, v_nodes_cpu)
     interp_linear = PiecewiseLinearInterpolator(s_nodes_cpu, v_nodes_cpu)
+    interp_pchip = PchipInterpolator(s_nodes_cpu, v_nodes_cpu)
 
-    if interp_method == "cubic":
-        v_interp_t1 = interp_cubic
-        logger.info("  Using C² cubic spline interpolation for V(s, t1)")
-    elif interp_method == "linear":
-        v_interp_t1 = interp_linear
-        logger.info("  Using C⁰ piecewise-linear interpolation for V(s, t1)")
+    c_scale = float("nan")  # only set when extraction=True
+
+    if extraction:
+        # -----------------------------------------------------------
+        # Singularity extraction ansatz
+        # -----------------------------------------------------------
+        logger.info("  Mode: singularity extraction ansatz")
+        s_star_ext, c_scale, fict_put, s_nodes_ext, v_target_ext, residual_cpu = \
+            build_singularity_extraction(
+                etcnn_a, K, r, sigma, t1,
+                s_lo=S_TRAIN_LO - 10, s_hi=S_TRAIN_HI + 10,
+                device=DEVICE, n_grid=2000,
+            )
+        s_star = s_star_ext  # refined via bisection
+
+        # PCHIP for V_target (TC loss) and C^1 residual (g2)
+        interp_vtarget = PchipInterpolator(s_nodes_ext, v_target_ext)
+        residual_interp = PchipInterpolator(s_nodes_ext, residual_cpu)
+        logger.info("  Using C^1 PCHIP interpolation for the extracted residual g2")
     else:
-        raise ValueError(f"Unknown interp_method: {interp_method!r}")
+        # -----------------------------------------------------------
+        # Classic interpolation of V_target (no extraction)
+        # -----------------------------------------------------------
+        logger.info(f"  Mode: direct interpolation ({interp_method})")
+        if interp_method == "cubic":
+            v_interp_t1 = interp_cubic
+            logger.info("  Using C^2 cubic spline interpolation for V(s, t1)")
+        elif interp_method == "pchip":
+            v_interp_t1 = interp_pchip
+            logger.info("  Using C^1 PCHIP (shape-preserving) interpolation for V(s, t1)")
+        elif interp_method == "linear":
+            v_interp_t1 = interp_linear
+            logger.info("  Using C^0 piecewise-linear interpolation for V(s, t1)")
+        else:
+            raise ValueError(f"Unknown interp_method: {interp_method!r}")
 
     # === Plot B1b — Interpolation diagnostic: derivatives of g2 ===
     _plot_interp_diagnostic(
@@ -789,120 +844,181 @@ def bermudan_problem(out_dir: Path, total_iters: list[int], interp_method: str =
     plt.close(fig)
     logger.info("[OK] Plot B1 — Intermediate terminal condition")
 
-    # === Plot B1c — Interpolated function at t1 ===
-    s_plot_1d = torch.linspace(60.0, 140.0, 500)
-    with torch.no_grad():
-        v_interp_plot = v_interp_t1(s_plot_1d)
-    
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(to_np(s_plot_1d), to_np(v_interp_plot), label="Interpolated $V(s, t_1)$", color="blue", linewidth=2)
-    ax.plot(to_np(s_plot_1d), to_np(payoff_put(s_plot_1d, K)), label="Payoff $\Phi(s)$", color="red", linestyle="--")
-    ax.axvline(x=K, color="grey", linestyle=":", label="Strike K")
-    if not np.isnan(s_star):
+    # === Plot B1c / B1d — mode-specific diagnostics ===
+    if extraction:
+        # B1c — Extracted residual g2 at t1
+        s_plot_1d = torch.linspace(60.0, 140.0, 500)
+        with torch.no_grad():
+            g2_residual_plot = residual_interp(s_plot_1d)
+            v_fict_plot = fict_put.at_maturity(s_plot_1d)
+            vtarget_plot = interp_vtarget(s_plot_1d)
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(to_np(s_plot_1d), to_np(vtarget_plot),
+                label=r"$V_{\mathrm{target}}(s, t_1)$", color="black", linewidth=2.5, linestyle="-.")
+        ax.plot(to_np(s_plot_1d), to_np(v_fict_plot),
+                label=f"$v(s, t_1) = {c_scale:.3f} \\cdot (s^* - s)^+$", color="green", linewidth=2, linestyle="--")
+        ax.plot(to_np(s_plot_1d), to_np(g2_residual_plot),
+                label=r"Residual $g_2(s) = V_{\mathrm{target}} - v$", color="blue", linewidth=2)
         ax.axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"$s^* \\approx {s_star:.1f}$")
-    ax.set_title(f"Interpolated Function at $t_1 = {t1}$")
-    ax.set_xlabel("Asset Price $s$")
-    ax.set_ylabel("Option Value")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(out_dir / "pricing" / "plotB1c_interpolated_t1.png", dpi=150)
-    plt.close(fig)
-    logger.info("[OK] Plot B1c — Interpolated function at t1")
+        ax.set_title(f"Singularity extraction at $t_1 = {t1}$: $c = {c_scale:.4f}$")
+        ax.set_xlabel("Asset Price $s$")
+        ax.set_ylabel("Value")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(out_dir / "pricing" / "plotB1c_extraction.png", dpi=150)
+        plt.close(fig)
+        logger.info("[OK] Plot B1c — Singularity extraction at t1")
 
-    # === Plot B1d — Spline Curvature (Gamma) Explosion ===
-    # Test 1: Direct Empirical Evaluation of the Spline Curvature
-    # Check if the cubic spline introduces a non-physical oscillation (Gamma explosion)
-    # around the exercise boundary before the network even sees it.
-    if not np.isnan(s_star):
-        s_fine = torch.linspace(s_star - 1.0, 82.0, 1000)
+        # B1d — Curvature comparison: V_target vs residual
         s_wide = torch.linspace(s_star - 20.0, s_star + 20.0, 2000)
+        s_fine = torch.linspace(s_star - 3.0, s_star + 3.0, 1000)
+        h_fd = 1e-3
+
+        def raw_target(s_tensor):
+            t_tensor = torch.full_like(s_tensor, t1).to(DEVICE)
+            x_tensor = torch.stack([s_tensor.to(DEVICE), t_tensor], dim=1)
+            hold = etcnn_a(x_tensor).cpu().squeeze()
+            phi = payoff_put(s_tensor, K)
+            return torch.maximum(phi, hold)
+
+        with torch.no_grad():
+            gamma_raw_wide = (raw_target(s_wide + h_fd) - 2 * raw_target(s_wide) + raw_target(s_wide - h_fd)) / h_fd**2
+            gamma_raw_fine = (raw_target(s_fine + h_fd) - 2 * raw_target(s_fine) + raw_target(s_fine - h_fd)) / h_fd**2
+            gamma_res_wide = (residual_interp(s_wide + h_fd) - 2 * residual_interp(s_wide) + residual_interp(s_wide - h_fd)) / h_fd**2
+            gamma_res_fine = (residual_interp(s_fine + h_fd) - 2 * residual_interp(s_fine) + residual_interp(s_fine - h_fd)) / h_fd**2
+            deriv_raw_fine = (raw_target(s_fine + h_fd) - raw_target(s_fine - h_fd)) / (2 * h_fd)
+            deriv_res_fine = (residual_interp(s_fine + h_fd) - residual_interp(s_fine - h_fd)) / (2 * h_fd)
+
+        fig, axes = plt.subplots(3, 1, figsize=(10, 14))
+        axes[0].plot(to_np(s_fine), to_np(deriv_raw_fine),
+                     label=r"$\partial V_{\mathrm{target}} / \partial s$ (has jump)", color="red", linewidth=2)
+        axes[0].plot(to_np(s_fine), to_np(deriv_res_fine),
+                     label=r"$\partial g_2 / \partial s$ ($C^1$ smooth)", color="blue", linewidth=2, linestyle="--")
+        axes[0].axvline(s_star, color="grey", linestyle=":", alpha=0.5)
+        axes[0].set_title(r"First derivative: jump in $\partial V_{\mathrm{target}}/\partial s$ removed by extraction")
+        axes[0].set_xlabel("$s$"); axes[0].set_ylabel("$\\partial / \\partial s$")
+        axes[0].legend(); axes[0].grid(True, alpha=0.3)
+
+        axes[1].plot(to_np(s_wide), to_np(gamma_raw_wide),
+                     label=r"$\partial^2 V_{\mathrm{target}} / \partial s^2$ (Dirac spike)", color="red", linewidth=2)
+        axes[1].plot(to_np(s_wide), to_np(gamma_res_wide),
+                     label=r"$\partial^2 g_2 / \partial s^2$ (finite)", color="blue", linewidth=2, linestyle="--")
+        axes[1].axvline(s_star, color="grey", linestyle=":", alpha=0.5)
+        axes[1].set_title(r"Second derivative: Dirac $\delta$ singularity removed")
+        axes[1].set_xlabel("$s$"); axes[1].set_ylabel("$\\partial^2 / \\partial s^2$")
+        axes[1].set_ylim(-20, 20); axes[1].legend(); axes[1].grid(True, alpha=0.3)
+
+        axes[2].plot(to_np(s_fine), to_np(gamma_raw_fine),
+                     label=r"$\partial^2 V_{\mathrm{target}} / \partial s^2$", color="red", linewidth=2)
+        axes[2].plot(to_np(s_fine), to_np(gamma_res_fine),
+                     label=r"$\partial^2 g_2 / \partial s^2$", color="blue", linewidth=2, linestyle="--")
+        axes[2].axvline(s_star, color="grey", linestyle=":", alpha=0.5)
+        axes[2].set_title(r"Curvature near $s^*$ (zoomed)")
+        axes[2].set_xlabel("$s$"); axes[2].set_ylabel("$\\partial^2 / \\partial s^2$")
+        axes[2].legend(); axes[2].grid(True, alpha=0.3)
+
+        fig.suptitle(
+            f"Singularity extraction diagnostic: $c = {c_scale:.4f}$, $s^* = {s_star:.2f}$\n"
+            f"(Bermudan Put, K={K}, r={r}, $\\sigma$={sigma})", fontsize=13,
+        )
+        fig.tight_layout()
+        fig.savefig(out_dir / "diagnostics" / "plotB1d_extraction_curvature.png", dpi=150)
+        plt.close(fig)
+        logger.info("[OK] Plot B1d — Singularity extraction curvature diagnostic")
     else:
-        s_fine = torch.linspace(75.0, 85.0, 1000)
-        s_wide = torch.linspace(60.0, 100.0, 2000)
-    
-    h = 1e-3
-    
-    def raw_target(s_tensor):
-        t_tensor = torch.full_like(s_tensor, t1).to(DEVICE)
-        x_tensor = torch.stack([s_tensor.to(DEVICE), t_tensor], dim=1)
-        hold = etcnn_a(x_tensor).cpu().squeeze()
-        phi = payoff_put(s_tensor, K)
-        return torch.maximum(phi, hold)
+        # B1c — Interpolated function at t1
+        s_plot_1d = torch.linspace(60.0, 140.0, 500)
+        with torch.no_grad():
+            v_interp_plot = v_interp_t1(s_plot_1d)
 
-    with torch.no_grad():
-        # Fine grid
-        v_plus = v_interp_t1(s_fine + h)
-        v_center = v_interp_t1(s_fine)
-        v_minus = v_interp_t1(s_fine - h)
-        gamma_spline = (v_plus - 2 * v_center + v_minus) / (h ** 2)
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(to_np(s_plot_1d), to_np(v_interp_plot), label="Interpolated $V(s, t_1)$", color="blue", linewidth=2)
+        ax.plot(to_np(s_plot_1d), to_np(payoff_put(s_plot_1d, K)), label="Payoff $\\Phi(s)$", color="red", linestyle="--")
+        ax.axvline(x=K, color="grey", linestyle=":", label="Strike K")
+        if not np.isnan(s_star):
+            ax.axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"$s^* \\approx {s_star:.1f}$")
+        ax.set_title(f"Interpolated Function at $t_1 = {t1}$")
+        ax.set_xlabel("Asset Price $s$"); ax.set_ylabel("Option Value")
+        ax.legend(); ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(out_dir / "pricing" / "plotB1c_interpolated_t1.png", dpi=150)
+        plt.close(fig)
+        logger.info("[OK] Plot B1c — Interpolated function at t1")
 
-        v_raw_plus = raw_target(s_fine + h)
-        v_raw_center = raw_target(s_fine)
-        v_raw_minus = raw_target(s_fine - h)
-        gamma_raw = (v_raw_plus - 2 * v_raw_center + v_raw_minus) / (h ** 2)
+        # B1d — Interpolant Curvature (Gamma)
+        if not np.isnan(s_star):
+            s_fine = torch.linspace(s_star - 1.0, 82.0, 1000)
+            s_wide = torch.linspace(s_star - 20.0, s_star + 20.0, 2000)
+        else:
+            s_fine = torch.linspace(75.0, 85.0, 1000)
+            s_wide = torch.linspace(60.0, 100.0, 2000)
 
-        # Wide grid
-        v_wide_plus = v_interp_t1(s_wide + h)
-        v_wide_center = v_interp_t1(s_wide)
-        v_wide_minus = v_interp_t1(s_wide - h)
-        gamma_spline_wide = (v_wide_plus - 2 * v_wide_center + v_wide_minus) / (h ** 2)
+        h_fd = 1e-3
 
-        v_raw_wide_plus = raw_target(s_wide + h)
-        v_raw_wide_center = raw_target(s_wide)
-        v_raw_wide_minus = raw_target(s_wide - h)
-        gamma_raw_wide = (v_raw_wide_plus - 2 * v_raw_wide_center + v_raw_wide_minus) / (h ** 2)
+        def raw_target(s_tensor):
+            t_tensor = torch.full_like(s_tensor, t1).to(DEVICE)
+            x_tensor = torch.stack([s_tensor.to(DEVICE), t_tensor], dim=1)
+            hold = etcnn_a(x_tensor).cpu().squeeze()
+            phi = payoff_put(s_tensor, K)
+            return torch.maximum(phi, hold)
 
-    fig, axes = plt.subplots(3, 1, figsize=(9, 12))
-    
-    # Top plot: Curvature (Wide view)
-    axes[0].plot(to_np(s_wide), to_np(gamma_spline_wide), label="Curvature of $\\mathcal{I}(s)$ (Spline)", color="purple", linewidth=2)
-    axes[0].plot(to_np(s_wide), to_np(gamma_raw_wide), label="Curvature of Raw Target $\\max(\\Phi, \\tilde{u}_{NN}^{(A)})$", color="green", linewidth=2, linestyle="--")
-    if not np.isnan(s_star):
-        axes[0].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
-    axes[0].set_title(f"Test 1: Spline Curvature around $s^*$ (Zoomed Out)\n$\\mathcal{{I}}(s)$ is the interpolated intermediate condition $V(s, t_1)$")
-    axes[0].set_xlabel("Asset Price $s$")
-    axes[0].set_ylabel("$[V(s+h) - 2V(s) + V(s-h)] / h^2$")
-    axes[0].set_ylim(-20, 20) # Constrain y-axis to see the noise better
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
+        with torch.no_grad():
+            v_plus = v_interp_t1(s_fine + h_fd)
+            v_center = v_interp_t1(s_fine)
+            v_minus = v_interp_t1(s_fine - h_fd)
+            gamma_spline = (v_plus - 2 * v_center + v_minus) / (h_fd ** 2)
+            v_raw_plus = raw_target(s_fine + h_fd)
+            v_raw_center = raw_target(s_fine)
+            v_raw_minus = raw_target(s_fine - h_fd)
+            gamma_raw = (v_raw_plus - 2 * v_raw_center + v_raw_minus) / (h_fd ** 2)
+            v_wide_plus = v_interp_t1(s_wide + h_fd)
+            v_wide_center = v_interp_t1(s_wide)
+            v_wide_minus = v_interp_t1(s_wide - h_fd)
+            gamma_spline_wide = (v_wide_plus - 2 * v_wide_center + v_wide_minus) / (h_fd ** 2)
+            v_raw_wide_plus = raw_target(s_wide + h_fd)
+            v_raw_wide_center = raw_target(s_wide)
+            v_raw_wide_minus = raw_target(s_wide - h_fd)
+            gamma_raw_wide = (v_raw_wide_plus - 2 * v_raw_wide_center + v_raw_wide_minus) / (h_fd ** 2)
 
-    # Middle plot: Curvature (Zoomed in)
-    axes[1].plot(to_np(s_fine), to_np(gamma_spline), label="Curvature of $\\mathcal{I}(s)$ (Spline)", color="purple", linewidth=2)
-    axes[1].plot(to_np(s_fine), to_np(gamma_raw), label="Curvature of Raw Target $\\max(\\Phi, \\tilde{u}_{NN}^{(A)})$", color="green", linewidth=2, linestyle="--")
-    if not np.isnan(s_star):
-        axes[1].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
-    axes[1].set_title(f"Test 1: Spline Curvature around $s^*$ (Zoomed In)")
-    axes[1].set_xlabel("Asset Price $s$")
-    axes[1].set_ylabel("$[V(s+h) - 2V(s) + V(s-h)] / h^2$")
-    axes[1].set_ylim(-20, 20) # Constrain y-axis to see the noise better
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
+        interp_name = "PCHIP" if interp_method == "pchip" else ("Spline" if interp_method == "cubic" else "Linear")
+        fig, axes = plt.subplots(3, 1, figsize=(9, 12))
+        axes[0].plot(to_np(s_wide), to_np(gamma_spline_wide), label=f"Curvature of $\\mathcal{{I}}(s)$ ({interp_name})", color="purple", linewidth=2)
+        axes[0].plot(to_np(s_wide), to_np(gamma_raw_wide), label="Curvature of Raw Target $\\max(\\Phi, \\tilde{u}_{NN}^{(A)})$", color="green", linewidth=2, linestyle="--")
+        if not np.isnan(s_star):
+            axes[0].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
+        axes[0].set_title(f"Test 1: {interp_name} Curvature around $s^*$ (Zoomed Out)")
+        axes[0].set_xlabel("Asset Price $s$"); axes[0].set_ylabel("$[V(s+h) - 2V(s) + V(s-h)] / h^2$")
+        axes[0].set_ylim(-20, 20); axes[0].legend(); axes[0].grid(True, alpha=0.3)
 
-    # Bottom plot: Function values (Zoomed in)
-    axes[2].plot(to_np(s_fine), to_np(v_center), label="$\\mathcal{I}(s)$ (Spline)", color="blue", linewidth=2)
-    axes[2].plot(to_np(s_fine), to_np(v_raw_center), label="Raw Target $\\max(\\Phi, \\tilde{u}_{NN}^{(A)})$", color="orange", linewidth=2, linestyle="--")
-    if not np.isnan(s_star):
-        axes[2].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
-    axes[2].set_title(f"Test 1: Function values around $s^*$ (Zoomed In)")
-    axes[2].set_xlabel("Asset Price $s$")
-    axes[2].set_ylabel("Option Value")
-    axes[2].legend()
-    axes[2].grid(True, alpha=0.3)
+        axes[1].plot(to_np(s_fine), to_np(gamma_spline), label=f"Curvature of $\\mathcal{{I}}(s)$ ({interp_name})", color="purple", linewidth=2)
+        axes[1].plot(to_np(s_fine), to_np(gamma_raw), label="Curvature of Raw Target $\\max(\\Phi, \\tilde{u}_{NN}^{(A)})$", color="green", linewidth=2, linestyle="--")
+        if not np.isnan(s_star):
+            axes[1].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
+        axes[1].set_title(f"Test 1: {interp_name} Curvature around $s^*$ (Zoomed In)")
+        axes[1].set_xlabel("Asset Price $s$"); axes[1].set_ylabel("$[V(s+h) - 2V(s) + V(s-h)] / h^2$")
+        axes[1].set_ylim(-20, 20); axes[1].legend(); axes[1].grid(True, alpha=0.3)
 
-    fig.tight_layout()
-    fig.savefig(out_dir / "diagnostics" / "plotB1d_spline_gamma_explosion.png", dpi=150)
-    plt.close(fig)
-    logger.info("[OK] Plot B1d — Spline Curvature Explosion")
+        axes[2].plot(to_np(s_fine), to_np(v_center), label=f"$\\mathcal{{I}}(s)$ ({interp_name})", color="blue", linewidth=2)
+        axes[2].plot(to_np(s_fine), to_np(v_raw_center), label="Raw Target $\\max(\\Phi, \\tilde{u}_{NN}^{(A)})$", color="orange", linewidth=2, linestyle="--")
+        if not np.isnan(s_star):
+            axes[2].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
+        axes[2].set_title(f"Test 1: Function values around $s^*$ (Zoomed In)")
+        axes[2].set_xlabel("Asset Price $s$"); axes[2].set_ylabel("Option Value")
+        axes[2].legend(); axes[2].grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(out_dir / "diagnostics" / "plotB1d_interpolant_gamma.png", dpi=150)
+        plt.close(fig)
+        logger.info(f"[OK] Plot B1d — {interp_name} Curvature")
 
-    # === Plot B2 — Exercise boundary (same as B1 with annotation) ===
+    # === Plot B2 — Exercise boundary ===
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(to_np(s_plot), to_np(hold_plot), label=r"Hold: $\tilde{u}_{NN}^{(A)}(s, t_1)$", linewidth=2)
     ax.plot(to_np(s_plot), to_np(phi_plot), label=r"Exercise: $\Phi(s)$", linewidth=2, linestyle="--")
     if not np.isnan(s_star):
         ax.axvline(s_star, color="red", linewidth=2, linestyle="--",
                    label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
-        # Mark the intersection point
         s_star_t = torch.tensor([s_star])
         v_at_star = float(payoff_put(s_star_t, K))
         ax.plot(s_star, v_at_star, "ro", markersize=10, zorder=5)
@@ -918,48 +1034,6 @@ def bermudan_problem(out_dir: Path, total_iters: list[int], interp_method: str =
     fig.savefig(out_dir / "pricing" / "plotB2_exercise_boundary.png", dpi=150)
     plt.close(fig)
     logger.info(f"[OK] Plot B2 — Exercise boundary: s* ≈ {s_star:.2f}")
-
-    fig, axes = plt.subplots(3, 1, figsize=(9, 12))
-    
-    # Top plot: Curvature (Wide view)
-    axes[0].plot(to_np(s_wide), to_np(gamma_spline_wide), label="Curvature of $\\mathcal{I}(s)$ (Spline)", color="purple", linewidth=2)
-    axes[0].plot(to_np(s_wide), to_np(gamma_raw_wide), label="Curvature of Raw Target $\\max(\\Phi, \\tilde{u}_{NN}^{(A)})$", color="green", linewidth=2, linestyle="--")
-    if not np.isnan(s_star):
-        axes[0].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
-    axes[0].set_title(f"Test 1: Spline Curvature around $s^*$ (Zoomed Out)\n$\\mathcal{{I}}(s)$ is the interpolated intermediate condition $V(s, t_1)$")
-    axes[0].set_xlabel("Asset Price $s$")
-    axes[0].set_ylabel("$[V(s+h) - 2V(s) + V(s-h)] / h^2$")
-    axes[0].set_ylim(-20, 20) # Constrain y-axis to see the noise better
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
-
-    # Middle plot: Curvature (Zoomed in)
-    axes[1].plot(to_np(s_fine), to_np(gamma_spline), label="Curvature of $\\mathcal{I}(s)$ (Spline)", color="purple", linewidth=2)
-    axes[1].plot(to_np(s_fine), to_np(gamma_raw), label="Curvature of Raw Target $\\max(\\Phi, \\tilde{u}_{NN}^{(A)})$", color="green", linewidth=2, linestyle="--")
-    if not np.isnan(s_star):
-        axes[1].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
-    axes[1].set_title(f"Test 1: Spline Curvature around $s^*$ (Zoomed In)")
-    axes[1].set_xlabel("Asset Price $s$")
-    axes[1].set_ylabel("$[V(s+h) - 2V(s) + V(s-h)] / h^2$")
-    axes[1].set_ylim(-20, 20) # Constrain y-axis to see the noise better
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
-
-    # Bottom plot: Function values (Zoomed in)
-    axes[2].plot(to_np(s_fine), to_np(v_center), label="$\\mathcal{I}(s)$ (Spline)", color="blue", linewidth=2)
-    axes[2].plot(to_np(s_fine), to_np(v_raw_center), label="Raw Target $\\max(\\Phi, \\tilde{u}_{NN}^{(A)})$", color="orange", linewidth=2, linestyle="--")
-    if not np.isnan(s_star):
-        axes[2].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
-    axes[2].set_title(f"Test 1: Function values around $s^*$ (Zoomed In)")
-    axes[2].set_xlabel("Asset Price $s$")
-    axes[2].set_ylabel("Option Value")
-    axes[2].legend()
-    axes[2].grid(True, alpha=0.3)
-
-    fig.tight_layout()
-    fig.savefig(out_dir / "diagnostics" / "plotB1d_spline_gamma_explosion.png", dpi=150)
-    plt.close(fig)
-    logger.info("[OK] Plot B1d — Spline Curvature Explosion")
 
     # === Plot B3 — Stage A loss curves ===
     if hist_a is not None:
@@ -979,31 +1053,38 @@ def bermudan_problem(out_dir: Path, total_iters: list[int], interp_method: str =
         logger.info("[SKIP] Plot B3 — Stage A loss curves (model loaded from disk)")
 
     # ---------------------------------------------------------------
-    # Stage C+D — build g2 from V(s, t1), train ETCNN_B on [0, t1]
+    # Stage C+D — train ETCNN_B on [0, t1]
     # ---------------------------------------------------------------
-    # Design note: g2(s, t) = V(s, t1) (constant in t).
-    # V(s, t1) is a continuation value, already smoother than a raw payoff —
-    # it has only one kink (at s*) vs the non-differentiable max(K-s,0).
-    # Unlike the American/European case we do NOT use a Taylor-expanded g2
-    # because V(s, t1) has no closed form; a sqrt(tau) correction is also
-    # unnecessary since V(s, t1) is far from singular as tau→0 on [0,t1].
-    # A C² cubic spline is used by default to preserve a non-trivial second
-    # derivative ∂²g2/∂s² so the diffusion term in bsm_operator is retained.
-
-    logger.info(f"Stage C+D: training ETCNN_B on [0, t1] for {iters_b} iterations ...")
 
     def g1_b(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         return t1 - t
 
-    def g2_b(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        return v_interp_t1(s)
-
     torch.manual_seed(SEED + 1)
     resnet_b = ResNet(d_in=2, d_out=1, n=n, M=M, L=L_BLOCK)
     normalizer_b = InputNormalization(K)
-    etcnn_b = ETCNN(resnet=resnet_b, g1=g1_b, g2=g2_b, normalizer=normalizer_b)
 
-    payoff_t1 = lambda s: v_interp_t1(s)
+    if extraction:
+        # Singularity extraction: U_B = v + ũ_θ
+        logger.info(f"Stage C+D: training BermudaETCNN on [0, t1] for {iters_b} iterations ...")
+        logger.info(f"  Ansatz: U_B(s,t) = v(s,t) + g1(s,t)·u_NN(s,t) + g2(s)")
+        logger.info(f"  v(s,t) = {c_scale:.4f} · P^BS(s, {s_star:.2f}, r, σ, t1-t)")
+
+        def g2_b(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+            return residual_interp(s)
+
+        etcnn_residual = ETCNN(resnet=resnet_b, g1=g1_b, g2=g2_b, normalizer=normalizer_b)
+        fict_put.to(DEVICE)
+        etcnn_b = BermudaETCNN(etcnn=etcnn_residual, fictitious_put=fict_put)
+        payoff_t1 = lambda s: interp_vtarget(s)
+    else:
+        # Classic: g2 = interpolated V_target
+        logger.info(f"Stage C+D: training ETCNN_B on [0, t1] for {iters_b} iterations ...")
+
+        def g2_b(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+            return v_interp_t1(s)
+
+        etcnn_b = ETCNN(resnet=resnet_b, g1=g1_b, g2=g2_b, normalizer=normalizer_b)
+        payoff_t1 = lambda s: v_interp_t1(s)
 
     hist_b = train_model(
         etcnn_b, iters_b, S_TRAIN_LO, S_TRAIN_HI, 0.0, t1,
@@ -1264,6 +1345,7 @@ def bermudan_problem(out_dir: Path, total_iters: list[int], interp_method: str =
     logger.info(f"  Relative L2 error vs BT:     {rel_l2_bt:.6e}")
     logger.info(f"  MAE vs BT:                   {mae_bt:.6e}")
     logger.info(f"  Exercise boundary s* at t1:  {s_star:.2f}")
+    logger.info(f"  Scaling constant c:          {c_scale:.6f}")
     logger.info(f"  Bermudan price at s=100:     {etcnn_b_at_K:.4f} (ETCNN_B)")
     logger.info(f"  Bermudan price at s=100:     {bermuda_at_K:.4f} (BT ref)")
     logger.info(f"  European price at s=100:     {euro_at_K:.4f}")
@@ -1279,6 +1361,7 @@ def bermudan_problem(out_dir: Path, total_iters: list[int], interp_method: str =
         "rel_l2_bt": rel_l2_bt,
         "mae_bt": mae_bt,
         "s_star": s_star,
+        "c_scale": c_scale,
         "bermuda_at_K": bermuda_at_K,
         "etcnn_b_at_K": etcnn_b_at_K,
         "euro_at_K": euro_at_K,
@@ -1294,8 +1377,19 @@ def main():
     parser.add_argument("--iters", nargs='+', type=int, default=[50_000], help="Training iterations (can provide multiple values for different stages, e.g., 20000 1000)")
     parser.add_argument("--log-every", type=int, default=1000, help="Log interval")
     parser.add_argument(
-        "--interp", type=str, default="cubic", choices=["cubic", "linear"],
-        help="Interpolation for Bermudan V(s,t1): 'cubic' (C², default) or 'linear' (C⁰)",
+        "--interp", type=str, default="cubic", choices=["cubic", "pchip", "linear"],
+        help="Interpolation for Bermudan V(s,t1) when --extraction is NOT set: "
+             "'cubic' (C^2, default), 'pchip' (C^1, shape-preserving), or 'linear' (C^0)",
+    )
+    parser.add_argument(
+        "--extraction", action="store_true",
+        help="Enable singularity extraction ansatz for Stage B (default: off). "
+             "Decomposes U_B = v + u_tilde, removing the C^0 kink at s*.",
+    )
+    parser.add_argument(
+        "--g2", type=str, default="taylor", choices=["taylor", "bs"],
+        help="Terminal function g2 for ETCNN: 'taylor' (V1^e + V2^e, default) "
+             "or 'bs' (exact Black-Scholes European put)",
     )
     parser.add_argument(
         "--device",
@@ -1307,13 +1401,25 @@ def main():
     parser.add_argument("--bermudan-only", action="store_true", help="Skip European problem and only run Bermudan")
     parser.add_argument("--weight-decay", type=float, default=0.0, help="L2 regularization penalty for Adam optimizer")
     parser.add_argument("--load-etcnn-a", type=str, default=None, help="Path to pre-trained etcnn_a.pt to skip Stage A training")
+    parser.add_argument("--n-tc", type=int, default=1024, help="Number of terminal condition points")
+    parser.add_argument("--n-f", type=int, default=4096, help="Number of interior PDE collocation points")
     args = parser.parse_args()
     _apply_device_arg(args.device)
+
+    # Update global hyperparameters if provided
+    global N_TC, N_F
+    if args.n_tc is not None:
+        N_TC = args.n_tc
+    if args.n_f is not None:
+        N_F = args.n_f
 
     # Output directory
     timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
     iters_str = "_".join(map(str, args.iters))
-    out_dir = Path("data/phase3_training") / f"{timestamp}_iters{iters_str}_K{K:.0f}_interp{args.interp}"
+    mode_tag = "extraction" if args.extraction else f"interp-{args.interp}"
+    out_dir = Path("data/phase3_training") / (
+        f"{timestamp}_iters{iters_str}_K{K:.0f}_{mode_tag}_g2-{args.g2}"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     
     # Create subdirectories for grouped plots
@@ -1345,7 +1451,9 @@ def main():
             "SEED": SEED,
             "iters": args.iters,
             "log_every": args.log_every,
+            "extraction": args.extraction,
             "interp_method": args.interp,
+            "g2_type": args.g2,
             "device": args.device,
         },
         "domain": {
@@ -1372,7 +1480,11 @@ def main():
     logger.info(f"  Output: {out_dir}")
     logger.info(f"  Command: {' '.join(sys.argv)}")
     logger.info(f"  Iters: {args.iters}")
-    logger.info(f"  Interpolation: {args.interp}")
+    if args.extraction:
+        logger.info(f"  Stage B method: singularity extraction ansatz (PCHIP residual)")
+    else:
+        logger.info(f"  Stage B method: {args.interp} interpolation of V(s, t1)")
+    logger.info(f"  g2 type (ETCNN terminal): {args.g2}")
     logger.info(f"  Device (requested): {args.device}")
     logger.info(f"  Parameters: K={K}, r={r}, sigma={sigma}, T={T}, q={q}, t1={t1}")
     logger.info(f"  Hyperparameters: M={M}, L_BLOCK={L_BLOCK}, n={n}, N_TC={N_TC}, N_F={N_F}, LAMBDA_F={LAMBDA_F}, LAMBDA_TC={LAMBDA_TC}, SEED={SEED}")
@@ -1383,16 +1495,23 @@ def main():
     load_path = Path(args.load_etcnn_a) if args.load_etcnn_a else None
     
     if not args.bermudan_only:
-        eur_results = european_problem(out_dir, args.iters[0], weight_decay=args.weight_decay)
+        eur_results = european_problem(
+            out_dir,
+            args.iters[0],
+            weight_decay=args.weight_decay,
+            g2_type=args.g2,
+        )
     else:
         eur_results = None
-        
+
     ber_results = bermudan_problem(
-        out_dir, 
-        args.iters, 
-        interp_method=args.interp, 
-        weight_decay=args.weight_decay, 
-        load_etcnn_a=load_path
+        out_dir,
+        args.iters,
+        interp_method=args.interp,
+        extraction=args.extraction,
+        weight_decay=args.weight_decay,
+        load_etcnn_a=load_path,
+        g2_type=args.g2,
     )
 
     # === Joint summary ===
