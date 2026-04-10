@@ -11,7 +11,7 @@ from learning_option_pricing.models.resnet import ResNet
 from learning_option_pricing.pricing.terminal import payoff_put, bsm_operator
 from learning_option_pricing.pricing.interpolation import CubicSplineInterpolator
 
-folder = Path("data/phase3_training/20260409_154609_iters20000_K100_interpcubic")
+folder = Path("data/phase3_training/20260409_201206_iters2000_K100_interppchip")
 model_a_path = folder / "etcnn_a.pt"
 model_b_path = folder / "etcnn_b.pt"
 

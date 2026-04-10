@@ -9,9 +9,9 @@ sys.path.append(".")
 from learning_option_pricing.models.etcnn import AmericanPutETCNN
 from learning_option_pricing.models.resnet import ResNet
 from learning_option_pricing.pricing.terminal import payoff_put
-from learning_option_pricing.pricing.interpolation import CubicSplineInterpolator
+from learning_option_pricing.pricing.interpolation import PchipInterpolator
 
-folder = Path("data/phase3_training/20260409_154609_iters20000_K100_interpcubic")
+folder = Path("data/phase3_training/20260409_201206_iters2000_K100_interppchip")
 model_path = folder / "etcnn_a.pt"
 
 K = 100.0
@@ -40,7 +40,7 @@ with torch.no_grad():
 s_grid_1d = s_grid.squeeze()
 v_t1_1d = v_t1.squeeze()
 
-interp = CubicSplineInterpolator(s_grid_1d, v_t1_1d)
+interp = PchipInterpolator(s_grid_1d, v_t1_1d)
 s_plot = torch.linspace(60, 140, 500)
 v_interp = interp(s_plot)
 

@@ -9,7 +9,7 @@ sys.path.append(".")
 from learning_option_pricing.models.etcnn import AmericanPutETCNN
 from learning_option_pricing.models.resnet import ResNet
 
-folder = Path("data/phase3_training/20260409_154609_iters20000_K100_interpcubic")
+folder = Path("data/phase3_training/20260409_201206_iters2000_K100_interppchip")
 model_path = folder / "etcnn_a.pt"
 
 K = 100.0
