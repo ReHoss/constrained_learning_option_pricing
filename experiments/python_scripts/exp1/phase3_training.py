@@ -447,29 +447,26 @@ def european_problem(
     plt.close(fig)
     logger.info("[OK] Plot E2 — Surface comparison")
 
-    # === Plot E3 — Pointwise error (ETCNN) ===
-    fig, ax = plt.subplots(figsize=(8, 5))
-    im = ax.pcolormesh(to_np(t_vals), to_np(s_vals), to_np(err_etcnn),
-                        shading="auto", cmap="hot_r")
-    fig.colorbar(im, ax=ax, label="Absolute error")
-    ax.set_xlabel("t"); ax.set_ylabel("s")
-    ax.set_title(f"Plot E3 — ETCNN pointwise error (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T}, max={float(err_etcnn.max()):.2e})")
-    fig.tight_layout()
-    fig.savefig(out_dir / "diagnostics" / "plotE3_etcnn_error.png", dpi=150)
-    plt.close(fig)
-    logger.info(f"[OK] Plot E3 — ETCNN error: max={float(err_etcnn.max()):.2e}")
+    # === Plot E3 — Pointwise errors: ETCNN vs PINN (2-panel comparison) ===
+    err_max = max(float(err_etcnn.max()), float(err_pinn.max()))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    im0 = axes[0].pcolormesh(to_np(t_vals), to_np(s_vals), to_np(err_etcnn),
+                              shading="auto", cmap="hot_r", vmin=0, vmax=err_max)
+    fig.colorbar(im0, ax=axes[0], label=r"$|\tilde{u}_\theta(s,t) - V^e(s,t)|$")
+    axes[0].set_xlabel("t"); axes[0].set_ylabel("s")
+    axes[0].set_title(f"ETCNN  (max={float(err_etcnn.max()):.2e})")
 
-    # === Plot E4 — PINN pointwise error ===
-    fig, ax = plt.subplots(figsize=(8, 5))
-    im = ax.pcolormesh(to_np(t_vals), to_np(s_vals), to_np(err_pinn),
-                        shading="auto", cmap="hot_r")
-    fig.colorbar(im, ax=ax, label="Absolute error")
-    ax.set_xlabel("t"); ax.set_ylabel("s")
-    ax.set_title(f"Plot E4 — PINN pointwise error (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T}, max={float(err_pinn.max()):.2e})")
+    im1 = axes[1].pcolormesh(to_np(t_vals), to_np(s_vals), to_np(err_pinn),
+                              shading="auto", cmap="hot_r", vmin=0, vmax=err_max)
+    fig.colorbar(im1, ax=axes[1], label=r"$|u_\theta(s,t) - V^e(s,t)|$")
+    axes[1].set_xlabel("t"); axes[1].set_ylabel("s")
+    axes[1].set_title(f"PINN  (max={float(err_pinn.max()):.2e})")
+
+    fig.suptitle(f"Plot E3 — Absolute price error vs $V^e$ (European Put, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
     fig.tight_layout()
-    fig.savefig(out_dir / "diagnostics" / "plotE4_pinn_error.png", dpi=150)
+    fig.savefig(out_dir / "diagnostics" / "plotE3_errors.png", dpi=150)
     plt.close(fig)
-    logger.info(f"[OK] Plot E4 — PINN error: max={float(err_pinn.max()):.2e}")
+    logger.info(f"[OK] Plot E3 — errors: ETCNN max={float(err_etcnn.max()):.2e}, PINN max={float(err_pinn.max()):.2e}")
 
     # === Plot E5 — Slice comparison at fixed t ===
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
@@ -557,9 +554,10 @@ def european_problem(
     logger.info(f"  ETCNN/PINN L2 ratio:     {rel_l2_pinn / max(rel_l2_etcnn, 1e-15):.1f}x")
     logger.info("=" * 60)
 
-    torch.save(etcnn.state_dict(), out_dir / "etcnn_eur.pt")
-    torch.save(pinn.state_dict(), out_dir / "pinn_eur.pt")
-    logger.info("  Saved models: etcnn_eur.pt, pinn_eur.pt")
+    model_dir = out_dir / "models"
+    torch.save(etcnn.state_dict(), model_dir / "etcnn_eur.pt")
+    torch.save(pinn.state_dict(), model_dir / "pinn_eur.pt")
+    logger.info("  Saved models: models/etcnn_eur.pt, models/pinn_eur.pt")
 
     return {
         "etcnn": etcnn,
@@ -632,8 +630,8 @@ def _plot_interp_diagnostic(
     if not np.isnan(s_star):
         ax.axvline(s_star, color="red", ls=":", alpha=0.5)
     ax.set_xlabel("$s$")
-    ax.set_ylabel("$g_2(s)$")
-    ax.set_title("(a)  $g_2(s) = V(s, t_1)$")
+    ax.set_ylabel("$V^{\\mathrm{Berm}}_\\theta(s, t_1)$")
+    ax.set_title(r"(a)  $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$  [cubic vs linear]")
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -644,8 +642,8 @@ def _plot_interp_diagnostic(
     if not np.isnan(s_star):
         ax.axvline(s_star, color="red", ls=":", alpha=0.5)
     ax.set_xlabel("$s$")
-    ax.set_ylabel("$\\partial g_2 / \\partial s$")
-    ax.set_title("(b)  First derivative $\\partial g_2 / \\partial s$")
+    ax.set_ylabel("$\\partial V^{\\mathrm{Berm}}_\\theta(s, t_1) / \\partial s$")
+    ax.set_title("(b)  First derivative $\\partial V^{\\mathrm{Berm}}_\\theta(s, t_1) / \\partial s$")
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -656,8 +654,8 @@ def _plot_interp_diagnostic(
     if not np.isnan(s_star):
         ax.axvline(s_star, color="red", ls=":", alpha=0.5)
     ax.set_xlabel("$s$")
-    ax.set_ylabel("$\\partial^2 g_2 / \\partial s^2$")
-    ax.set_title("(c)  Second derivative $\\partial^2 g_2 / \\partial s^2$  [KEY]")
+    ax.set_ylabel("$\\partial^2 V^{\\mathrm{Berm}}_\\theta(s, t_1) / \\partial s^2$")
+    ax.set_title("(c)  Second derivative $\\partial^2 V^{\\mathrm{Berm}}_\\theta(s, t_1) / \\partial s^2$  [KEY]")
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -668,10 +666,11 @@ def _plot_interp_diagnostic(
     if not np.isnan(s_star):
         ax.axvline(s_star, color="red", ls=":", alpha=0.5)
     ax.set_xlabel("$s$")
-    ax.set_ylabel("$\\mathcal{F}(g_2)$")
+    ax.set_ylabel("$\\mathcal{F}[V^{\\mathrm{Berm}}_\\theta(\\cdot, t_1)]$")
     ax.set_title(
-        "(d)  $\\mathcal{F}(g_2) = rs \\, g_2' - r g_2"
-        " + \\frac{1}{2}\\sigma^2 s^2 \\, g_2''$"
+        "(d)  $\\mathcal{F}[V^{\\mathrm{Berm}}_\\theta(\\cdot, t_1)]"
+        " = rs\\,\\partial_s V^{\\mathrm{Berm}}_\\theta - r V^{\\mathrm{Berm}}_\\theta"
+        " + \\frac{1}{2}\\sigma^2 s^2\\,\\partial_s^2 V^{\\mathrm{Berm}}_\\theta$"
     )
     ax.legend()
     ax.grid(True, alpha=0.3)
@@ -830,10 +829,16 @@ def bermudan_problem(
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(to_np(s_plot), to_np(hold_plot), label=r"Hold: ETCNN$_A(s, t_1)$", linewidth=2)
     ax.plot(to_np(s_plot), to_np(phi_plot), label=r"Exercise: $\Phi(s) = (K-s)^+$", linewidth=2, linestyle="--")
-    ax.plot(to_np(s_plot), to_np(v_t1_plot), label=r"$V(s, t_1) = \max(\Phi, \mathrm{hold})$",
+    ax.plot(to_np(s_plot), to_np(v_t1_plot), label=r"$V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1) = \max(\Phi(s),\, \tilde{u}^{(A)}_{\bar{\theta}}(s, t_1))$",
             linewidth=2.5, linestyle="-.", color="black")
     if not np.isnan(s_star):
         ax.axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"$s^* \\approx {s_star:.1f}$")
+        s_star_t = torch.tensor([s_star])
+        v_at_star = float(payoff_put(s_star_t, K))
+        ax.plot(s_star, v_at_star, "ro", markersize=8, zorder=5)
+        ax.annotate(f"$s^* = {s_star:.1f}$", (s_star, v_at_star),
+                    textcoords="offset points", xytext=(15, 10), fontsize=11,
+                    arrowprops=dict(arrowstyle="->", color="red"))
     ax.set_xlabel("s")
     ax.set_ylabel("Value")
     ax.set_title(f"Intermediate terminal condition at $t_1 = {t1}$ (Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
@@ -842,7 +847,7 @@ def bermudan_problem(
     fig.tight_layout()
     fig.savefig(out_dir / "pricing" / "plotB1_intermediate.png", dpi=150)
     plt.close(fig)
-    logger.info("[OK] Plot B1 — Intermediate terminal condition")
+    logger.info("[OK] Plot B1 — Intermediate terminal condition (hold, exercise, Bermudan value, s*)")
 
     # === Plot B1c / B1d — mode-specific diagnostics ===
     if extraction:
@@ -855,11 +860,11 @@ def bermudan_problem(
 
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.plot(to_np(s_plot_1d), to_np(vtarget_plot),
-                label=r"$V_{\mathrm{target}}(s, t_1)$", color="black", linewidth=2.5, linestyle="-.")
+                label=r"$V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$", color="black", linewidth=2.5, linestyle="-.")
         ax.plot(to_np(s_plot_1d), to_np(v_fict_plot),
                 label=f"$v(s, t_1) = {c_scale:.3f} \\cdot (s^* - s)^+$", color="green", linewidth=2, linestyle="--")
         ax.plot(to_np(s_plot_1d), to_np(g2_residual_plot),
-                label=r"Residual $g_2(s) = V_{\mathrm{target}} - v$", color="blue", linewidth=2)
+                label=r"Residual $g_2(s, t_1) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1) - v(s, t_1)$", color="blue", linewidth=2)
         ax.axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"$s^* \\approx {s_star:.1f}$")
         ax.set_title(f"Singularity extraction at $t_1 = {t1}$: $c = {c_scale:.4f}$")
         ax.set_xlabel("Asset Price $s$")
@@ -884,6 +889,10 @@ def bermudan_problem(
             return torch.maximum(phi, hold)
 
         with torch.no_grad():
+            vtarget_wide = raw_target(s_wide)
+            vtarget_fine = raw_target(s_fine)
+            v_fine = fict_put.at_maturity(s_fine)
+            u_tilde_fine = residual_interp(s_fine)
             gamma_raw_wide = (raw_target(s_wide + h_fd) - 2 * raw_target(s_wide) + raw_target(s_wide - h_fd)) / h_fd**2
             gamma_raw_fine = (raw_target(s_fine + h_fd) - 2 * raw_target(s_fine) + raw_target(s_fine - h_fd)) / h_fd**2
             gamma_res_wide = (residual_interp(s_wide + h_fd) - 2 * residual_interp(s_wide) + residual_interp(s_wide - h_fd)) / h_fd**2
@@ -891,33 +900,45 @@ def bermudan_problem(
             deriv_raw_fine = (raw_target(s_fine + h_fd) - raw_target(s_fine - h_fd)) / (2 * h_fd)
             deriv_res_fine = (residual_interp(s_fine + h_fd) - residual_interp(s_fine - h_fd)) / (2 * h_fd)
 
-        fig, axes = plt.subplots(3, 1, figsize=(10, 14))
-        axes[0].plot(to_np(s_fine), to_np(deriv_raw_fine),
-                     label=r"$\partial V_{\mathrm{target}} / \partial s$ (has jump)", color="red", linewidth=2)
-        axes[0].plot(to_np(s_fine), to_np(deriv_res_fine),
-                     label=r"$\partial g_2 / \partial s$ ($C^1$ smooth)", color="blue", linewidth=2, linestyle="--")
+        fig, axes = plt.subplots(4, 1, figsize=(10, 17))
+
+        axes[0].plot(to_np(s_fine), to_np(vtarget_fine),
+                     label=r"$V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$", color="black", linewidth=2)
+        axes[0].plot(to_np(s_fine), to_np(v_fine),
+                     label=r"$v(s, t_1) = c\,(s^* - s)^+$", color="green", linewidth=2, linestyle="--")
+        axes[0].plot(to_np(s_fine), to_np(u_tilde_fine),
+                     label=r"$g_2(s, t_1) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1) - v(s, t_1)$ (PCHIP residual)", color="blue", linewidth=2)
         axes[0].axvline(s_star, color="grey", linestyle=":", alpha=0.5)
-        axes[0].set_title(r"First derivative: jump in $\partial V_{\mathrm{target}}/\partial s$ removed by extraction")
-        axes[0].set_xlabel("$s$"); axes[0].set_ylabel("$\\partial / \\partial s$")
+        axes[0].set_title(r"Function decomposition at $t_1$: $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1) = v(s, t_1) + g_2(s, t_1)$")
+        axes[0].set_xlabel("$s$"); axes[0].set_ylabel("Value")
         axes[0].legend(); axes[0].grid(True, alpha=0.3)
 
-        axes[1].plot(to_np(s_wide), to_np(gamma_raw_wide),
-                     label=r"$\partial^2 V_{\mathrm{target}} / \partial s^2$ (Dirac spike)", color="red", linewidth=2)
-        axes[1].plot(to_np(s_wide), to_np(gamma_res_wide),
-                     label=r"$\partial^2 g_2 / \partial s^2$ (finite)", color="blue", linewidth=2, linestyle="--")
+        axes[1].plot(to_np(s_fine), to_np(deriv_raw_fine),
+                     label=r"$\partial V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1) / \partial s$ (has jump at $s^*$)", color="red", linewidth=2)
+        axes[1].plot(to_np(s_fine), to_np(deriv_res_fine),
+                     label=r"$\partial g_2(s, t_1) / \partial s$ ($C^1$ smooth)", color="blue", linewidth=2, linestyle="--")
         axes[1].axvline(s_star, color="grey", linestyle=":", alpha=0.5)
-        axes[1].set_title(r"Second derivative: Dirac $\delta$ singularity removed")
-        axes[1].set_xlabel("$s$"); axes[1].set_ylabel("$\\partial^2 / \\partial s^2$")
-        axes[1].set_ylim(-20, 20); axes[1].legend(); axes[1].grid(True, alpha=0.3)
+        axes[1].set_title(r"First derivative: jump in $\partial_s V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ removed in $\partial_s g_2(s, t_1)$")
+        axes[1].set_xlabel("$s$"); axes[1].set_ylabel("$\\partial / \\partial s$")
+        axes[1].legend(); axes[1].grid(True, alpha=0.3)
 
-        axes[2].plot(to_np(s_fine), to_np(gamma_raw_fine),
-                     label=r"$\partial^2 V_{\mathrm{target}} / \partial s^2$", color="red", linewidth=2)
-        axes[2].plot(to_np(s_fine), to_np(gamma_res_fine),
-                     label=r"$\partial^2 g_2 / \partial s^2$", color="blue", linewidth=2, linestyle="--")
+        axes[2].plot(to_np(s_wide), to_np(gamma_raw_wide),
+                     label=r"$\partial^2 V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1) / \partial s^2$ (Dirac spike at $s^*$)", color="red", linewidth=2)
+        axes[2].plot(to_np(s_wide), to_np(gamma_res_wide),
+                     label=r"$\partial^2 g_2(s, t_1) / \partial s^2$ (PCHIP, finite)", color="blue", linewidth=2, linestyle="--")
         axes[2].axvline(s_star, color="grey", linestyle=":", alpha=0.5)
-        axes[2].set_title(r"Curvature near $s^*$ (zoomed)")
+        axes[2].set_title(r"Second derivative: Dirac $\delta$ singularity removed (wide view)")
         axes[2].set_xlabel("$s$"); axes[2].set_ylabel("$\\partial^2 / \\partial s^2$")
-        axes[2].legend(); axes[2].grid(True, alpha=0.3)
+        axes[2].set_ylim(-20, 20); axes[2].legend(); axes[2].grid(True, alpha=0.3)
+
+        axes[3].plot(to_np(s_fine), to_np(gamma_raw_fine),
+                     label=r"$\partial^2 V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1) / \partial s^2$", color="red", linewidth=2)
+        axes[3].plot(to_np(s_fine), to_np(gamma_res_fine),
+                     label=r"$\partial^2 g_2(s, t_1) / \partial s^2$ (PCHIP)", color="blue", linewidth=2, linestyle="--")
+        axes[3].axvline(s_star, color="grey", linestyle=":", alpha=0.5)
+        axes[3].set_title(r"Curvature near $s^*$ (zoomed)")
+        axes[3].set_xlabel("$s$"); axes[3].set_ylabel("$\\partial^2 / \\partial s^2$")
+        axes[3].legend(); axes[3].grid(True, alpha=0.3)
 
         fig.suptitle(
             f"Singularity extraction diagnostic: $c = {c_scale:.4f}$, $s^* = {s_star:.2f}$\n"
@@ -934,8 +955,8 @@ def bermudan_problem(
             v_interp_plot = v_interp_t1(s_plot_1d)
 
         fig, ax = plt.subplots(figsize=(8, 5))
-        ax.plot(to_np(s_plot_1d), to_np(v_interp_plot), label="Interpolated $V(s, t_1)$", color="blue", linewidth=2)
-        ax.plot(to_np(s_plot_1d), to_np(payoff_put(s_plot_1d, K)), label="Payoff $\\Phi(s)$", color="red", linestyle="--")
+        ax.plot(to_np(s_plot_1d), to_np(v_interp_plot), label=r"$V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ (interpolated)", color="blue", linewidth=2)
+        ax.plot(to_np(s_plot_1d), to_np(payoff_put(s_plot_1d, K)), label="$\\Phi(s) = (K - s)^+$", color="red", linestyle="--")
         ax.axvline(x=K, color="grey", linestyle=":", label="Strike K")
         if not np.isnan(s_star):
             ax.axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"$s^* \\approx {s_star:.1f}$")
@@ -984,56 +1005,33 @@ def bermudan_problem(
 
         interp_name = "PCHIP" if interp_method == "pchip" else ("Spline" if interp_method == "cubic" else "Linear")
         fig, axes = plt.subplots(3, 1, figsize=(9, 12))
-        axes[0].plot(to_np(s_wide), to_np(gamma_spline_wide), label=f"Curvature of $\\mathcal{{I}}(s)$ ({interp_name})", color="purple", linewidth=2)
-        axes[0].plot(to_np(s_wide), to_np(gamma_raw_wide), label="Curvature of Raw Target $\\max(\\Phi, \\tilde{u}_{NN}^{(A)})$", color="green", linewidth=2, linestyle="--")
+        axes[0].plot(to_np(s_wide), to_np(gamma_spline_wide), label=f"$\\partial^2 g_2(s, t_1) / \\partial s^2$ ({interp_name})", color="purple", linewidth=2)
+        axes[0].plot(to_np(s_wide), to_np(gamma_raw_wide), label="$\\partial^2 V^{\\mathrm{Berm}}_\\theta(s, t_1) / \\partial s^2$", color="green", linewidth=2, linestyle="--")
         if not np.isnan(s_star):
-            axes[0].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
-        axes[0].set_title(f"Test 1: {interp_name} Curvature around $s^*$ (Zoomed Out)")
-        axes[0].set_xlabel("Asset Price $s$"); axes[0].set_ylabel("$[V(s+h) - 2V(s) + V(s-h)] / h^2$")
+            axes[0].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"$s^* \\approx {s_star:.1f}$")
+        axes[0].set_title(f"$\\partial^2 g_2(s, t_1) / \\partial s^2$ vs $\\partial^2 V^{{\\mathrm{{Berm}}}}_\\theta(s, t_1) / \\partial s^2$ — {interp_name} (wide)")
+        axes[0].set_xlabel("$s$"); axes[0].set_ylabel("$\\partial^2 / \\partial s^2$")
         axes[0].set_ylim(-20, 20); axes[0].legend(); axes[0].grid(True, alpha=0.3)
 
-        axes[1].plot(to_np(s_fine), to_np(gamma_spline), label=f"Curvature of $\\mathcal{{I}}(s)$ ({interp_name})", color="purple", linewidth=2)
-        axes[1].plot(to_np(s_fine), to_np(gamma_raw), label="Curvature of Raw Target $\\max(\\Phi, \\tilde{u}_{NN}^{(A)})$", color="green", linewidth=2, linestyle="--")
+        axes[1].plot(to_np(s_fine), to_np(gamma_spline), label=f"$\\partial^2 g_2(s, t_1) / \\partial s^2$ ({interp_name})", color="purple", linewidth=2)
+        axes[1].plot(to_np(s_fine), to_np(gamma_raw), label="$\\partial^2 V^{\\mathrm{Berm}}_\\theta(s, t_1) / \\partial s^2$", color="green", linewidth=2, linestyle="--")
         if not np.isnan(s_star):
-            axes[1].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
-        axes[1].set_title(f"Test 1: {interp_name} Curvature around $s^*$ (Zoomed In)")
-        axes[1].set_xlabel("Asset Price $s$"); axes[1].set_ylabel("$[V(s+h) - 2V(s) + V(s-h)] / h^2$")
+            axes[1].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"$s^* \\approx {s_star:.1f}$")
+        axes[1].set_title(f"$\\partial^2 g_2(s, t_1) / \\partial s^2$ vs $\\partial^2 V^{{\\mathrm{{Berm}}}}_\\theta(s, t_1) / \\partial s^2$ — {interp_name} (zoomed)")
+        axes[1].set_xlabel("$s$"); axes[1].set_ylabel("$\\partial^2 / \\partial s^2$")
         axes[1].set_ylim(-20, 20); axes[1].legend(); axes[1].grid(True, alpha=0.3)
 
-        axes[2].plot(to_np(s_fine), to_np(v_center), label=f"$\\mathcal{{I}}(s)$ ({interp_name})", color="blue", linewidth=2)
-        axes[2].plot(to_np(s_fine), to_np(v_raw_center), label="Raw Target $\\max(\\Phi, \\tilde{u}_{NN}^{(A)})$", color="orange", linewidth=2, linestyle="--")
+        axes[2].plot(to_np(s_fine), to_np(v_center), label=f"$V^{{\\mathrm{{Berm}}}}_\\theta(s, t_1)$ ({interp_name})", color="blue", linewidth=2)
+        axes[2].plot(to_np(s_fine), to_np(v_raw_center), label="$V^{\\mathrm{Berm}}_\\theta(s, t_1) = \\max(\\Phi(s),\\, \\tilde{u}^{(A)}_\\theta(s, t_1))$", color="orange", linewidth=2, linestyle="--")
         if not np.isnan(s_star):
-            axes[2].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
-        axes[2].set_title(f"Test 1: Function values around $s^*$ (Zoomed In)")
-        axes[2].set_xlabel("Asset Price $s$"); axes[2].set_ylabel("Option Value")
+            axes[2].axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"$s^* \\approx {s_star:.1f}$")
+        axes[2].set_title(f"$V^{{\\mathrm{{Berm}}}}_\\theta(s, t_1)$: interpolant vs raw target around $s^*$ (zoomed)")
+        axes[2].set_xlabel("$s$"); axes[2].set_ylabel("Option Value")
         axes[2].legend(); axes[2].grid(True, alpha=0.3)
         fig.tight_layout()
         fig.savefig(out_dir / "diagnostics" / "plotB1d_interpolant_gamma.png", dpi=150)
         plt.close(fig)
         logger.info(f"[OK] Plot B1d — {interp_name} Curvature")
-
-    # === Plot B2 — Exercise boundary ===
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(to_np(s_plot), to_np(hold_plot), label=r"Hold: $\tilde{u}_{NN}^{(A)}(s, t_1)$", linewidth=2)
-    ax.plot(to_np(s_plot), to_np(phi_plot), label=r"Exercise: $\Phi(s)$", linewidth=2, linestyle="--")
-    if not np.isnan(s_star):
-        ax.axvline(s_star, color="red", linewidth=2, linestyle="--",
-                   label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
-        s_star_t = torch.tensor([s_star])
-        v_at_star = float(payoff_put(s_star_t, K))
-        ax.plot(s_star, v_at_star, "ro", markersize=10, zorder=5)
-        ax.annotate(f"$s^* = {s_star:.1f}$", (s_star, v_at_star),
-                    textcoords="offset points", xytext=(15, 10), fontsize=11,
-                    arrowprops=dict(arrowstyle="->", color="red"))
-    ax.set_xlabel("s")
-    ax.set_ylabel("Value")
-    ax.set_title(f"Exercise boundary at $t_1 = {t1}$ (Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(out_dir / "pricing" / "plotB2_exercise_boundary.png", dpi=150)
-    plt.close(fig)
-    logger.info(f"[OK] Plot B2 — Exercise boundary: s* ≈ {s_star:.2f}")
 
     # === Plot B3 — Stage A loss curves ===
     if hist_a is not None:
@@ -1195,13 +1193,18 @@ def bermudan_problem(
     fig.savefig(out_dir / "pricing" / "plotB6_bermudan_surface.png", dpi=150)
     plt.close(fig)
 
-    # Check continuity at t1
-    t1_idx = int(nt * t1 / T)
-    if t1_idx > 0 and t1_idx < nt:
-        jump = float(torch.max(torch.abs(V_surface[:, t1_idx] - V_surface[:, t1_idx - 1])))
-        logger.info(f"  Max jump at t1 intermediate boundary: {jump:.4e}")
-    else:
-        jump = 0.0
+    # Check continuity at t1 by directly comparing model outputs at the boundary
+    # (not adjacent time slices, which may differ due to different training objectives)
+    s_stitch = torch.linspace(60.0, 140.0, 100).to(DEVICE)
+    t_stitch = torch.full_like(s_stitch, t1)
+    x_stitch = torch.stack([s_stitch, t_stitch], dim=1)
+    
+    with torch.no_grad():
+        u_a_stitch = etcnn_a(x_stitch).cpu().squeeze()  # Stage A at t1
+        u_b_stitch = etcnn_b(x_stitch).cpu().squeeze()  # Stage B at t1
+    
+    jump = float(torch.max(torch.abs(u_a_stitch - u_b_stitch)))
+    logger.info(f"  Max jump at t1 intermediate boundary: {jump:.4e}")
     logger.info("[OK] Plot B6 — Bermudan surface")
 
     # === Plot B7 — Error vs BT at t=0 ===
@@ -1353,9 +1356,10 @@ def bermudan_problem(
     logger.info(f"  Max jump at t1:              {jump:.4e}")
     logger.info("=" * 60)
 
-    torch.save(etcnn_a.state_dict(), out_dir / "etcnn_a.pt")
-    torch.save(etcnn_b.state_dict(), out_dir / "etcnn_b.pt")
-    logger.info("  Saved models: etcnn_a.pt, etcnn_b.pt")
+    model_dir = out_dir / "models"
+    torch.save(etcnn_a.state_dict(), model_dir / "etcnn_a.pt")
+    torch.save(etcnn_b.state_dict(), model_dir / "etcnn_b.pt")
+    logger.info("  Saved models: models/etcnn_a.pt, models/etcnn_b.pt")
 
     return {
         "rel_l2_bt": rel_l2_bt,
@@ -1399,8 +1403,17 @@ def main():
         help="Compute device: auto (CUDA if available), cuda (fail if unavailable), or cpu",
     )
     parser.add_argument("--bermudan-only", action="store_true", help="Skip European problem and only run Bermudan")
+    parser.add_argument("--european-only", action="store_true", help="Skip Bermudan problem and only run European")
     parser.add_argument("--weight-decay", type=float, default=0.0, help="L2 regularization penalty for Adam optimizer")
-    parser.add_argument("--load-etcnn-a", type=str, default=None, help="Path to pre-trained etcnn_a.pt to skip Stage A training")
+    parser.add_argument(
+        "--load-etcnn-a",
+        type=str,
+        default=None,
+        help=(
+            "Path to pre-trained etcnn_a.pt to skip Stage A training. "
+            "Can be either a .pt file or a run directory containing models/etcnn_a.pt"
+        ),
+    )
     parser.add_argument("--n-tc", type=int, default=1024, help="Number of terminal condition points")
     parser.add_argument("--n-f", type=int, default=4096, help="Number of interior PDE collocation points")
     args = parser.parse_args()
@@ -1427,6 +1440,7 @@ def main():
     (out_dir / "pricing").mkdir(exist_ok=True)
     (out_dir / "greeks").mkdir(exist_ok=True)
     (out_dir / "diagnostics").mkdir(exist_ok=True)
+    (out_dir / "models").mkdir(exist_ok=True)
 
     # Save metadata
     metadata = {
@@ -1455,6 +1469,8 @@ def main():
             "interp_method": args.interp,
             "g2_type": args.g2,
             "device": args.device,
+            "european_only": args.european_only,
+            "bermudan_only": args.bermudan_only,
         },
         "domain": {
             "S_TRAIN_LO": S_TRAIN_LO,
@@ -1491,10 +1507,28 @@ def main():
     logger.info(f"  PyTorch: {torch.__version__}")
     logger.info(f"  Device: {DEVICE}" + (f" ({torch.cuda.get_device_name(0)})" if DEVICE.type == "cuda" else ""))
 
+    if args.bermudan_only and args.european_only:
+        print("ERROR: --bermudan-only and --european-only are mutually exclusive.", file=sys.stderr)
+        sys.exit(2)
+
     # Run problems
-    load_path = Path(args.load_etcnn_a) if args.load_etcnn_a else None
-    
-    if not args.bermudan_only:
+    load_path = None
+    if args.load_etcnn_a:
+        requested = Path(args.load_etcnn_a)
+        if requested.is_dir():
+            candidate_models = requested / "models" / "etcnn_a.pt"
+            candidate_root = requested / "etcnn_a.pt"
+            if candidate_models.exists():
+                load_path = candidate_models
+            else:
+                load_path = candidate_root
+        else:
+            load_path = requested
+
+    run_european = not args.bermudan_only
+    run_bermudan = not args.european_only
+
+    if run_european:
         eur_results = european_problem(
             out_dir,
             args.iters[0],
@@ -1504,15 +1538,18 @@ def main():
     else:
         eur_results = None
 
-    ber_results = bermudan_problem(
-        out_dir,
-        args.iters,
-        interp_method=args.interp,
-        extraction=args.extraction,
-        weight_decay=args.weight_decay,
-        load_etcnn_a=load_path,
-        g2_type=args.g2,
-    )
+    if run_bermudan:
+        ber_results = bermudan_problem(
+            out_dir,
+            args.iters,
+            interp_method=args.interp,
+            extraction=args.extraction,
+            weight_decay=args.weight_decay,
+            load_etcnn_a=load_path,
+            g2_type=args.g2,
+        )
+    else:
+        ber_results = None
 
     # === Joint summary ===
     logger.info("")
@@ -1522,17 +1559,25 @@ def main():
     if eur_results:
         logger.info(f"  European ETCNN rel L2:     {eur_results['rel_l2_etcnn']:.6e}")
         logger.info(f"  European PINN  rel L2:     {eur_results['rel_l2_pinn']:.6e}")
-    logger.info(f"  Bermudan ETCNN rel L2 (vs BT): {ber_results['rel_l2_bt']:.6e}")
-    logger.info(f"  Bermudan at s=100:         {ber_results['etcnn_b_at_K']:.4f}")
-    logger.info(f"  European at s=100:         {ber_results['euro_at_K']:.4f}")
-    logger.info(f"  Bermudan >= European?      {ber_results['etcnn_b_at_K'] >= ber_results['euro_at_K'] - 1e-4}")
-    logger.info(f"  Max jump at t1:            {ber_results['jump_at_t1']:.4e}")
+    if ber_results:
+        logger.info(f"  Bermudan ETCNN rel L2 (vs BT): {ber_results['rel_l2_bt']:.6e}")
+        logger.info(f"  Bermudan at s=100:         {ber_results['etcnn_b_at_K']:.4f}")
+        logger.info(f"  European at s=100:         {ber_results['euro_at_K']:.4f}")
+        logger.info(f"  Bermudan >= European?      {ber_results['etcnn_b_at_K'] >= ber_results['euro_at_K'] - 1e-4}")
+        logger.info(f"  Max jump at t1:            {ber_results['jump_at_t1']:.4e}")
     logger.info("=" * 70)
 
     # Pass/fail
     eur_pass = eur_results["rel_l2_etcnn"] < 5e-4 if eur_results else True
-    ber_ordering = ber_results["etcnn_b_at_K"] >= ber_results["euro_at_K"] - 1e-4
-    ber_continuity = ber_results["jump_at_t1"] < 1e-2
+    if ber_results:
+        ber_ordering = ber_results["etcnn_b_at_K"] >= ber_results["euro_at_K"] - 1e-4
+        # The jump measures max(0, Phi(s) - etcnn_a(s,t1)) — non-zero only where Stage A
+        # violates the early-exercise constraint (prices below intrinsic value).
+        # A large jump indicates undertraining of Stage A, not a stitching artefact.
+        ber_continuity = ber_results["jump_at_t1"] < 1e-2
+    else:
+        ber_ordering = True
+        ber_continuity = True
 
     if eur_pass and ber_ordering and ber_continuity:
         logger.info("\n  All Phase 3 checks PASSED. Ready for Phase 4.")
@@ -1543,7 +1588,7 @@ def main():
         if not ber_ordering:
             logger.info("    - Bermudan < European (price ordering violated)")
         if not ber_continuity:
-            logger.info(f"    - Intermediate jump {ber_results['jump_at_t1']:.2e} > 1e-2")
+            logger.info(f"    - Intermediate jump {ber_results['jump_at_t1']:.2e} > 1e-2 (Stage A violates early-exercise constraint)")
 
     logger.info(f"\nAll plots saved to: {out_dir}")
 

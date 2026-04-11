@@ -2,7 +2,7 @@
 
 At an exercise date $t_1$, the intermediate terminal condition
 
-$$V_{\\text{target}}(s, t_1) = \\max(\\Phi(s), U_A(s, t_1))$$
+$$V^{\\mathrm{Berm}}_\\theta(s, t_1) = \\max(\\Phi(s), \\tilde{u}^{(A)}_\\theta(s, t_1))$$
 
 has a $C^0$ non-differentiable kink at the optimal exercise boundary $s^*$.
 The first spatial derivative jumps discontinuously, and the second derivative
@@ -24,7 +24,7 @@ the $C^1$-smooth residual.
 
 **Scaling constant:**
 
-At $t = t_1$, the derivative jump in $V_{\\text{target}}$ at $s^*$ is
+At $t = t_1$, the derivative jump in $V^{\\mathrm{Berm}}_\\theta$ at $s^*$ is
 
 $$\\Delta = \\frac{\\partial U_A}{\\partial s}\\Big|_{s^*} - (-1)
          = \\frac{\\partial U_A}{\\partial s}\\Big|_{s^*} + 1$$
@@ -156,7 +156,7 @@ def compute_scaling_constant(
 ) -> float:
     r"""Compute the scaling constant $c$ for the fictitious European put.
 
-    For a put option the derivative jump at $s^*$ in $V_{\text{target}}$ is
+    For a put option the derivative jump at $s^*$ in $V^{\mathrm{Berm}}_{\bar{\theta}}$ is
 
     $$c = \frac{\partial U_A}{\partial s}\Big|_{s^*} + 1$$
 
@@ -271,7 +271,7 @@ def build_singularity_extraction(
     1. Find the exercise boundary $s^*$ via bisection.
     2. Compute the scaling constant $c = \partial U_A/\partial s|_{s^*} + 1$.
     3. Build the fictitious European put $v(s, t)$.
-    4. Evaluate $V_{\text{target}}$ and the $C^1$ residual on a dense grid.
+    4. Evaluate $V^{\mathrm{Berm}}_{\bar{\theta}}$ and the $C^1$ residual on a dense grid.
 
     Args:
         model:   Trained Stage A network (ETCNN_A).
@@ -291,8 +291,8 @@ def build_singularity_extraction(
         - **c** — scaling constant.
         - **fictitious_put** — :class:`FictitiousEuropeanPut` module.
         - **s_nodes** — 1-D tensor of asset prices (CPU), shape ``(n_grid,)``.
-        - **v_target** — $V_{\text{target}}(s, t_1)$ values (CPU).
-        - **residual** — $C^1$ residual $V_{\text{target}} - v|_{t_1}$ (CPU).
+        - **v_target** — $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ values (CPU).
+        - **residual** — $C^1$ residual $V^{\mathrm{Berm}}_{\bar{\theta}} - v|_{t_1}$ (CPU).
     """
     logger.info("  Singularity extraction: finding exercise boundary ...")
     s_star = find_exercise_boundary(model, K, t1, s_lo, s_hi, device, n_grid)
