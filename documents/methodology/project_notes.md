@@ -76,7 +76,7 @@ condition design and the linear complementarity loss to the discrete-exercise se
 | 2026-04-07 | Bermudan solved by piecewise backward induction of two European sub-problems | No continuous free boundary — early exercise is a single comparison at $t_1$ |
 | 2026-04-07 | Bermudan $g_2$ uses interpolated $V(s, t_1)$, constant in $t$ | $V(s, t_1)$ is already smooth (continuation value, not raw payoff), so $\sqrt{\tau}$ capture is unnecessary |
 | 2026-04-07 | Binomial tree with $N = 2000$ for Bermudan reference | Sufficient accuracy for a single exercise date; $N = 4000$ reserved for American |
-| 2026-04-07 | Use torch piecewise-linear interpolation for $V(s, t_1)$, not `numpy.interp` | `numpy.interp` breaks the autograd graph — PDE loss then misses $\partial g_2/\partial s$ terms, causing $u_{NN} \approx 0$ and the network to ignore time evolution |
+| 2026-04-07 | Use torch piecewise-linear interpolation for $V(s, t_1)$, not `numpy.interp` | `numpy.interp` breaks the autograd graph — PDE loss then misses $\partial g_2/\partial s$ terms, causing $u_\theta \approx 0$ and the network to ignore time evolution |
 
 ---
 
