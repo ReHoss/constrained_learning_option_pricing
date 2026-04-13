@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
 import yaml
 import time
@@ -24,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import numpy as np
 import torch
 
@@ -196,13 +198,48 @@ def sample_collocation(n_f: int, n_tc: int, s_lo: float, s_hi: float,
 # ---------------------------------------------------------------------------
 # Compute PDE + terminal losses
 # ---------------------------------------------------------------------------
-def compute_losses(model, s_f, t_f, s_tc, t_tc, payoff_fn, lam_f, lam_tc):
-    """Evaluate L_f (PDE residual) and L_tc (terminal MSE)."""
+def compute_losses(
+    model, s_f, t_f, s_tc, t_tc, payoff_fn, lam_f, lam_tc,
+    s_star: float | None = None,
+    sigma_w: float = 1.0,
+    eps_w: float = 1e-3,
+    use_spatial_weight: bool = False,
+):
+    """Evaluate L_f (PDE residual) and L_tc (terminal MSE).
+
+    Args:
+        s_star:             Exercise boundary coordinate.
+        sigma_w:            Bandwidth of the inverted-Gaussian suppression window.
+        eps_w:              Lower bound of the weight at s* (prevents nullification).
+        use_spatial_weight: If True *and* s_star is finite, apply the inverted-Gaussian
+                            spatial weighting to suppress the PCHIP knot spike:
+
+                                w(s) = 1 - (1 - eps_w) * exp(-(s - s*)^2 / (2 sigma_w^2))
+
+                            W is detached from the graph and acts as a static scaler.
+                            Default False — plain mean(F_u^2) is used.
+    """
     # PDE residual at interior points
     x_f = torch.stack([s_f, t_f], dim=1)
-    u_f = model(x_f).squeeze()
+
+    # Operator Bypass: if the model has a specific forward pass for the PDE
+    # (e.g. BermudaETCNN bypassing v(s,t) to avoid catastrophic cancellation), use it.
+    if hasattr(model, "forward_pde"):
+        u_f = model.forward_pde(x_f).squeeze()
+    else:
+        u_f = model(x_f).squeeze()
+
     F_u = bsm_operator(u_f, s_f, t_f, r, q, sigma)
-    loss_f = torch.mean(F_u ** 2)
+
+    if use_spatial_weight and s_star is not None and not (isinstance(s_star, float) and s_star != s_star):
+        # Inverted Gaussian: dips to eps_w at s*, approaches 1 far away.
+        W = 1.0 - (1.0 - eps_w) * torch.exp(
+            -((s_f - s_star) ** 2) / (2.0 * sigma_w ** 2)
+        )
+        W = W.detach()
+        loss_f = torch.mean(W * F_u ** 2)
+    else:
+        loss_f = torch.mean(F_u ** 2)
 
     # Terminal condition
     x_tc = torch.stack([s_tc, t_tc], dim=1)
@@ -218,6 +255,21 @@ def compute_losses(model, s_f, t_f, s_tc, t_tc, payoff_fn, lam_f, lam_tc):
 # ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
+def _adaptive_log_every(total_iters: int, n_target: int = 50) -> int:
+    """Return a round log period targeting ~n_target log points.
+
+    Uses a 1-2-5 scale (like axis tick locators) so the period is always a
+    human-readable number: 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, …
+    """
+    raw = max(1, total_iters / n_target)
+    mag = 10 ** math.floor(math.log10(raw))
+    for factor in (1, 2, 5, 10):
+        candidate = int(factor * mag)
+        if candidate >= raw:
+            return candidate
+    return int(10 * mag)  # fallback (unreachable in practice)
+
+
 def train_model(
     model: torch.nn.Module,
     total_iters: int,
@@ -227,15 +279,29 @@ def train_model(
     t_hi: float,
     payoff_fn,
     label: str = "model",
-    log_every: int = 1000,
+    log_every: int | None = None,
     weight_decay: float = 0.0,
+    tc_enforced: bool = False,
+    s_star: float | None = None,
+    sigma_w: float = 1.0,
+    eps_w: float = 1e-3,
+    use_spatial_weight: bool = False,
 ):
-    """Train a model with Adam + two-stage LR schedule."""
+    """Train a model with Adam + two-stage LR schedule.
+
+    Args:
+        tc_enforced: Set to True when the terminal condition is hard-enforced
+            by the model ansatz (e.g. ETCNN with g1(s,T)=0). L_tc will then
+            be labelled ``<enforced>`` in the log rather than a numeric value,
+            to avoid the misleading impression that the optimiser drove it to zero.
+    """
+    if log_every is None:
+        log_every = _adaptive_log_every(total_iters)
     model.to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01, betas=(0.9, 0.999), weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, build_lr_lambda(total_iters))
 
-    history = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [], "grad_norm": [], "lr": []}
+    history = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [], "grad_norm": [], "lr": [], "tc_enforced": tc_enforced}
     model.train()
 
     t0 = time.time()
@@ -246,6 +312,8 @@ def train_model(
         )
         loss, lf, ltc = compute_losses(
             model, s_f, t_f, s_tc, t_tc, payoff_fn, LAMBDA_F, LAMBDA_TC,
+            s_star=s_star, sigma_w=sigma_w, eps_w=eps_w,
+            use_spatial_weight=use_spatial_weight,
         )
         loss.backward()
         
@@ -270,9 +338,10 @@ def train_model(
             history["iter"].append(it)
             
             elapsed = time.time() - t0
+            ltc_str = f"<enforced>({ltc:.6e})" if tc_enforced else f"{ltc:.6e}"
             logger.info(
                 f"[{label}] iter {it:>6d}/{total_iters}  "
-                f"loss={loss.item():.6e}  L_f={lf:.6e}  L_tc={ltc:.6e}  "
+                f"loss={loss.item():.6e}  L_f={lf:.6e}  L_tc={ltc_str}  "
                 f"|grad|={total_norm:.2e}  lr={lr_now:.6f}  ({elapsed:.1f}s)"
             )
 
@@ -287,11 +356,18 @@ def plot_training_metrics(hist: dict, label: str, out_dir: Path):
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
     # Loss curves
+    tc_enforced = hist.get("tc_enforced", False)
     axes[0, 0].semilogy(hist["iter"], hist["loss_f"], label="$L_f$")
-    axes[0, 0].semilogy(hist["iter"], hist["loss_tc"], label="$L_{tc}$", color="tab:orange")
+    if tc_enforced:
+        # Ltc is identically zero (hard-enforced by the ansatz); plotting it on a
+        # log scale would collapse the y-axis or hide Lf entirely.  Show a note
+        # in the title instead.
+        axes[0, 0].set_title("Loss Components\n($L_{tc}$ not shown: exact BC enforced by ansatz)")
+    else:
+        axes[0, 0].semilogy(hist["iter"], hist["loss_tc"], label="$L_{tc}$", color="tab:orange")
+        axes[0, 0].set_title("Loss Components")
     axes[0, 0].set_xlabel("Iteration")
     axes[0, 0].set_ylabel("Loss")
-    axes[0, 0].set_title("Loss Components")
     axes[0, 0].legend()
     axes[0, 0].grid(True, alpha=0.3)
     
@@ -346,6 +422,14 @@ def european_problem(
     logger.info("EUROPEAN PUT PROBLEM")
     logger.info("=" * 70)
     logger.info(f"  ETCNN g2 type: {g2_type}")
+
+    # Config summary string for plot titles
+    cfg_str = (
+        f"$K={K},\\ r={r},\\ \\sigma={sigma},\\ T={T},\\ q={q}$"
+        f"  |  $g_2$={g2_type}"
+        f"  |  iters={total_iters}, $N_f$={N_F}, $N_{{tc}}$={N_TC}"
+        f", wd={weight_decay}, seed={SEED}"
+    )
 
     # --- Build models ---
     torch.manual_seed(SEED)
@@ -419,7 +503,7 @@ def european_problem(
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
 
-    fig.suptitle(f"Plot E1 — Loss curves (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    fig.suptitle(f"Plot E1 — Loss curves (European Put, ETCNN vs PINN)\n{cfg_str}", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_dir / "training_metrics" / "plotE1_loss_curves.png", dpi=150)
     plt.close(fig)
@@ -441,7 +525,7 @@ def european_problem(
     axes[1].set_xlabel("t"); axes[1].set_ylabel("s")
     axes[1].set_title(r"Analytical $V^e(s,t)$")
 
-    fig.suptitle(f"Plot E2 — ETCNN vs analytical (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    fig.suptitle(f"Plot E2 — ETCNN price surface vs analytical $V^e(s,t)$\n{cfg_str}", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_dir / "pricing" / "plotE2_surface_comparison.png", dpi=150)
     plt.close(fig)
@@ -462,7 +546,10 @@ def european_problem(
     axes[1].set_xlabel("t"); axes[1].set_ylabel("s")
     axes[1].set_title(f"PINN  (max={float(err_pinn.max()):.2e})")
 
-    fig.suptitle(f"Plot E3 — Absolute price error vs $V^e$ (European Put, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    fig.suptitle(
+        f"Plot E3 — Absolute price error vs $V^e$  (ETCNN max={float(err_etcnn.max()):.2e}, PINN max={float(err_pinn.max()):.2e})\n{cfg_str}",
+        fontsize=11,
+    )
     fig.tight_layout()
     fig.savefig(out_dir / "diagnostics" / "plotE3_errors.png", dpi=150)
     plt.close(fig)
@@ -490,7 +577,7 @@ def european_problem(
         axes[idx].legend()
         axes[idx].grid(True, alpha=0.3)
 
-    fig.suptitle(f"Plot E5 — Slice comparison at fixed $t$ (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    fig.suptitle(f"Plot E5 — Slice comparison at fixed $t$  ($t \\in \\{{0.25, 0.5, 0.75\\}}$)\n{cfg_str}", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_dir / "pricing" / "plotE5_slices.png", dpi=150)
     plt.close(fig)
@@ -536,7 +623,10 @@ def european_problem(
     axes[2].legend()
     axes[2].grid(True, alpha=0.3)
     
-    fig.suptitle(f"Plot E6 — Greeks at $t=0$ (European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    fig.suptitle(
+        f"Plot E6 — Greeks $\\Delta, \\Gamma, \\Theta$ at $t = 0$  (ETCNN & PINN vs analytical)\n{cfg_str}",
+        fontsize=11,
+    )
     fig.tight_layout()
     fig.savefig(out_dir / "greeks" / "plotE6_greeks.png", dpi=150)
     plt.close(fig)
@@ -581,6 +671,7 @@ def _plot_interp_diagnostic(
     r: float,
     sigma: float,
     out_dir: Path,
+    cfg_str: str = "",
 ) -> None:
     """Plot B1b — Compare C² (cubic) vs C⁰ (linear) interpolation of V(s, t1).
 
@@ -675,10 +766,11 @@ def _plot_interp_diagnostic(
     ax.legend()
     ax.grid(True, alpha=0.3)
 
+    cfg_line = f"\n{cfg_str}" if cfg_str else ""
     fig.suptitle(
-        "Interpolation diagnostic: cubic ($C^2$) vs linear ($C^0$)\n"
-        f"(Bermudan Put, K={K}, r={r}, $\\sigma$={sigma})",
-        fontsize=13,
+        "Plot B1b — Interpolation diagnostic: cubic ($C^2$) vs linear ($C^0$) vs PCHIP ($C^1$)\n"
+        f"Bermudan Put, K={K}, r={r}, $\\sigma$={sigma}{cfg_line}",
+        fontsize=12,
     )
     fig.tight_layout()
     fig.savefig(out_dir / "diagnostics" / "plotB1b_interp_diagnostic.png", dpi=150)
@@ -697,6 +789,10 @@ def bermudan_problem(
     weight_decay: float = 0.0,
     load_etcnn_a: Path | None = None,
     g2_type: str = "taylor",
+    bypass_v: bool = False,
+    sigma_w: float = 1.0,
+    eps_w: float = 1e-3,
+    use_spatial_weight: bool = False,
 ):
     """Two-stage Bermudan put with exercise date t1=0.5.
 
@@ -713,6 +809,13 @@ def bermudan_problem(
         weight_decay: L2 regularization penalty for Adam.
         load_etcnn_a: Path to pre-trained ETCNN_A model to skip Stage A training.
         g2_type: Terminal function type for Stage A — ``"taylor"`` or ``"bs"``.
+        bypass_v: If True, drops only the fictitious put v(s,t) from the PDE
+            loss to prevent catastrophic cancellation of its diverging derivatives
+            near t1.  g2 remains in the graph so the network corrects L(g2).
+        sigma_w:            Bandwidth of the inverted-Gaussian spatial weight (default 1.0).
+        eps_w:              Lower bound of the spatial weight at s* (default 1e-3).
+        use_spatial_weight: If True, activate the inverted-Gaussian weighting in
+                            Stage B.  Default False (plain MSE).
     """
     logger.info("")
     logger.info("=" * 70)
@@ -721,6 +824,20 @@ def bermudan_problem(
 
     iters_a = total_iters[0]
     iters_b = total_iters[1] if len(total_iters) > 1 else total_iters[0]
+
+    # Config summary string for plot titles — encodes all run-specific settings
+    _flags = []
+    if extraction:
+        _flags.append("extraction")
+    if bypass_v:
+        _flags.append("bypass\\_v")
+    _flags_str = (", " + ", ".join(_flags)) if _flags else ""
+    cfg_str = (
+        f"$K={K},\\ r={r},\\ \\sigma={sigma},\\ T={T},\\ q={q},\\ t_1={t1}$"
+        f"  |  $g_2$={g2_type}, interp={interp_method}{_flags_str}"
+        f"  |  iters A={iters_a}/B={iters_b}, $N_f$={N_F}, $N_{{tc}}$={N_TC}"
+        f", wd={weight_decay}, seed={SEED}"
+    )
 
     payoff_fn = lambda s: payoff_put(s, K)
 
@@ -741,7 +858,7 @@ def bermudan_problem(
         logger.info(f"Stage A: training ETCNN_A on [t1, T] for {iters_a} iterations ...")
         hist_a = train_model(
             etcnn_a, iters_a, S_TRAIN_LO, S_TRAIN_HI, t1, T,
-            payoff_fn, label="ETCNN_A", weight_decay=weight_decay
+            payoff_fn, label="ETCNN_A", weight_decay=weight_decay, tc_enforced=True,
         )
         plot_training_metrics(hist_a, "ETCNN_A", out_dir)
 
@@ -814,7 +931,7 @@ def bermudan_problem(
 
     # === Plot B1b — Interpolation diagnostic: derivatives of g2 ===
     _plot_interp_diagnostic(
-        interp_cubic, interp_linear, s_star, K, r, sigma, out_dir,
+        interp_cubic, interp_linear, s_star, K, r, sigma, out_dir, cfg_str,
     )
 
     # === Plot B1 — Intermediate terminal condition ===
@@ -841,13 +958,14 @@ def bermudan_problem(
                     arrowprops=dict(arrowstyle="->", color="red"))
     ax.set_xlabel("s")
     ax.set_ylabel("Value")
-    ax.set_title(f"Intermediate terminal condition at $t_1 = {t1}$ (Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    ax.set_title(f"Hold vs exercise vs Bermudan value at $t_1 = {t1}$")
     ax.legend()
     ax.grid(True, alpha=0.3)
+    fig.suptitle(f"Plot B1 — Intermediate terminal condition\n{cfg_str}", fontsize=11)
     fig.tight_layout()
-    fig.savefig(out_dir / "pricing" / "plotB1_intermediate.png", dpi=150)
+    fig.savefig(out_dir / "pricing" / "plotB1a_intermediate.png", dpi=150)
     plt.close(fig)
-    logger.info("[OK] Plot B1 — Intermediate terminal condition (hold, exercise, Bermudan value, s*)")
+    logger.info("[OK] Plot B1a — Intermediate terminal condition (hold, exercise, Bermudan value, s*)")
 
     # === Plot B1c / B1d — mode-specific diagnostics ===
     if extraction:
@@ -866,11 +984,16 @@ def bermudan_problem(
         ax.plot(to_np(s_plot_1d), to_np(g2_residual_plot),
                 label=r"Residual $g_2(s, t_1) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1) - v(s, t_1)$", color="blue", linewidth=2)
         ax.axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"$s^* \\approx {s_star:.1f}$")
-        ax.set_title(f"Singularity extraction at $t_1 = {t1}$: $c = {c_scale:.4f}$")
+        ax.set_title(
+            f"Decomposition at $t_1 = {t1}$: "
+            r"$V^{\mathrm{Berm}}_{\bar{\theta}}(s,t_1) = v(s,t_1) + g_2(s,t_1)$"
+            f",  $c = {c_scale:.4f}$,  $s^* = {s_star:.2f}$"
+        )
         ax.set_xlabel("Asset Price $s$")
         ax.set_ylabel("Value")
         ax.legend()
         ax.grid(True, alpha=0.3)
+        fig.suptitle(f"Plot B1c — Singularity extraction at $t_1$\n{cfg_str}", fontsize=11)
         fig.tight_layout()
         fig.savefig(out_dir / "pricing" / "plotB1c_extraction.png", dpi=150)
         plt.close(fig)
@@ -941,8 +1064,9 @@ def bermudan_problem(
         axes[3].legend(); axes[3].grid(True, alpha=0.3)
 
         fig.suptitle(
-            f"Singularity extraction diagnostic: $c = {c_scale:.4f}$, $s^* = {s_star:.2f}$\n"
-            f"(Bermudan Put, K={K}, r={r}, $\\sigma$={sigma})", fontsize=13,
+            f"Plot B1d — Singularity extraction curvature diagnostic"
+            f":  $c = {c_scale:.4f}$,  $s^* = {s_star:.2f}$\n{cfg_str}",
+            fontsize=11,
         )
         fig.tight_layout()
         fig.savefig(out_dir / "diagnostics" / "plotB1d_extraction_curvature.png", dpi=150)
@@ -960,9 +1084,13 @@ def bermudan_problem(
         ax.axvline(x=K, color="grey", linestyle=":", label="Strike K")
         if not np.isnan(s_star):
             ax.axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"$s^* \\approx {s_star:.1f}$")
-        ax.set_title(f"Interpolated Function at $t_1 = {t1}$")
+        ax.set_title(
+            f"Interpolated $V^{{\\mathrm{{Berm}}}}_{{\\bar{{\\theta}}}}(s, t_1)$"
+            f" at $t_1 = {t1}$,  $s^* = {s_star:.2f}$"
+        )
         ax.set_xlabel("Asset Price $s$"); ax.set_ylabel("Option Value")
         ax.legend(); ax.grid(True, alpha=0.3)
+        fig.suptitle(f"Plot B1c — Interpolated terminal condition at $t_1$\n{cfg_str}", fontsize=11)
         fig.tight_layout()
         fig.savefig(out_dir / "pricing" / "plotB1c_interpolated_t1.png", dpi=150)
         plt.close(fig)
@@ -1028,6 +1156,10 @@ def bermudan_problem(
         axes[2].set_title(f"$V^{{\\mathrm{{Berm}}}}_\\theta(s, t_1)$: interpolant vs raw target around $s^*$ (zoomed)")
         axes[2].set_xlabel("$s$"); axes[2].set_ylabel("Option Value")
         axes[2].legend(); axes[2].grid(True, alpha=0.3)
+        fig.suptitle(
+            f"Plot B1d — Curvature diagnostic ({interp_name}),  $s^* = {s_star:.2f}$\n{cfg_str}",
+            fontsize=11,
+        )
         fig.tight_layout()
         fig.savefig(out_dir / "diagnostics" / "plotB1d_interpolant_gamma.png", dpi=150)
         plt.close(fig)
@@ -1042,7 +1174,10 @@ def bermudan_problem(
         axes[1].semilogy(hist_a["iter"], hist_a["loss_tc"], label="$\\mathcal{L}_{tc}$", color="tab:orange")
         axes[1].set_xlabel("Iteration"); axes[1].set_ylabel("$\\mathcal{L}_{tc}$")
         axes[1].set_title("Stage A: Terminal loss"); axes[1].legend(); axes[1].grid(True, alpha=0.3)
-        fig.suptitle(f"Stage A loss curves (ETCNN$^{{(A)}}$ on $[t_1, T]$, Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+        fig.suptitle(
+            f"Plot B3 — Stage A loss curves  (ETCNN$^{{(A)}}$ on $[t_1, T]$,  {iters_a} iters)\n{cfg_str}",
+            fontsize=11,
+        )
         fig.tight_layout()
         fig.savefig(out_dir / "training_metrics" / "plotB3_stageA_loss.png", dpi=150)
         plt.close(fig)
@@ -1072,7 +1207,7 @@ def bermudan_problem(
 
         etcnn_residual = ETCNN(resnet=resnet_b, g1=g1_b, g2=g2_b, normalizer=normalizer_b)
         fict_put.to(DEVICE)
-        etcnn_b = BermudaETCNN(etcnn=etcnn_residual, fictitious_put=fict_put)
+        etcnn_b = BermudaETCNN(etcnn=etcnn_residual, fictitious_put=fict_put, bypass_v=bypass_v)
         payoff_t1 = lambda s: interp_vtarget(s)
     else:
         # Classic: g2 = interpolated V_target
@@ -1084,9 +1219,18 @@ def bermudan_problem(
         etcnn_b = ETCNN(resnet=resnet_b, g1=g1_b, g2=g2_b, normalizer=normalizer_b)
         payoff_t1 = lambda s: v_interp_t1(s)
 
+    _s_star_b = s_star if (not isinstance(s_star, float) or s_star == s_star) else None
+    if use_spatial_weight:
+        logger.info(
+            f"Stage B spatial weighting: ACTIVE  s*={_s_star_b}, sigma_w={sigma_w}, eps_w={eps_w}"
+        )
+    else:
+        logger.info("Stage B spatial weighting: OFF (plain MSE)")
     hist_b = train_model(
         etcnn_b, iters_b, S_TRAIN_LO, S_TRAIN_HI, 0.0, t1,
-        payoff_t1, label="ETCNN_B", weight_decay=weight_decay
+        payoff_t1, label="ETCNN_B", weight_decay=weight_decay, tc_enforced=True,
+        s_star=_s_star_b, sigma_w=sigma_w, eps_w=eps_w,
+        use_spatial_weight=use_spatial_weight,
     )
     plot_training_metrics(hist_b, "ETCNN_B", out_dir)
 
@@ -1094,11 +1238,14 @@ def bermudan_problem(
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     axes[0].semilogy(hist_b["iter"], hist_b["loss_f"], label="$L_f$")
     axes[0].set_xlabel("Iteration"); axes[0].set_ylabel("$L_f$")
-    axes[0].set_title("Stage D: PDE residual"); axes[0].legend(); axes[0].grid(True, alpha=0.3)
+    axes[0].set_title("Stage B: PDE residual"); axes[0].legend(); axes[0].grid(True, alpha=0.3)
     axes[1].semilogy(hist_b["iter"], hist_b["loss_tc"], label="$L_{tc}$", color="tab:orange")
     axes[1].set_xlabel("Iteration"); axes[1].set_ylabel("$L_{tc}$")
-    axes[1].set_title("Stage D: Terminal loss"); axes[1].legend(); axes[1].grid(True, alpha=0.3)
-    fig.suptitle(f"Stage D loss curves (ETCNN$_B$ on $[0, t_1]$, Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    axes[1].set_title("Stage B: Terminal loss"); axes[1].legend(); axes[1].grid(True, alpha=0.3)
+    fig.suptitle(
+        f"Plot B4 — Stage B loss curves  (ETCNN$_B$ on $[0, t_1]$,  {iters_b} iters)\n{cfg_str}",
+        fontsize=11,
+    )
     fig.tight_layout()
     fig.savefig(out_dir / "training_metrics" / "plotB4_stageD_loss.png", dpi=150)
     plt.close(fig)
@@ -1120,7 +1267,7 @@ def bermudan_problem(
     logger.info("  BT prices computed.")
 
     # ETCNN_B(s, 0)
-    s_eval_t = torch.tensor(s_eval_arr, dtype=torch.float32)
+    s_eval_t = torch.tensor(s_eval_arr, dtype=torch.get_default_dtype())
     t_zero = torch.zeros_like(s_eval_t)
     x_eval_0 = torch.stack([s_eval_t, t_zero], dim=1).to(DEVICE)
     with torch.no_grad():
@@ -1137,9 +1284,10 @@ def bermudan_problem(
     ax.plot(s_eval_arr, ve_prices, label=r"European $V^e(s, 0)$", linewidth=2, linestyle=":")
     ax.set_xlabel("s")
     ax.set_ylabel("Option price at $t=0$")
-    ax.set_title(f"Bermudan Put vs European Put vs BT at $t=0$ (K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    ax.set_title("Price at $t = 0$:  ETCNN$_B$ vs Bermudan BT (N=2000) vs European $V^e$")
     ax.legend()
     ax.grid(True, alpha=0.3)
+    fig.suptitle(f"Plot B5 — Price comparison at $t = 0$\n{cfg_str}", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_dir / "pricing" / "plotB5_price_comparison.png", dpi=150)
     plt.close(fig)
@@ -1187,8 +1335,12 @@ def bermudan_problem(
     fig.colorbar(im, ax=ax, label="Bermudan put price")
     ax.axvline(t1, color="red", linestyle="--", linewidth=1.5, label=f"$t_1 = {t1}$")
     ax.set_xlabel("t"); ax.set_ylabel("s")
-    ax.set_title(f"Full Bermudan Put Option price surface (piecewise, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    ax.set_title(
+        "Full piecewise price surface  "
+        r"($\tilde{u}^{(A)}$ for $t \geq t_1$,  $\tilde{u}^{(B)}$ for $t < t_1$)"
+    )
     ax.legend()
+    fig.suptitle(f"Plot B6 — Bermudan put price surface over $[0, T]$\n{cfg_str}", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_dir / "pricing" / "plotB6_bermudan_surface.png", dpi=150)
     plt.close(fig)
@@ -1213,8 +1365,11 @@ def bermudan_problem(
     ax.plot(s_eval_arr, err_vs_bt, linewidth=2)
     ax.set_xlabel("s")
     ax.set_ylabel("$|$ETCNN$_B(s,0) - $BT$(s,0)|$")
-    ax.set_title(f"Error vs binomial tree at $t=0$ (Bermudan Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T}, max={err_vs_bt.max():.2e})")
+    ax.set_title(
+        f"$|$ETCNN$_B(s,0) - V^{{BT}}(s,0)|$  —  max error = {err_vs_bt.max():.2e}"
+    )
     ax.grid(True, alpha=0.3)
+    fig.suptitle(f"Plot B7 — Pointwise error vs binomial tree at $t = 0$\n{cfg_str}", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_dir / "diagnostics" / "plotB7_error_vs_bt.png", dpi=150)
     plt.close(fig)
@@ -1256,7 +1411,10 @@ def bermudan_problem(
     axes[2].legend()
     axes[2].grid(True, alpha=0.3)
     
-    fig.suptitle(f"Greeks at $t=0$ (Bermudan vs European Put Option, K={K}, r={r}, $\\sigma$={sigma}, T={T})")
+    fig.suptitle(
+        f"Plot B8 — Greeks $\\Delta, \\Gamma, \\Theta$ at $t = 0$  (ETCNN$_B$ Bermudan vs analytical European)\n{cfg_str}",
+        fontsize=11,
+    )
     fig.tight_layout()
     fig.savefig(out_dir / "greeks" / "plotB8_greeks.png", dpi=150)
     plt.close(fig)
@@ -1270,25 +1428,264 @@ def bermudan_problem(
     t_res.requires_grad_(True)
 
     x_res = torch.stack([s_res, t_res], dim=1)
-    u_b_res = etcnn_b(x_res).squeeze()
-    
+
+    # Operator Bypass for diagnostic plot too
+    if hasattr(etcnn_b, "forward_pde"):
+        u_b_res = etcnn_b.forward_pde(x_res).squeeze()
+    else:
+        u_b_res = etcnn_b(x_res).squeeze()
+
     residual_t1 = bsm_operator(u_b_res, s_res, t_res, r, q, sigma)
     R_s = residual_t1 ** 2
 
-    fig, ax = plt.subplots(figsize=(8, 5))
+    inner_etcnn = etcnn_b.etcnn if hasattr(etcnn_b, "etcnn") else etcnn_b
+
+    # PDE residual of g1 * u_theta (ultimate bypass: no g2, no v)
+    s_res_g1 = torch.linspace(S_EVAL_LO, S_EVAL_HI, 1000).to(DEVICE)
+    s_res_g1.requires_grad_(True)
+    t_res_g1 = torch.full_like(s_res_g1, t1 - 1e-4).to(DEVICE)
+    t_res_g1.requires_grad_(True)
+    x_res_g1 = torch.stack([s_res_g1, t_res_g1], dim=1)
+    net_input_g1 = inner_etcnn.normalizer(x_res_g1) if inner_etcnn.normalizer is not None else x_res_g1
+    u_theta_g1 = inner_etcnn.resnet(net_input_g1).squeeze()
+    g1_val = inner_etcnn._g1(s_res_g1.unsqueeze(1), t_res_g1.unsqueeze(1)).squeeze()
+    g1_u_theta = g1_val * u_theta_g1
+    residual_g1 = bsm_operator(g1_u_theta, s_res_g1, t_res_g1, r, q, sigma)
+    R_s_g1 = residual_g1 ** 2
+
+    # PDE residual of raw u_theta (resnet output, no ansatz)
+    s_res_nn = torch.linspace(S_EVAL_LO, S_EVAL_HI, 1000).to(DEVICE)
+    s_res_nn.requires_grad_(True)
+    t_res_nn = torch.full_like(s_res_nn, t1 - 1e-4).to(DEVICE)
+    t_res_nn.requires_grad_(True)
+    x_res_nn = torch.stack([s_res_nn, t_res_nn], dim=1)
+    net_input_nn = inner_etcnn.normalizer(x_res_nn) if inner_etcnn.normalizer is not None else x_res_nn
+    u_theta_nn = inner_etcnn.resnet(net_input_nn).squeeze()
+    residual_nn = bsm_operator(u_theta_nn, s_res_nn, t_res_nn, r, q, sigma)
+    R_s_nn = residual_nn ** 2
+
+    fig, (ax, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 13))
+
+    _bypass_v = hasattr(etcnn_b, "bypass_v") and etcnn_b.bypass_v
+    if _bypass_v:
+        title_a = (
+            "(a)  forward\\_pde — bypass\\_v active ($v$ dropped, $g_2$ kept):\n"
+            r"     $R(s) = |\mathcal{F}(g_1 u_\theta + g_2)(s, t_1^-)|^2$"
+        )
+        ylabel_a = "$R(s) = |\\mathcal{F}(g_1 u_\\theta + g_2)(s, t_1^-)|^2$"
+    else:
+        title_a = (
+            "(a)  forward\\_pde — full ansatz $v + g_1 u_\\theta + g_2$:\n"
+            r"     $R(s) = |\mathcal{F}[\tilde{u}_{NN}^{(B)}](s, t_1^-)|^2$"
+        )
+        ylabel_a = "$R(s) = |\\mathcal{F}(\\tilde{u}_{NN}^{(B)})(s, t_1^-)|^2$"
+
     ax.plot(to_np(s_res), to_np(R_s), label="PDE Residual $R(s)$", color="darkorange", linewidth=2)
     if not np.isnan(s_star):
         ax.axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
-    ax.set_title(f"Test II: Spatial Distribution of PDE Residual at $t_1^-$")
+    ax.set_title(title_a)
     ax.set_xlabel("Asset Price $s$")
-    ax.set_ylabel("$R(s) = |\\mathcal{F}(\\tilde{u}_{NN}^{(B)})(s, t_1^-)|^2$")
+    ax.set_ylabel(ylabel_a)
     ax.set_yscale("log")
     ax.legend()
     ax.grid(True, alpha=0.3)
+
+    ax2.plot(to_np(s_res_g1), to_np(R_s_g1), label="PDE Residual $R(s)$", color="forestgreen", linewidth=2)
+    if not np.isnan(s_star):
+        ax2.axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
+    ax2.set_title(
+        r"(b)  Direct $g_1 u_\theta$ via forward\_neural\_manifold"
+        "\n"
+        r"     $R(s) = |\mathcal{F}(g_1 u_\theta)(s, t_1^-)|^2$"
+    )
+    ax2.set_xlabel("Asset Price $s$")
+    ax2.set_ylabel("$R(s) = |\\mathcal{F}(g_1 u_\\theta)(s, t_1^-)|^2$")
+    ax2.set_yscale("log")
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+
+    ax3.plot(to_np(s_res_nn), to_np(R_s_nn), label="PDE Residual $R(s)$", color="steelblue", linewidth=2)
+    if not np.isnan(s_star):
+        ax3.axvline(s_star, color="red", linestyle=":", alpha=0.7, label=f"Exercise boundary $s^* \\approx {s_star:.1f}$")
+    ax3.set_title("(c)  ResNet only (no ansatz):  $R(s) = |\\mathcal{F}(u_\\theta)(s, t_1^-)|^2$")
+    ax3.set_xlabel("Asset Price $s$")
+    ax3.set_ylabel("$R(s) = |\\mathcal{F}(u_\\theta)(s, t_1^-)|^2$")
+    ax3.set_yscale("log")
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+
+    fig.suptitle(
+        f"Plot B9 — Spatial distribution of PDE residual at $t_1^-$  ($s^* \\approx {s_star:.1f}$)\n{cfg_str}",
+        fontsize=11,
+    )
     fig.tight_layout()
     fig.savefig(out_dir / "diagnostics" / "plotB9_test2_pde_residual.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] Plot B9 — Test II: PDE Residual at t1-")
+
+    # === Plot B9b — Spatio-temporal PDE residual heatmap ===
+    # This plot shows |F[ũ](s,t)| as a 2D heatmap over the full (s,t) domain,
+    # split at t1 between ETCNN_B (left panel) and ETCNN_A (right panel).
+    #
+    # Validity checks before generating:
+    #
+    #   Check 1 — Structural: requires two sub-intervals (t1 > 0 and T > t1).
+    #   Check 2 — Spatial dimension: the BSM PDE is 1D in s (single-asset), so
+    #     a (s, t) heatmap is well-defined. For a multi-factor model one would
+    #     need to fix the extra dimensions — not applicable here.
+    #   Check 3 — Physical: for a put option the exercise boundary satisfies
+    #     s* < K when r > 0. If r <= 0 it can be optimal to never exercise early,
+    #     making s* = 0 and the PDE residual uniform (no kink to reveal).
+    #   Check 4 — Domain coverage: s* must lie inside [S_EVAL_LO, S_EVAL_HI] for
+    #     the heatmap to capture the kink region.
+    logger.info("Running Plot B9b — Spatio-temporal PDE residual heatmap ...")
+
+    # Check 1
+    _b9b_ok = True
+    if not (t1 > 0 and T > t1):
+        logger.warning(
+            "[SKIP] Plot B9b — requires two sub-intervals (t1 > 0 and T > t1); "
+            f"got t1={t1}, T={T}."
+        )
+        _b9b_ok = False
+
+    # Check 3
+    if _b9b_ok and r <= 0.0:
+        logger.warning(
+            "[WARN] Plot B9b — r <= 0: early exercise may never be optimal for "
+            "a put (s* → 0), so the kink region may not appear in the heatmap. "
+            f"r = {r}. Proceeding anyway."
+        )
+
+    # Check 4
+    if _b9b_ok and not np.isnan(s_star):
+        if not (S_EVAL_LO <= s_star <= S_EVAL_HI):
+            logger.warning(
+                f"[WARN] Plot B9b — exercise boundary s* = {s_star:.2f} lies "
+                f"outside evaluation domain [{S_EVAL_LO}, {S_EVAL_HI}]; "
+                "kink may not be visible in the heatmap."
+            )
+        elif s_star >= K:
+            logger.warning(
+                f"[WARN] Plot B9b — s* = {s_star:.2f} >= K = {K}; "
+                "for a standard put with r > 0 we expect s* < K."
+            )
+        else:
+            logger.info(
+                f"  [OK] s* = {s_star:.2f} < K = {K}, inside eval domain — "
+                "kink region will be visible."
+            )
+
+    if _b9b_ok:
+        # Resolution: 120 spatial × 70 temporal per panel.
+        # Keep moderate to avoid long autograd computation on CPU.
+        ns_heat, nt_heat = 120, 70
+
+        s_heat = torch.linspace(S_EVAL_LO, S_EVAL_HI, ns_heat).to(DEVICE)
+        s_np_heat = to_np(s_heat)
+
+        def _residual_grid(model, t_lo: float, t_hi: float, use_forward_pde: bool) -> np.ndarray:
+            """Compute |F[model](s, t)|² on a (ns_heat × nt_heat) grid.
+
+            Returns a (ns_heat, nt_heat) numpy array.
+            t_lo / t_hi define the temporal extent of the panel.
+            """
+            t_vals = torch.linspace(t_lo, t_hi, nt_heat).to(DEVICE)
+
+            # Flattened grid — s varies along axis 0, t along axis 1
+            S_g, T_g = torch.meshgrid(s_heat, t_vals, indexing="ij")  # (ns, nt)
+            s_flat = S_g.reshape(-1).clone().requires_grad_(True)
+            t_flat = T_g.reshape(-1).clone().requires_grad_(True)
+            x_flat = torch.stack([s_flat, t_flat], dim=1)
+
+            if use_forward_pde and hasattr(model, "forward_pde"):
+                u_flat = model.forward_pde(x_flat).squeeze()
+            else:
+                u_flat = model(x_flat).squeeze()
+
+            res_flat = bsm_operator(u_flat, s_flat, t_flat, r, q, sigma)
+            return res_flat.detach().abs().reshape(ns_heat, nt_heat).cpu().numpy(), to_np(t_vals)
+
+        # Panel 1: ETCNN_B on [0, t1^-]   include t1^- = t1 - 1e-4
+        R_b, t_b_np = _residual_grid(etcnn_b, 0.0, t1 - 1e-4, use_forward_pde=True)
+        # Panel 2: ETCNN_A on [t1, T]
+        R_a, t_a_np = _residual_grid(etcnn_a, t1, T, use_forward_pde=False)
+
+        # Shared log-scale colour limits (1st–99th percentile to avoid outlier saturation)
+        all_vals = np.concatenate([R_b.ravel(), R_a.ravel()])
+        all_pos = all_vals[all_vals > 0]
+        if all_pos.size == 0:
+            logger.warning("[WARN] Plot B9b — all residuals are zero; skipping heatmap.")
+            _b9b_ok = False
+        else:
+            vmin_heat = float(np.percentile(all_pos, 1))
+            vmax_heat = float(np.percentile(all_pos, 99))
+            if vmin_heat >= vmax_heat:
+                vmin_heat = vmax_heat * 1e-6
+
+    if _b9b_ok:
+        norm_heat = mcolors.LogNorm(vmin=vmin_heat, vmax=vmax_heat)
+        # YlOrRd: low residual → yellow (light), high residual → deep red.
+        # This avoids the black-zone artifact produced by hot_r, where high
+        # values (including anything clamped above vmax) map to black —
+        # visually indistinguishable from missing data.
+        cmap_heat = plt.cm.YlOrRd.copy()
+        cmap_heat.set_over("darkred")   # values above 99th-pct → darkred, not black
+        cmap_heat.set_bad("lightgray")  # NaN / LogNorm-invalid (zero) → gray
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+        # --- Panel 1: ETCNN_B on [0, t1^-] ---
+        im0 = axes[0].pcolormesh(
+            t_b_np, s_np_heat, R_b,
+            shading="auto", cmap=cmap_heat, norm=norm_heat,
+        )
+        fig.colorbar(im0, ax=axes[0], extend="both", label=r"$|\mathcal{F}[\tilde{u}^{(B)}](s,t)|$")
+        axes[0].axvline(t1 - 1e-4, color="cyan", linestyle="--", linewidth=1.2,
+                        label=f"$t_1^- \\approx {t1}$")
+        if not np.isnan(s_star):
+            axes[0].axhline(s_star, color="white", linestyle=":", linewidth=1.2,
+                            alpha=0.9, label=f"$s^* = {s_star:.1f}$")
+        axes[0].set_xlabel("$t$")
+        axes[0].set_ylabel("$s$")
+        axes[0].set_title(
+            r"ETCNN$_B$,  $t \in [0,\, t_1^-]$"
+            "\n"
+            r"$|\mathcal{F}[\tilde{u}^{(B)}](s,t)|$  (continuation region: $s > s^*$)"
+        )
+        axes[0].legend(fontsize=9, loc="upper right")
+
+        # --- Panel 2: ETCNN_A on [t1, T] ---
+        im1 = axes[1].pcolormesh(
+            t_a_np, s_np_heat, R_a,
+            shading="auto", cmap=cmap_heat, norm=norm_heat,
+        )
+        fig.colorbar(im1, ax=axes[1], extend="both", label=r"$|\mathcal{F}[\tilde{u}^{(A)}](s,t)|$")
+        axes[1].axvline(t1, color="cyan", linestyle="--", linewidth=1.2,
+                        label=f"$t_1 = {t1}$")
+        axes[1].axvline(T, color="lime", linestyle=":", linewidth=1.2,
+                        label=f"$T = {T}$")
+        if not np.isnan(s_star):
+            axes[1].axhline(s_star, color="white", linestyle=":", linewidth=1.2,
+                            alpha=0.9, label=f"$s^* = {s_star:.1f}$")
+        axes[1].set_xlabel("$t$")
+        axes[1].set_ylabel("$s$")
+        axes[1].set_title(
+            r"ETCNN$_A$,  $t \in [t_1,\, T]$"
+            "\n"
+            r"$|\mathcal{F}[\tilde{u}^{(A)}](s,t)|$"
+        )
+        axes[1].legend(fontsize=9, loc="upper right")
+
+        fig.suptitle(
+            f"Plot B9b — Spatio-temporal PDE residual  ($s^* \\approx {s_star:.1f}$,  "
+            f"shared log colour scale)\n{cfg_str}",
+            fontsize=11,
+        )
+        fig.tight_layout()
+        fig.savefig(out_dir / "diagnostics" / "plotB9b_pde_residual_heatmap.png", dpi=150)
+        plt.close(fig)
+        logger.info("[OK] Plot B9b — Spatio-temporal PDE residual heatmap")
 
     # === Plot B10 — Test III: Neuron Weight Magnitudes ===
     logger.info("Running Test III: Neuron Weight Magnitudes in ETCNN_A ...")
@@ -1324,7 +1721,12 @@ def bermudan_problem(
     ax.set_xticks(np.arange(1, len(layer_names) + 1))
     ax.set_xticklabels(layer_names, rotation=45, ha="right")
     ax.set_ylabel("Weight Value ($w$)")
-    ax.set_title("Test III: Neuron Weight Magnitudes in ETCNN$^{(A)}$\nLarge weights ($|w| > 1$) amplify high-frequency noise via $w^2$ in the second derivative")
+    ax.set_title(
+        "Plot B10 — Neuron weight magnitudes in ETCNN$^{(A)}$  "
+        f"(M={M} blocks × L={L_BLOCK} layers, n={n} hidden units)\n"
+        f"Large weights ($|w| > 1$) amplify high-frequency noise via $w^2$ in $\\partial^2_s \\tilde{{u}}$\n"
+        f"{cfg_str}"
+    )
     ax.grid(True, alpha=0.3)
     ax.axhline(1.0, color='red', linestyle=':', alpha=0.5)
     ax.axhline(-1.0, color='red', linestyle=':', alpha=0.5)
@@ -1391,9 +1793,17 @@ def main():
              "Decomposes U_B = v + u_tilde, removing the C^0 kink at s*.",
     )
     parser.add_argument(
-        "--g2", type=str, default="taylor", choices=["taylor", "bs"],
-        help="Terminal function g2 for ETCNN: 'taylor' (V1^e + V2^e, default) "
-             "or 'bs' (exact Black-Scholes European put)",
+        "--bypass-v", action="store_true",
+        help="Operator Bypass: drop the fictitious put v(s,t) from the PDE loss "
+             "to prevent catastrophic cancellation of its diverging derivatives "
+             "near the exercise boundary.  g2 remains coupled so the network "
+             "correctly compensates for L(g2).",
+    )
+    parser.add_argument(
+        "--g2", type=str, default="taylor", choices=["taylor", "bs", "bs2002"],
+        help="Terminal function g2 for ETCNN: 'taylor' (V1^e + V2^e, default), "
+             "'bs' (exact Black-Scholes European put), or "
+             "'bs2002' (Bjerksund-Stensland 2002 American put approximation)",
     )
     parser.add_argument(
         "--device",
@@ -1406,6 +1816,23 @@ def main():
     parser.add_argument("--european-only", action="store_true", help="Skip Bermudan problem and only run European")
     parser.add_argument("--weight-decay", type=float, default=0.0, help="L2 regularization penalty for Adam optimizer")
     parser.add_argument(
+        "--spatial-weight", action="store_true",
+        help="Enable inverted-Gaussian spatial weighting of the Stage B PDE loss "
+             "to suppress the gradient spike from the C^1 PCHIP knot at s*. "
+             "Off by default (plain MSE). Requires --extraction.",
+    )
+    parser.add_argument(
+        "--sigma-w", type=float, default=1.0,
+        help="Bandwidth of the inverted-Gaussian suppression window around s* "
+             "(default 1.0). Only used when --spatial-weight is set.",
+    )
+    parser.add_argument(
+        "--eps-w", type=float, default=1e-3,
+        help="Lower bound of the spatial weight at s* (default 1e-3). "
+             "Prevents complete nullification of the loss at the exercise boundary. "
+             "Only used when --spatial-weight is set.",
+    )
+    parser.add_argument(
         "--load-etcnn-a",
         type=str,
         default=None,
@@ -1416,7 +1843,14 @@ def main():
     )
     parser.add_argument("--n-tc", type=int, default=1024, help="Number of terminal condition points")
     parser.add_argument("--n-f", type=int, default=4096, help="Number of interior PDE collocation points")
+    parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float64"], help="PyTorch default dtype")
     args = parser.parse_args()
+    
+    if args.dtype == "float64":
+        torch.set_default_dtype(torch.float64)
+    else:
+        torch.set_default_dtype(torch.float32)
+        
     _apply_device_arg(args.device)
 
     # Update global hyperparameters if provided
@@ -1466,6 +1900,10 @@ def main():
             "iters": args.iters,
             "log_every": args.log_every,
             "extraction": args.extraction,
+            "bypass_v": args.bypass_v,
+            "spatial_weight": args.spatial_weight,
+            "sigma_w": args.sigma_w,
+            "eps_w": args.eps_w,
             "interp_method": args.interp,
             "g2_type": args.g2,
             "device": args.device,
@@ -1480,7 +1918,7 @@ def main():
         }
     }
     with open(out_dir / "metadata.yaml", "w") as f:
-        yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
+        yaml.dump(metadata, f, default_flow_style=False, sort_keys=False, width=float("inf"))
 
     # Logging
     logging.basicConfig(
@@ -1492,6 +1930,10 @@ def main():
             logging.FileHandler(out_dir / "training.log"),
         ],
     )
+    # Suppress matplotlib's INFO-level font substitution messages (e.g.
+    # "Substituting symbol F from STIXNonUnicode") — these are harmless
+    # fallbacks when rendering \mathcal glyphs and do not affect output.
+    logging.getLogger("matplotlib.mathtext").setLevel(logging.WARNING)
     logger.info(f"Phase 3 — ETCNN Training")
     logger.info(f"  Output: {out_dir}")
     logger.info(f"  Command: {' '.join(sys.argv)}")
@@ -1547,6 +1989,10 @@ def main():
             weight_decay=args.weight_decay,
             load_etcnn_a=load_path,
             g2_type=args.g2,
+            bypass_v=args.bypass_v,
+            sigma_w=args.sigma_w,
+            eps_w=args.eps_w,
+            use_spatial_weight=args.spatial_weight,
         )
     else:
         ber_results = None
