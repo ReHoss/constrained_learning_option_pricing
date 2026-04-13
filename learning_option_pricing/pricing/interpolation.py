@@ -100,12 +100,13 @@ class CubicSplineInterpolator:
         d = (m[1:] - m[:-1]) / (6.0 * h)                           # (n-1,)
         b = (y[1:] - y[:-1]) / h - h * (2.0 * m[:-1] + m[1:]) / 6.0  # (n-1,)
 
-        # Store as float32 on CPU
-        self._x_nodes = x.float().cpu()
-        self._a = a.float().cpu()
-        self._b = b.float().cpu()
-        self._c = c.float().cpu()
-        self._d = d.float().cpu()
+        # Store as default dtype on CPU
+        dtype = torch.get_default_dtype()
+        self._x_nodes = x.to(dtype).cpu()
+        self._a = a.to(dtype).cpu()
+        self._b = b.to(dtype).cpu()
+        self._c = c.to(dtype).cpu()
+        self._d = d.to(dtype).cpu()
 
     def __call__(self, x_query: torch.Tensor) -> torch.Tensor:
         """Evaluate the spline at *x_query* (autograd-compatible)."""
@@ -189,11 +190,12 @@ class PchipInterpolator:
         c = (3.0 * delta - 2.0 * d[:-1] - d[1:]) / h
         d_coeff = (d[:-1] + d[1:] - 2.0 * delta) / (h * h)
 
-        self._x_nodes = x.float().cpu()
-        self._a = a.float().cpu()
-        self._b = b.float().cpu()
-        self._c = c.float().cpu()
-        self._d = d_coeff.float().cpu()
+        dtype = torch.get_default_dtype()
+        self._x_nodes = x.to(dtype).cpu()
+        self._a = a.to(dtype).cpu()
+        self._b = b.to(dtype).cpu()
+        self._c = c.to(dtype).cpu()
+        self._d = d_coeff.to(dtype).cpu()
 
     def __call__(self, x_query: torch.Tensor) -> torch.Tensor:
         """Evaluate the PCHIP interpolant at *x_query* (autograd-compatible)."""

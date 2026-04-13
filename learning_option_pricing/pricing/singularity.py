@@ -102,7 +102,7 @@ def find_exercise_boundary(
     a, b = float(s_grid[idx]), float(s_grid[idx + 1])
 
     def _diff_at(s_val: float) -> float:
-        s_t = torch.tensor([[s_val, t1]], dtype=torch.float32, device=device)
+        s_t = torch.tensor([[s_val, t1]], dtype=torch.get_default_dtype(), device=device)
         with torch.no_grad():
             h = model(s_t).item()
         return max(K - s_val, 0.0) - h
@@ -140,8 +140,8 @@ def compute_hold_delta_at_boundary(
     Returns:
         delta_A: Spatial derivative of the hold value at $s^*$.
     """
-    s = torch.tensor([s_star], dtype=torch.float32, device=device, requires_grad=True)
-    t = torch.tensor([t1], dtype=torch.float32, device=device)
+    s = torch.tensor([s_star], dtype=torch.get_default_dtype(), device=device, requires_grad=True)
+    t = torch.tensor([t1], dtype=torch.get_default_dtype(), device=device)
     x = torch.stack([s, t], dim=1)
     u = model(x).squeeze()
     (du_ds,) = torch.autograd.grad(u, s, create_graph=False)
@@ -210,8 +210,8 @@ class FictitiousEuropeanPut(nn.Module):
         self, c: float, s_star: float, r: float, sigma: float, t1: float,
     ) -> None:
         super().__init__()
-        self.register_buffer("_c", torch.tensor(c, dtype=torch.float32))
-        self.register_buffer("_s_star", torch.tensor(s_star, dtype=torch.float32))
+        self.register_buffer("_c", torch.tensor(c, dtype=torch.get_default_dtype()))
+        self.register_buffer("_s_star", torch.tensor(s_star, dtype=torch.get_default_dtype()))
         self.r = r
         self.sigma = sigma
         self.t1 = t1

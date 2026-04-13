@@ -106,32 +106,60 @@ class ETCNN(nn.Module):
 
         return g1_val * u_nn + g2_val
 
+    def forward_neural_manifold(self, x: torch.Tensor) -> torch.Tensor:
+        """Return strictly the neural manifold component g1(s,t) · u_θ(s,t).
+
+        Drops g2 entirely so that the BSM operator sees only the smooth,
+        network-learned part of the solution.  Used by BermudaETCNN.forward_pde
+        to implement the Ultimate Operator Bypass.
+
+        Args:
+            x: Input tensor of shape (batch, 2) with columns [s, t].
+
+        Returns:
+            g1(s, t) · u_θ(s, t) of shape (batch, 1).
+        """
+        s = x[:, 0:1]
+        t = x[:, 1:2]
+        net_input = self.normalizer(x) if self.normalizer is not None else x
+        u_nn = self.resnet(net_input)
+        g1_val = self._g1(s, t)
+        return g1_val * u_nn
+
 
 # ---------------------------------------------------------------------------
 # American put specialisation
 # ---------------------------------------------------------------------------
 
 class AmericanPutETCNN(ETCNN):
-    """ETCNN for a single-asset American put option (no dividends).
+    r"""ETCNN for a single-asset American put option (no dividends).
 
     g1(s, t) = T - t
     g2(s, t) depends on *g2_type*:
 
     - ``"taylor"`` (default): $g_2 = V_1^e + V_2^e$, the first-order Taylor
-      expansion of the European put around $\\tilde{d}_0$.  Captures the
-      $\\sqrt{\\tau}$ singularity near expiry (Zhang, Guo, Lu 2026, Sec. 4.1.1).
+      expansion of the European put around $\tilde{d}_0$.  Captures the
+      $\sqrt{\tau}$ singularity near expiry (Zhang, Guo, Lu 2026, Sec. 4.1.1).
     - ``"bs"``: $g_2 = V^e(s, t)$, the exact Black–Scholes European put price.
       Smoother than the Taylor form but does not explicitly decompose the
       singular behaviour.
+    - ``"bs2002"``: $g_2 = \bar{p}^{\mathrm{BS02}}(s, K, \tau, r, \sigma)$,
+      the Bjerksund–Stensland (2002) one-step American put approximation.
+      Unlike the European anchors, this contains a flat exercise boundary
+      and a $C^0$ kink at $s^*$, absorbing the dominant singularity of the
+      true American solution.  The BSM operator applied to $g_2$ is *not*
+      zero ($\mathcal{F}(g_2) \neq 0$), producing a non-homogeneous source
+      term that the network compensates for.
 
     Args:
         K:      Strike price.
         r:      Risk-free rate.
         sigma:  Volatility.
         T:      Expiration time.
+        q:      Continuous dividend yield (default 0).
         resnet: ResNet backbone (uses defaults if None).
         normalize_input: Whether to apply s/K normalisation.
-        g2_type: Terminal function type — ``"taylor"`` or ``"bs"``.
+        g2_type: Terminal function type — ``"taylor"``, ``"bs"``, or ``"bs2002"``.
     """
 
     def __init__(
@@ -140,6 +168,7 @@ class AmericanPutETCNN(ETCNN):
         r: float = 0.02,
         sigma: float = 0.25,
         T: float = 1.0,
+        q: float = 0.0,
         resnet: ResNet | None = None,
         normalize_input: bool = True,
         g2_type: str = "taylor",
@@ -154,6 +183,7 @@ class AmericanPutETCNN(ETCNN):
         self._r = r
         self._sigma = sigma
         self._T = T
+        self._q = q
         self._g2_type = g2_type
 
         def g1(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
@@ -167,9 +197,16 @@ class AmericanPutETCNN(ETCNN):
             def g2(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
                 tau = T - t
                 return black_scholes_put(s, K, r, sigma, tau)
+        elif g2_type == "bs2002":
+            from learning_option_pricing.pricing.bjerksund_stensland import bs2002_put
+
+            def g2(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+                tau = T - t
+                return bs2002_put(s, K, r, sigma, tau, q=q)
         else:
             raise ValueError(
-                f"Unknown g2_type: {g2_type!r}. Choose 'taylor' or 'bs'."
+                f"Unknown g2_type: {g2_type!r}. "
+                "Choose 'taylor', 'bs', or 'bs2002'."
             )
 
         if resnet is None:
@@ -245,13 +282,19 @@ class BermudaETCNN(nn.Module):
         self,
         etcnn: ETCNN,
         fictitious_put: nn.Module,
+        bypass_v: bool = False,
     ) -> None:
         super().__init__()
         self.etcnn = etcnn
         self.fictitious_put = fictitious_put
+        self.bypass_v = bypass_v
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass: $U_B = v + \tilde{u}_\theta$.
+        r"""Full forward pass: $U_B = v + g_1 u_\theta + g_2$.
+
+        Always includes every component of the ansatz.  Used for the terminal
+        condition loss $\mathcal{L}_{tc}$ so that $g_2$ enforces the exact
+        terminal boundary.
 
         Args:
             x: Input tensor ``(batch, 2)`` with columns ``[s, t]``.
@@ -264,6 +307,29 @@ class BermudaETCNN(nn.Module):
         v = self.fictitious_put(s, t)
         u_tilde = self.etcnn(x)
         return v + u_tilde
+
+    def forward_pde(self, x: torch.Tensor) -> torch.Tensor:
+        r"""Forward pass for PDE residual computation.
+
+        When ``bypass_v=True`` returns the coupled manifold
+
+            $U_{\mathrm{pde}} = g_1(s,t) \cdot u_\theta(s,t) + g_2(s)$
+
+        dropping only the fictitious put $v(s,t)$.  This prevents catastrophic
+        floating-point cancellation from the diverging derivatives
+        $\partial_{ss}v \to +\infty$, $\partial_t v \to -\infty$ near $s^*$,
+        while keeping $g_2$ in the computational graph so that the network
+        correctly learns the interior diffusion correction $\mathcal{L}(g_1 u_\theta) = -\mathcal{L}(g_2)$.
+
+        Note: $\mathcal{L}(g_2) \neq 0$ for the PCHIP interpolant; decoupling
+        $g_2$ was found empirically to break the backward-time diffusion
+        (Bermudan price fell below the European price).  The localised autograd
+        spike at $s^*$ from $\partial_{ss} g_2$ is accepted as an unavoidable
+        geometric artifact of differentiating a $C^1$ PCHIP knot.
+        """
+        if self.bypass_v:
+            return self.etcnn(x)
+        return self.forward(x)
 
     # convenience accessors
     @property
