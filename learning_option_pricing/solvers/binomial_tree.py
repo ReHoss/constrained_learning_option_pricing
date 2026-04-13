@@ -39,7 +39,6 @@ def european_put_binomial_tree(
     dt = T / N
     u = math.exp(sigma * math.sqrt(dt))
     d = 1.0 / u
-    disc = math.exp(-(r - q) * dt)
     p = (math.exp((r - q) * dt) - d) / (u - d)
 
     # Terminal payoff
@@ -79,7 +78,6 @@ def american_put_binomial_tree(
     dt = T / N
     u = math.exp(sigma * math.sqrt(dt))
     d = 1.0 / u
-    disc = math.exp(-(r - q) * dt)
     p = (math.exp((r - q) * dt) - d) / (u - d)
 
     # Terminal payoff
