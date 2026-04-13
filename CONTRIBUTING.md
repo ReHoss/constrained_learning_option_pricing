@@ -22,6 +22,7 @@ learning_option_pricing/   # core Python package
     pricing/
         terminal.py        # BSM operator, payoffs, Ve, Ve1/Ve2, g1, g2
         loss.py            # complementarity loss terms (L_bs, L_tv, L_eq)
+        bjerksund_stensland.py  # BS-2002 American put approximation (g2 anchor)
     models/
         resnet.py          # ResNet backbone
         etcnn.py           # ETCNN wrapper (trial solution = g1*NN + g2)

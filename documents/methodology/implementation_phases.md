@@ -177,6 +177,7 @@ The exercise boundary $s^*$ at $t_1$ is the asset price where $\Phi(s) = \tilde{
 | B7 | `diagnostics/plotB7_error_vs_bt.png` | Pointwise error $\lvert \tilde{u}^{(B)}(s, 0) - V^{BT}(s, 0)\rvert$ at $t = 0$ |
 | B8 | `greeks/plotB8_greeks.png` | Greeks $\Delta, \Gamma, \Theta$ at $t = 0$: Bermudan ETCNN$_B$ vs European analytical |
 | B9 | `diagnostics/plotB9_test2_pde_residual.png` | PDE residual $\lvert \mathcal{F}[\tilde{u}^{(B)}](s, t_1^-)\rvert^2$ across asset prices — spike near $s^*$ indicates kink effect |
+| B9b | `diagnostics/plotB9b_pde_residual_heatmap.png` | Spatio-temporal heatmap of $\lvert \mathcal{F}[\tilde{u}](s,t)\rvert$ over the full $(s,t)$ domain, split at $t_1$: left panel ETCNN$_B$ on $[0, t_1^-]$, right panel ETCNN$_A$ on $[t_1, T]$; shared log colour scale |
 | B10 | `diagnostics/plotB10_test3_weight_distribution.png` | Neuron weight magnitude distribution in ETCNN$_A$ (violinplot by layer) |
 
 **Plot B1 — Intermediate terminal condition:**
@@ -218,6 +219,26 @@ Largest errors typically occur near $s^*$ where the terminal condition $g_2$ has
 The BSM residual of ETCNN$_B$ evaluated just before the exercise date:
 $$\mathcal{F}[\tilde{u}^{(B)}](s, t_1^-) = \frac{\partial \tilde{u}}{\partial t} + \tfrac{1}{2}\sigma^2 s^2 \frac{\partial^2 \tilde{u}}{\partial s^2} + rs\frac{\partial \tilde{u}}{\partial s} - r\tilde{u}$$
 A spike near $s^*$ indicates that the interpolant's smoothness directly limits how well the PDE can be satisfied close to the exercise boundary.
+
+**Plot B9b — Spatio-temporal PDE residual heatmap:**
+A two-panel heatmap of $|\mathcal{F}[\tilde{u}](s,t)|$ over the full evaluation domain $s \in [S_{\min}, S_{\max}]$, covering both sub-intervals:
+
+| Panel | Model | Domain |
+|-------|-------|--------|
+| Left | ETCNN$_B$ | $t \in [0,\, t_1^-]$ (includes the point just before the exercise date) |
+| Right | ETCNN$_A$ | $t \in [t_1,\, T]$ |
+
+Both panels share a single log-scale colour axis so relative magnitudes are directly comparable. The horizontal dashed line marks the exercise boundary $s^*$; cyan vertical lines mark $t_1$ and $T$.
+
+The BSM operator is:
+$$\mathcal{F}[\tilde{u}](s,t) = \frac{\partial \tilde{u}}{\partial t} + \tfrac{1}{2}\sigma^2 s^2 \frac{\partial^2 \tilde{u}}{\partial s^2} + rs\frac{\partial \tilde{u}}{\partial s} - r\tilde{u}$$
+
+**Validity conditions checked at runtime:**
+
+1. **Structural** — two distinct sub-intervals must exist: $t_1 > 0$ and $T > t_1$. If not, the plot is skipped.
+2. **Spatial dimension** — the BSM PDE is 1D in $s$ (single-asset), so a $(s,t)$ heatmap is always well-defined. For a multi-factor model one would need to fix the extra state dimensions; not applicable here.
+3. **Rate sign** — when $r \leq 0$ it may be optimal never to exercise a put early ($s^* \to 0$), so no kink region appears in the heatmap. A warning is logged but the plot is still generated.
+4. **Domain coverage** — if $s^* \notin [S_{\min}, S_{\max}]$ the kink is off-screen; a warning is logged. We also flag the financially inconsistent case $s^* \geq K$ (for a put with $r > 0$, $s^* < K$ is expected).
 
 ---
 
@@ -278,11 +299,37 @@ python3 experiments/python_scripts/exp1/phase3_training.py \
     --interp pchip
 ```
 
-### 4.6 CLI reference
+### 4.6 BS-2002 American put anchor
+
+Use the Bjerksund–Stensland (2002) approximation as the $g_2$ anchor, which captures
+the early-exercise boundary kink analytically:
+
+```bash
+python3 experiments/python_scripts/exp1/phase3_training.py \
+    --g2 bs2002 \
+    --iters 50000 \
+    --device auto
+```
+
+Bermudan with BS-2002 anchor, singularity extraction, and Operator Bypass:
+
+```bash
+python3 experiments/python_scripts/exp1/phase3_training.py \
+    --g2 bs2002 \
+    --extraction \
+    --bypass-v \
+    --bermudan-only \
+    --iters 20000 5000
+```
+
+### 4.7 CLI reference
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--iters N [M]` | `50000` | Training iterations. One value = same for all stages; two values = Stage A, Stage B. |
+| `--g2 {taylor,bs,bs2002}` | `taylor` | Terminal function $g_2$ for ETCNN: `taylor` ($V_1^e + V_2^e$), `bs` (exact BS European put), `bs2002` (Bjerksund–Stensland 2002 American put approximation). |
+| `--extraction` | off | Enable singularity extraction ansatz for Stage B. |
+| `--bypass-v` | off | Operator Bypass: skip differentiating the fictitious put $v(s,t)$ in the PDE loss to prevent catastrophic cancellation. |
 | `--interp {cubic,pchip,linear}` | `cubic` | Interpolation method for $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$. `pchip` is shape-preserving ($C^1$). |
 | `--device {auto,cuda,cpu}` | `auto` | Compute device. |
 | `--bermudan-only` | off | Skip European problem, run only Bermudan stages. |
@@ -305,3 +352,5 @@ python3 experiments/python_scripts/exp1/phase3_training.py \
 | $\Delta, \Gamma, \Theta$ | Option Greeks computation | `phase3_training.compute_greeks_nn`, `compute_greeks_analytical` |
 | BT reference | Bermudan binomial tree | `solvers.bermuda_put_binomial_tree` |
 | $s^*$ | Exercise boundary at $t_1$ | Sign-change detection in `bermudan_problem` |
+| $w(s)$ | Spatial weight function | `phase3_training.compute_losses` |
+| $W$ | Detached spatial weight tensor | `phase3_training.compute_losses` |

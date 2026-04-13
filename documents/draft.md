@@ -2,10 +2,14 @@
 - Longstaff Schwartz
 - Bernard Lapeyre avec garanties 
 - On bermudan options
+- On the limitations exhibited by the paper of Zhang (n=5 but the approach goes back to n=1)
+- There is a kink at tau -> 0 and a kink at s* for the bermudan problem !
 
 TODO:
 - Download references from Lapeyre paper.
 - Try the ANALYTICAL Green function approach (maybe something can be done through neural operators ?!).
+
+- Understand the kink at s* on the residual loss?
 
 
 ---
@@ -13,6 +17,8 @@ TODO:
 Some remarks:
 - Learnt gamma should be smooth but is not matching at all ! --> Learning the analytical formula (he strike?)
 - Idea: use the analytical integral formula ?!
+- The 
+- https://openaccess.city.ac.uk/id/eprint/5993/  [Methodology]
 
 
 
