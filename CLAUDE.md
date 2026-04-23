@@ -8,3 +8,4 @@
 - In markdown files, please use LaTeX for mathematical expressions.
 - Log as much information as possible in experiments and scripts.
 - the virtual environment is installed here venv/venv_learning_option_pricing
+- Save the run statistics so that plots can be easily updated without re-running the experiments.
