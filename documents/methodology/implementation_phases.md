@@ -145,9 +145,9 @@ A Bermudan put with one intermediate exercise date $t_1 = 0.5$ is solved by piec
 
 | Stage | Domain | Terminal condition | Network |
 |-------|--------|--------------------|---------|
-| A | $[t_1, T]$ | $\Phi(s) = (K - s)^+$ at $t = T$ | ETCNN$_A$ |
+| A | $[t_1, T]$ | $\Phi(s) = (K - s)^+$ at $t = T$ | ${ETCNN}_A$ |
 | B (intermediate) | — | $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1) = \max\!\bigl(\Phi(s),\;\tilde{u}^{(A)}_{\bar{\theta}}(s, t_1)\bigr)$ | — |
-| C+D | $[0, t_1]$ | $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ at $t = t_1$ | ETCNN$_B$ |
+| C+D | $[0, t_1]$ | $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ at $t = t_1$ | ${ETCNN}_B$ |
 
 **Stage B — intermediate condition:** At $t = t_1$, the Bermudan holder compares immediate exercise $\Phi(s)$ with the continuation value $\tilde{u}^{(A)}_{\bar{\theta}}(s, t_1)$ (the Stage A ETCNN output). The maximum defines the terminal condition for Stage D.
 
@@ -160,8 +160,57 @@ $$
 
 Note: $g_2$ is constant in $t$ and does not capture $\sqrt{\tau}$ singularities. This is acceptable because $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ is a network output evaluated at a fixed time, not a Black–Scholes closed form — it carries no $\sqrt{\tau}$ singular structure by construction.
 
+**Full piecewise neural network approximation:**
+
+The complete Bermudan approximation stitches both ETCNNs across their respective sub-intervals. For any $(s, t)$:
+
+*Without singularity extraction* (`--put-ansatz` off, default):
+
+$$
+V_{\theta}(s, t) = \begin{cases}
+(T - t)\, u_{\theta_A}(s, t) + g_2^{(A)}(s, t), & t \in [t_1, T] \\[4pt]
+(t_1 - t)\, u_{\theta_B}(s, t) + V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1), & t \in [0, t_1]
+\end{cases}
+$$
+
+where $g_2^{(A)}$ is the Stage A anchor (Taylor, BS, or BS2002) and $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ is the interpolated intermediate terminal condition.
+
+*With singularity extraction* (`--put-ansatz`):
+
+$$
+V_{\theta}(s, t) = \begin{cases}
+(T - t)\, u_{\theta_A}(s, t) + g_2^{(A)}(s, t), & t \in [t_1, T] \\[4pt]
+v(s, t) + (t_1 - t)\, u_{\theta_B}(s, t) + g_2^{(B)}(s), & t \in [0, t_1]
+\end{cases}
+$$
+
+where $v(s, t)$ is the fictitious European put that absorbs the $C^0$ kink at $s^*$ (see [`architecture.md §2.2`](architecture.md)), and $g_2^{(B)}(s) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1) - v(s, t_1)$ is the smooth $C^1$ PCHIP residual. At $t = t_1$, $g_1^{(B)} = 0$ so the neural manifold vanishes and the formula collapses to $v(s, t_1) + g_2^{(B)}(s) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$, matching the terminal condition exactly.
+
 **Exercise boundary:**
 The exercise boundary $s^*$ at $t_1$ is the asset price where $\Phi(s) = \tilde{u}^{(A)}_{\bar{\theta}}(s, t_1)$, found by sign-change detection. For these parameters, $s^* < K = 100$.
+
+**Spatial weighting** (`--spatial-weight`, requires `--put-ansatz`)**:**
+
+Even after extracting the $C^0$ kink into $v(s, t)$, the PCHIP interpolant of the residual $g_2^{(B)}$ still has a $C^1$ knot at $s^*$: the second derivative $\partial_{ss} g_2^{(B)}$ is bounded but has a jump there. Differentiating through this knot during PDE-loss backpropagation produces a localized gradient spike that can destabilize training.
+
+To suppress it, an inverted-Gaussian spatial weight $w(s)$ is applied to the PDE loss collocation points:
+
+$$
+w(s) = 1 - (1 - \epsilon_w)\exp\!\left(-\frac{(s - s^*)^2}{2\sigma_w^2}\right)
+$$
+
+The weighted PDE loss replaces the plain MSE:
+
+$$
+\mathcal{L}_f = \mathrm{mean}\bigl(W \cdot \mathcal{F}(U_{\mathrm{pde}})^2\bigr), \qquad W = \mathrm{detach}(w(s))
+$$
+
+- At $s^*$: $w(s^*) = \epsilon_w \approx 10^{-3}$ — near-complete suppression of the gradient spike.
+- Far from $s^*$: $w(s) \to 1$ — loss is unaffected.
+- $\sigma_w$ (default `1.0`) controls the width of the suppression window.
+- $W$ is strictly detached from the computational graph: it acts as a static scalar, not a learnable weight.
+
+Disabled by default; activate with `--spatial-weight`.
 
 **Plots produced:**
 | Plot | File | Description |
@@ -316,7 +365,7 @@ Bermudan with BS-2002 anchor, singularity extraction, and Operator Bypass:
 ```bash
 python3 experiments/python_scripts/exp1/phase3_training.py \
     --g2 bs2002 \
-    --extraction \
+    --put-ansatz \
     --bypass-v \
     --bermudan-only \
     --iters 20000 5000
@@ -328,9 +377,12 @@ python3 experiments/python_scripts/exp1/phase3_training.py \
 |------|---------|-------------|
 | `--iters N [M]` | `50000` | Training iterations. One value = same for all stages; two values = Stage A, Stage B. |
 | `--g2 {taylor,bs,bs2002}` | `taylor` | Terminal function $g_2$ for ETCNN: `taylor` ($V_1^e + V_2^e$), `bs` (exact BS European put), `bs2002` (Bjerksund–Stensland 2002 American put approximation). |
-| `--extraction` | off | Enable singularity extraction ansatz for Stage B. |
-| `--bypass-v` | off | Operator Bypass: skip differentiating the fictitious put $v(s,t)$ in the PDE loss to prevent catastrophic cancellation. |
-| `--interp {cubic,pchip,linear}` | `cubic` | Interpolation method for $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$. `pchip` is shape-preserving ($C^1$). |
+| `--put-ansatz` | off | Enable singularity extraction ansatz for Stage B. |
+| `--bypass-v` | off | Operator Bypass (**Bermudan/Stage B+ only**): skip differentiating the fictitious put $v(s,t)$ in the PDE loss to prevent catastrophic cancellation of its diverging derivatives near $s^*$. Not applicable to the European or Stage A problems: `AmericanPutETCNN` contains no singular $v$ component, so no bypass is needed or defined there. |
+| `--spatial-weight` | off | Enable inverted-Gaussian spatial weighting of the Stage B PDE loss to suppress the gradient spike from the $C^1$ PCHIP knot at $s^*$. Requires `--put-ansatz`. |
+| `--sigma-w` | `1.0` | Bandwidth $\sigma_w$ of the spatial suppression window (requires `--spatial-weight`). |
+| `--eps-w` | `1e-3` | Floor weight $\epsilon_w$ at $s^*$; prevents complete nullification of the loss (requires `--spatial-weight`). |
+| `--interp {cubic,pchip,linear}` | `cubic` | Interpolation method for $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$. `pchip` is shape-preserving ($C^1$). Ignored when `--put-ansatz` is set. |
 | `--device {auto,cuda,cpu}` | `auto` | Compute device. |
 | `--bermudan-only` | off | Skip European problem, run only Bermudan stages. |
 | `--european-only` | off | Skip Bermudan problem, run only European stages. |

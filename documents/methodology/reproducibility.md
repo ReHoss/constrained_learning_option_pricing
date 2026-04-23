@@ -37,8 +37,8 @@ Runs 50 000 iterations per stage, uses the Taylor $g_2$ form, standard cubic int
 |------|------|---------|-------------|
 | `--iters N [N ...]` | int+ | `50000` | Training iterations per stage. One value → same for all stages. Two values → Stage A then Stage B. Example: `--iters 20000 5000` |
 | `--g2 {taylor,bs}` | str | `taylor` | Terminal function $g_2$ for ETCNN. `taylor`: $g_2 = V_1^e + V_2^e$ (Taylor expansion capturing $\sqrt{\tau}$ singularity, §2.1 of architecture.md). `bs`: $g_2 = P^{\text{BS}}$ (exact Black-Scholes European put). Applied to both the European problem and Stage A of the Bermudan. |
-| `--extraction` | flag | *off* | Enable singularity extraction ansatz for Stage B (§2.2 of architecture.md). Decomposes $V_\theta = v + \tilde{u}_\theta$, removing the $C^0$ kink at the exercise boundary $s^*$. When *off*, Stage B directly interpolates $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$. |
-| `--interp {cubic,pchip,linear}` | str | `cubic` | Interpolator used for $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ in the **non-extraction** path. Ignored when `--extraction` is set. `cubic`: $C^2$ natural spline. `pchip`: $C^1$, shape-preserving. `linear`: $C^0$, drops diffusion (benchmarking only). |
+| `--put-ansatz` | flag | *off* | Enable singularity extraction ansatz for Stage B (§2.2 of architecture.md). Decomposes $V_\theta = v + \tilde{u}_\theta$, removing the $C^0$ kink at the exercise boundary $s^*$. When *off*, Stage B directly interpolates $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$. |
+| `--interp {cubic,pchip,linear}` | str | `cubic` | Interpolator used for $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ in the **non-put-ansatz** path. Ignored when `--put-ansatz` is set. `cubic`: $C^2$ natural spline. `pchip`: $C^1$, shape-preserving. `linear`: $C^0$, drops diffusion (benchmarking only). |
 | `--device {auto,cuda,cpu}` | str | `auto` | Compute device. `auto` selects CUDA if available. |
 | `--weight-decay W` | float | `0.0` | L2 regularisation weight for Adam. |
 | `--log-every N` | int | `1000` | Print/log loss every $N$ iterations. |
@@ -46,7 +46,7 @@ Runs 50 000 iterations per stage, uses the Taylor $g_2$ form, standard cubic int
 | `--n-f N` | int | `4096` | Number of interior PDE collocation points per batch. |
 | `--bermudan-only` | flag | *off* | Skip the European problem and go directly to the Bermudan stages. Mutually exclusive with `--european-only`. |
 | `--european-only` | flag | *off* | Skip the Bermudan problem and run only the European stages (ETCNN + PINN). Mutually exclusive with `--bermudan-only`. |
-| `--load-etcnn-a PATH` | str | `None` | Load a pre-trained Stage A network from file (skips Stage A training). Useful to re-run Stage B with a different `--interp` or `--extraction` setting. |
+| `--load-etcnn-a PATH` | str | `None` | Load a pre-trained Stage A network from file (skips Stage A training). Useful to re-run Stage B with a different `--interp` or `--put-ansatz` setting. |
 
 #### Output directory naming
 
@@ -56,10 +56,10 @@ The output directory encodes the key settings so benchmark runs don't collide:
 data/phase3_training/<timestamp>_iters<A>_<B>_K<K>_<mode>_g2-<g2>/
 ```
 
-where `<mode>` is `extraction` or `interp-<method>`. Example:
+where `<mode>` is `put-ansatz` or `interp-<method>`. Example:
 
 ```
-data/phase3_training/20260410_143000_iters20000_5000_K100_extraction_g2-taylor/
+data/phase3_training/20260410_143000_iters20000_5000_K100_put-ansatz_g2-taylor/
 ```
 
 #### Example commands
@@ -78,15 +78,15 @@ python experiments/python_scripts/exp1/phase3_training.py \
 
 # Singularity extraction ansatz, BS g2, 20k Stage A + 5k Stage B
 python experiments/python_scripts/exp1/phase3_training.py \
-    --extraction --g2 bs --iters 20000 5000
+    --put-ansatz --g2 bs --iters 20000 5000
 
-# PCHIP interpolation (no extraction), Taylor g2, CPU
+# PCHIP interpolation (no put-ansatz), Taylor g2, CPU
 python experiments/python_scripts/exp1/phase3_training.py \
     --interp pchip --device cpu --iters 30000 10000
 
 # Skip Stage A using a saved model
 python experiments/python_scripts/exp1/phase3_training.py \
-    --extraction --load-etcnn-a data/phase3_training/<run>/etcnn_a.pt
+    --put-ansatz --load-etcnn-a data/phase3_training/<run>/etcnn_a.pt
 
 # Bermudan only, BS g2, large run
 python experiments/python_scripts/exp1/phase3_training.py \

@@ -123,7 +123,7 @@ $$
 
 The first derivative has a jump discontinuity at $s^*$ of magnitude $[\![\partial_s V^{\mathrm{Berm}}_{\bar{\theta}}]\!]_{s^*} = \Delta_A(s^*) + 1$. Consequently, $\partial^2 V^{\mathrm{Berm}}_{\bar{\theta}}/\partial s^2$ contains a **Dirac distribution** at $s^*$. If a neural network is forced to learn this boundary condition, the infinite curvature causes the BSM PDE residual to explode (stiffness), destroying the optimisation.
 
-**Solution: singularity extraction ansatz.**
+**Solution (@RH: not sure it works): singularity extraction ansatz.**
 Instead of smoothing $V^{\mathrm{Berm}}_{\bar{\theta}}$ with an interpolant (which either introduces oscillations or drops the diffusion term), we analytically extract the singularity.
 
 The Stage B network must learn the **full price function** $V_\theta(s, t)$ on the sub-interval $[t_{k-1}, t_k]$, subject to the terminal condition $V_\theta(s, t_k) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_k)$. Note that $V_\theta(s, t)$ is a function of both $s$ and $t$, whereas $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_k)$ is only defined at the single time $t_k$. The kink in $V^{\mathrm{Berm}}_{\bar{\theta}}$ propagates into $V_\theta$ through the terminal condition, causing the BSM PDE residual $\mathcal{F}[V_\theta]$ to explode near $s^*$.
@@ -160,20 +160,25 @@ $$
 g_2(s, t) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_k) - v(s, t_k)
 $$
 
-Note (Remy): Here it is enough to have a function that maps the derivative for the case t=t_k.
+TODO: why $g_2$ is time-independent? 
 
-**PDE structure and Operator Bypass.** Because the BSM operator $\mathcal{L}$ is linear and $v$ is an exact Black-Scholes solution ($\mathcal{L}v = 0$), analytically we have
+Note (Remy): Here it is enough to have a function that maps the derivative for the case $t=t_k$.
+
+
+**PDE structure and operator bypass.** Because the BSM operator $\mathcal{L}$ is linear and $v$ is an exact Black-Scholes solution ($\mathcal{L}v = 0$), analytically we have
 
 $$
 \mathcal{L}(V_\theta) = \mathcal{L}(v) + \mathcal{L}(\tilde{u}_\theta) = 0 + \mathcal{L}(\tilde{u}_\theta) = \mathcal{L}(\tilde{u}_\theta)
 $$
 
+where $V_\theta$ is the full price function and $\tilde{u}_\theta$ is the smooth residual.
+
 However, in a discrete computational graph, relying on automatic differentiation to compute $\mathcal{L}(v)$ causes a fatal numerical instability. As $t \to t_k^-$, the derivatives of the fictitious put diverge to infinity at the kink $s^*$ ($\partial_{ss}v \to +\infty$, $\partial_t v \to -\infty$). When PyTorch sums these massive opposing terms, catastrophic floating-point cancellation occurs, producing large numerical noise instead of exactly `0.0`.
 
-To solve this, the **Operator Bypass** (flag `--bypass-v`) drops only $v$ from the PDE loss and keeps $g_2$ in the computational graph:
+To solve this, the **operator bypass** (flag `--bypass-v`, `BermudaETCNN` only) drops only $v$ from the PDE loss and keeps $g_2$ in the computational graph.  This mechanism is **specific to the Bermudan singularity-extraction ansatz**: `AmericanPutETCNN` has no additive fictitious put $v$ in its trial solution ($V_\theta^A = g_1 u_\theta + g_2$ with no separate singular component), so the operator bypass is neither defined nor needed for the European or Stage A problems.
 
 $$
-U_{\mathrm{pde}} = g_1(s,t)\cdot u_\theta(s,t) + g_2(s), \qquad \mathcal{L}_{\mathrm{pde}}(\theta) = \mathrm{mean}\!\left(\left|\mathcal{L}(g_1 u_\theta + g_2)\right|^2\right)
+\tilde{u}_\theta (s, t) = g_1(s,t)\cdot u_\theta(s,t) + g_2(s), \qquad \mathcal{L}_{\mathrm{pde}}(\theta) = \mathcal{L}(g_1 u_\theta + g_2)
 $$
 
 **Why $g_2$ must stay in the graph.** The PCHIP interpolant satisfies $\mathcal{L}(g_2) \neq 0$, so the network must learn to correct the residual left by $g_2$:
@@ -187,7 +192,7 @@ Decoupling $g_2$ was found empirically to break the backward-time diffusion: wit
 The standard `forward` path (used for $\mathcal{L}_{tc}$) remains completely unchanged and includes all components:
 
 $$
-U_{\mathrm{full}} = v(s,t) + g_1(s,t)\cdot u_\theta(s,t) + g_2(s,t)
+\tilde{u}_\theta(s, t_k) = v(s, t_k) + g_1(s, t_k) \cdot u_\theta(s, t_k) + g_2(s,  t_k)
 $$
 
 **Computing $c$ analytically.** The scaling constant is determined by the hold-value delta at the exercise boundary:
@@ -198,9 +203,9 @@ $$
 
 where $\partial V_\theta^A/\partial s$ is computed via `torch.autograd.grad` on the trained Stage A network, evaluated at $s = s^*$. For a well-trained put, $-1 < \Delta_A(s^*) < 0$, so $0 < c < 1$.
 
-**Residual interpolation.** The $C^1$ residual $g_2(s, t) = V^{\mathrm{Berm}}_{\bar{\theta}} - v|_{t_k}$ is interpolated using **PCHIP** ($C^1$, shape-preserving), which exactly matches the regularity of the residual (no attempt to enforce spurious $C^2$ smoothness at the remaining discontinuity of $\partial_s^2 \tilde{u}_\theta$).
+**Residual interpolation.** The $C^1$ residual $g_2(s, t) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_k) - v(s, t_k)$ is interpolated using **PCHIP** ($C^1$, shape-preserving), which exactly matches the regularity of the residual (no attempt to enforce spurious $C^2$ smoothness at the remaining discontinuity of $\partial_s^2 \tilde{u}_\theta$).
 
-**Backward-compatible opt-in.** The singularity extraction ansatz is activated by the `--extraction` flag in `experiments/python_scripts/exp1/phase3_training.py`. When the flag is *not* set (default), Stage B falls back to the classical approach of directly interpolating $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_k)$ without extraction, and the interpolator is controlled by `--interp` (`cubic`, `pchip`, or `linear`).
+**Backward-compatible opt-in.** The singularity extraction ansatz is activated by the `--put-ansatz` flag in `experiments/python_scripts/exp1/phase3_training.py`. When the flag is *not* set (default), Stage B falls back to the classical approach of directly interpolating $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_k)$ without the ansatz, and the interpolator is controlled by `--interp` (`cubic`, `pchip`, or `linear`).
 
 Code:
 - `learning_option_pricing/pricing/singularity.py` — `find_exercise_boundary`, `compute_scaling_constant`, `FictitiousEuropeanPut`, `build_singularity_extraction`
@@ -219,21 +224,56 @@ The interpolation module provides three interpolators for general use, though th
 
 Code: `learning_option_pricing/pricing/interpolation.py`.
 
-#### 2.2.2 CLI flags for `phase3_training.py`
+#### 2.2.2 Temporal truncation of $g_2$ (experimental)
+
+The standard ETCNN ansatz on $[t_{k-1}, t_k]$ is
+
+$$
+V_\theta(s, t) = v(s, t) + (t_k - t)\,u_\theta(s, t) + g_2(s)
+$$
+
+where $g_2(s)$ is the time-independent PCHIP-interpolated $C^1$ residual.  Because $g_2(s)$ is constant in time, it acts with full amplitude throughout $[t_{k-1}, t_k]$, even far from the terminal date $t_k$ where it has no geometric justification.
+
+**Modification.** An experimental temporal truncation multiplier $h(t)$ attenuates $g_2$ away from $t_k$:
+
+$$
+V_\theta(s, t) = v(s, t) + (t_k - t)\,u_\theta(s, t) + h(t)\,g_2(s)
+$$
+
+$$
+h(t) = \exp\!\bigl(-\gamma\,(t_k - t)^2\bigr), \qquad \gamma > 0.
+$$
+
+**Properties of $h$:**
+- $h(t_k) = 1$: the terminal condition $V_\theta(s, t_k) = v(s, t_k) + g_2(s)$ is **preserved exactly**.
+- $h(t) \to 0$ as $t \to -\infty$: far from $t_k$ the ansatz reduces to $v + g_1 u_\theta$.
+- $h'(t_k) = 0$: the truncation is smooth at the terminal date.
+- The larger $\gamma$, the faster $g_2$ is switched off; $\gamma \to 0$ recovers the standard ansatz.
+
+**Effect on the PDE loss.** Because $\mathcal{L}(h(t)\,g_2) \neq 0$ (even when $\mathcal{L}(g_2) = 0$ pointwise, $\partial_t h \neq 0$ introduces a source term), the network must compensate for the additional residual $\mathcal{L}(h\,g_2)$ in the interior. This is analogous to the existing situation with the PCHIP interpolant, where $\mathcal{L}(g_2) \neq 0$ due to discretisation.
+
+**Implementation.** The parameter $\gamma$ is stored in `ETCNN._g2_temporal_gamma` (with `_t_terminal = t_k`). When non-`None`, the `forward` pass multiplies $g_2(s,t)$ by $h(t)$ before assembling the output. The terminal condition path is unaffected since $h(t_k) = 1$.
+
+A diagnostic plot `plotBh_temporal_truncation.png` is generated in the `diagnostics/` subdirectory whenever `--g2-gamma` is set, showing $h(t)$ over $[0, t_1]$.
+
+Code: `learning_option_pricing/models/etcnn.py` — `ETCNN.__init__`, `ETCNN.forward`.
+
+#### 2.2.3 CLI flags for `phase3_training.py`
 
 The Phase 3 experiment exposes the design choices of §2.1–§2.2 as command-line flags so that different configurations can be benchmarked without touching the code:
 
 | Flag | Default | Scope | Effect |
 |------|---------|-------|--------|
 | `--g2 {taylor,bs,bs2002}` | `taylor` | Stage A + European | Sets $g_2$ in `AmericanPutETCNN`: `taylor` uses $V_1^e + V_2^e$ (§2.1); `bs` uses the exact BS European put price; `bs2002` uses the Bjerksund–Stensland (2002) American put approximation. |
-| `--extraction` | *off* | Stage B+ | If set, decomposes $V_\theta = v + \tilde{u}_\theta$ via the singularity extraction ansatz (§2.2). If unset, Stage B directly interpolates $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ (legacy path). |
-| `--bypass-v` | *off* | Stage B+ | Operator Bypass: drops only the fictitious put $v(s,t)$ from the PDE loss to prevent catastrophic cancellation of its diverging derivatives near $s^*$. $g_2$ remains in the graph so the network correctly compensates for $\mathcal{L}(g_2) \neq 0$. Terminal condition enforcement is preserved via the unmodified `forward` path. |
-| `--spatial-weight` | *off* | Stage B+ | Enable inverted-Gaussian spatial weighting of the Stage B PDE loss to suppress the gradient spike from the $C^1$ PCHIP knot at $s^*$. Off by default (plain MSE). Requires `--extraction`. |
+| `--put-ansatz` | *off* | Stage B+ | If set, decomposes $V_\theta = v + \tilde{u}_\theta$ via the singularity extraction ansatz (§2.2). If unset, Stage B directly interpolates $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ (legacy path). |
+| `--bypass-v` | *off* | Stage B+ (**Bermudan only**; not applicable to European/Stage A) | Operator Bypass: drops only the fictitious put $v(s,t)$ from the PDE loss to prevent catastrophic cancellation of its diverging derivatives near $s^*$. $g_2$ remains in the graph so the network correctly compensates for $\mathcal{L}(g_2) \neq 0$. Terminal condition enforcement is preserved via the unmodified `forward` path. Has no effect and no meaning for `AmericanPutETCNN`, whose ansatz $g_1 u_\theta + g_2$ contains no singular $v$ term. |
+| `--spatial-weight` | *off* | Stage B+ | Enable inverted-Gaussian spatial weighting of the Stage B PDE loss to suppress the gradient spike from the $C^1$ PCHIP knot at $s^*$. Off by default (plain MSE). Requires `--put-ansatz`. |
 | `--sigma-w` | `1.0` | Stage B+ (requires `--spatial-weight`) | Bandwidth $\sigma_w$ of the suppression window. |
 | `--eps-w` | `1e-3` | Stage B+ (requires `--spatial-weight`) | Floor weight $\epsilon_w$ at $s^*$; prevents complete nullification of the loss. |
-| `--interp {cubic,pchip,linear}` | `cubic` | Stage B+ (only when `--extraction` is NOT set) | Interpolator used for $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ in the legacy path. Ignored under `--extraction` (which always uses PCHIP on the $C^1$ residual). |
+| `--g2-gamma` | `None` | Stage B+ | $\gamma \geq 0$ for the temporal truncation $h(t) = \exp(-\gamma(t_1-t)^2)$ applied to the Stage B $g_2$ field (§2.2.2). Disabled by default ($h \equiv 1$). Typical values: 1–20. |
+| `--interp {cubic,pchip,linear}` | `cubic` | Stage B+ (only when `--put-ansatz` is NOT set) | Interpolator used for $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ in the legacy path. Ignored under `--put-ansatz` (which always uses PCHIP on the $C^1$ residual). |
 
-The output directory is tagged with the active mode and `g2` variant, e.g. `20260410_120000_iters50000_K100_extraction_g2-taylor` or `20260410_120000_iters50000_K100_interp-cubic_g2-bs`, so that benchmarks over the combinatorial grid do not collide.
+The output directory is tagged with the active mode, `g2` variant, and — when set — the $\gamma$ value, e.g. `20260410_120000_iters50000_K100_put-ansatz_g2-taylor_h5.0`, so that benchmarks over the combinatorial grid do not collide.
 
 ---
 
@@ -334,7 +374,7 @@ Where:
 | Option type | $g_2$ at terminal date | TC satisfied |
 |-------------|------------------------|--------------|
 | European / American | Closed-form analytic ($V_1^e + V_2^e$ or $P^{\text{BS}}$) | **Exactly everywhere** — $g_1(s,T)=0$ and $g_2(s,T) = \Phi(s)$ at all $s$, regardless of network weights. $\mathcal{L}_{tc} \equiv 0$. |
-| Bermudan (each sub-interval) | PCHIP interpolation of the tabulated residual $V^{\mathrm{Berm}}_{\bar{\theta}} - v\vert_{t_k}$ on $n_{\text{grid}}$ nodes | **Exactly at the $n_{\text{grid}}$ interpolation nodes** (PCHIP is a node-interpolating scheme); **approximately between nodes** (PCHIP error $O(h^2)$ near the kink at $s^*$, $O(h^4)$ on $C^2$ segments). |
+| Bermudan (each sub-interval) | PCHIP interpolation of the tabulated residual $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_k) - v(s, t_k)$ on $n_{\text{grid}}$ nodes | **Exactly at the $n_{\text{grid}}$ interpolation nodes** (PCHIP is a node-interpolating scheme); **approximately between nodes** (PCHIP error $O(h^2)$ near the kink at $s^*$, $O(h^4)$ on $C^2$ segments). |
 
 More precisely, at $t = t_k$ the Bermudan trial solution evaluates to
 
@@ -399,7 +439,7 @@ This feature is disabled by default and can be enabled via the `--spatial-weight
 | $c$ | scaling constant $\Delta_A(s^*) + 1$ | `singularity.compute_scaling_constant` |
 | $V_\theta^A(s,t)$ | Stage A parameterized price (American put ETCNN) | `etcnn.AmericanPutETCNN.forward` |
 | $V_\theta(s,t)$ | Bermudan solution $v + \tilde{u}_\theta$ | `etcnn.BermudaETCNN.forward` |
-| $U_{\mathrm{pde}}$ | PDE-loss input: $g_1 u_\theta + g_2$ (bypass\_v) or full $V_\theta$ | `etcnn.BermudaETCNN.forward_pde` |
+| $U_{\mathrm{pde}}$ | PDE-loss input: $g_1 u_\theta + g_2$ (bypass\_v, Bermudan only) or full $V_\theta$ | `etcnn.BermudaETCNN.forward_pde` |
 | $g_1 u_\theta$ | Neural manifold only — diagnostic use | `etcnn.ETCNN.forward_neural_manifold` |
 | $\mathcal{L}_{bs}$ | BSM penalty loss | `loss.loss_bs` |
 | $\mathcal{L}_{tv}$ | time-value penalty loss | `loss.loss_tv` |
