@@ -59,16 +59,29 @@ class InputNormalization(nn.Module):
 # ---------------------------------------------------------------------------
 
 class ETCNN(nn.Module):
-    """Base ETCNN wrapper around a ResNet backbone.
+    r"""Base ETCNN wrapper around a ResNet backbone.
 
     Trial solution (Eq. 10, Fig. 3):
-        ũ_NN(s, t) = g1(s, t) · u_NN(s, t) + g2(s, t)
+
+        ũ_NN(s, t) = g1(s, t) · u_NN(s, t) + h(t) · g2(s, t)
+
+    where h(t) is an optional temporal truncation factor (default h ≡ 1):
+
+        h(t) = exp(-γ (t_k - t)²),  γ > 0
+
+    This attenuates the static g2(s) term away from the terminal date t_k,
+    so that the residual field does not dominate the interior of [t_{k-1}, t_k].
+    At t = t_k, h(t_k) = 1 and the exact terminal condition is preserved.
 
     Args:
-        resnet:       ResNet backbone (or any nn.Module mapping (batch, d_in) → (batch, 1)).
-        g1:           Callable(s, t) → Tensor, must vanish at terminal dates.
-        g2:           Callable(s, t) → Tensor, must equal the payoff at terminal.
-        normalizer:   Optional InputNormalization layer applied before the ResNet.
+        resnet:              ResNet backbone (or any nn.Module mapping (batch, d_in) → (batch, 1)).
+        g1:                  Callable(s, t) → Tensor, must vanish at terminal dates.
+        g2:                  Callable(s, t) → Tensor, must equal the payoff at terminal.
+        normalizer:          Optional InputNormalization layer applied before the ResNet.
+        g2_temporal_gamma:   γ ≥ 0 for the temporal truncation h(t) = exp(-γ(t_k-t)²).
+                             ``None`` (default) means h ≡ 1 (standard ETCNN).
+        t_terminal:          Terminal date t_k used to compute τ = t_k - t.
+                             Required when *g2_temporal_gamma* is not None.
     """
 
     def __init__(
@@ -77,12 +90,20 @@ class ETCNN(nn.Module):
         g1: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         g2: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         normalizer: InputNormalization | None = None,
+        g2_temporal_gamma: float | None = None,
+        t_terminal: float | None = None,
     ) -> None:
+        if g2_temporal_gamma is not None and t_terminal is None:
+            raise ValueError(
+                "t_terminal must be provided when g2_temporal_gamma is set."
+            )
         super().__init__()
         self.resnet = resnet
         self._g1 = g1
         self._g2 = g2
         self.normalizer = normalizer
+        self._g2_temporal_gamma = g2_temporal_gamma
+        self._t_terminal = t_terminal
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass.
@@ -103,6 +124,13 @@ class ETCNN(nn.Module):
         # Terminal-condition functions
         g1_val = self._g1(s, t)  # (batch, 1)
         g2_val = self._g2(s, t)  # (batch, 1)
+
+        # Temporal truncation h(t) = exp(-γ (t_k - t)²)
+        if self._g2_temporal_gamma is not None:
+            assert self._t_terminal is not None  # enforced by __init__
+            tau = self._t_terminal - t
+            h_val = torch.exp(-self._g2_temporal_gamma * tau ** 2)
+            g2_val = h_val * g2_val
 
         return g1_val * u_nn + g2_val
 
@@ -218,6 +246,38 @@ class AmericanPutETCNN(ETCNN):
 
 
 # ---------------------------------------------------------------------------
+# Analytical European put — drop-in Stage A replacement
+# ---------------------------------------------------------------------------
+
+class AnalyticalEuropeanPut(nn.Module):
+    r"""Black-Scholes European put price as a parameter-free Stage A surrogate.
+
+    Implements the exact analytical hold value $V^e(s, t) = P^{\text{BS}}(s, K, r,
+    \sigma, T-t)$ so that Stage B can be trained without any Stage A network.
+
+    The Bermudan intermediate condition at $t_1$ becomes
+    $\max(\Phi(s),\, V^e(s, t_1))$, which is analytically exact for a European
+    option exercised at $t_1$.
+
+    Args:
+        K, r, sigma, T: BSM contract parameters.
+    """
+
+    def __init__(self, K: float, r: float, sigma: float, T: float) -> None:
+        super().__init__()
+        self.K = K
+        self.r = r
+        self.sigma = sigma
+        self.T = T
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        from learning_option_pricing.pricing.terminal import black_scholes_put
+        s = x[:, 0:1]
+        t = x[:, 1:2]
+        return black_scholes_put(s, self.K, self.r, self.sigma, self.T - t)
+
+
+# ---------------------------------------------------------------------------
 # PINN baseline (no terminal-condition enforcement)
 # ---------------------------------------------------------------------------
 
@@ -267,7 +327,9 @@ class BermudaETCNN(nn.Module):
       the exercise boundary $s^*$.  It is an exact BSM solution
       ($\mathcal{L}v = 0$).
     * $\tilde{u}_\theta$ is a standard :class:`ETCNN` whose $g_2$ equals the
-      $C^1$-smooth residual $V_{\text{target}} - v|_{t_1}$.
+      $C^1$-smooth residual $V_{\text{target}} - v|_{t_1}$, optionally
+      attenuated by the temporal truncation $h(t) = \exp(-\gamma(t_1-t)^2)$
+      (see :class:`ETCNN` for details).
 
     Because $\mathcal{L}$ is linear and $\mathcal{L}v = 0$, the PDE residual
     $\mathcal{L}U_B = \mathcal{L}\tilde{u}_\theta$.  The training loop can
