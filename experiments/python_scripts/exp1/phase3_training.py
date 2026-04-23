@@ -33,6 +33,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from learning_option_pricing.models.etcnn import (
+    AnalyticalEuropeanPut,
     BermudaETCNN,
     ETCNN,
     AmericanPutETCNN,
@@ -785,7 +786,7 @@ def bermudan_problem(
     out_dir: Path,
     total_iters: list[int],
     interp_method: str = "cubic",
-    extraction: bool = False,
+    put_ansatz: bool = False,
     weight_decay: float = 0.0,
     load_etcnn_a: Path | None = None,
     g2_type: str = "taylor",
@@ -793,17 +794,20 @@ def bermudan_problem(
     sigma_w: float = 1.0,
     eps_w: float = 1e-3,
     use_spatial_weight: bool = False,
+    g2_gamma: float | None = None,
+    load_etcnn_b: Path | None = None,
+    analytic_a: bool = False,
 ):
     """Two-stage Bermudan put with exercise date t1=0.5.
 
     Args:
         out_dir: Output directory for plots and logs.
         total_iters: List of training iterations per stage [Stage A, Stage B].
-        interp_method: Interpolation for V(s, t1) when *extraction* is False.
+        interp_method: Interpolation for V(s, t1) when *put_ansatz* is False.
             ``"cubic"`` (default) uses a C^2 natural cubic spline;
             ``"pchip"`` uses a C^1 PCHIP interpolant;
             ``"linear"`` uses the original C^0 piecewise-linear interpolant.
-        extraction: If True, use the singularity extraction ansatz to
+        put_ansatz: If True, use the singularity extraction ansatz to
             decompose U_B = v + u_tilde, removing the C^0 kink at s*.
             Default False (standard interpolation approach).
         weight_decay: L2 regularization penalty for Adam.
@@ -816,6 +820,21 @@ def bermudan_problem(
         eps_w:              Lower bound of the spatial weight at s* (default 1e-3).
         use_spatial_weight: If True, activate the inverted-Gaussian weighting in
                             Stage B.  Default False (plain MSE).
+        g2_gamma: γ ≥ 0 for the temporal truncation h(t) = exp(-γ(t1-t)²)
+            applied to the Stage B g2 field.  ``None`` (default) disables
+            truncation (h ≡ 1, standard ETCNN behaviour).
+        load_etcnn_b: Path to a pre-trained ``etcnn_b.pt`` (or a run directory
+            containing ``models/etcnn_b.pt``) whose weights are loaded into the
+            freshly-constructed Stage B model before training begins.  The model
+            architecture is always rebuilt from the current flags so that
+            ``g2_gamma``, ``bypass_v``, etc. are honoured; only the ResNet
+            weights are warm-started.  ``iters_b`` additional gradient steps are
+            then taken on top of the loaded checkpoint.  Default ``None``
+            (random initialisation).
+        analytic_a: If True, replace Stage A with the exact Black-Scholes
+            European put formula (no network trained).  The intermediate
+            terminal condition at t1 becomes max(Φ(s), V^e(s, t1)) exactly.
+            Useful to isolate Stage B from Stage A approximation errors.
     """
     logger.info("")
     logger.info("=" * 70)
@@ -827,10 +846,12 @@ def bermudan_problem(
 
     # Config summary string for plot titles — encodes all run-specific settings
     _flags = []
-    if extraction:
-        _flags.append("extraction")
+    if put_ansatz:
+        _flags.append("put-ansatz")
     if bypass_v:
         _flags.append("bypass\\_v")
+    if g2_gamma is not None:
+        _flags.append(f"$h(t),\\gamma={g2_gamma}$")
     _flags_str = (", " + ", ".join(_flags)) if _flags else ""
     cfg_str = (
         f"$K={K},\\ r={r},\\ \\sigma={sigma},\\ T={T},\\ q={q},\\ t_1={t1}$"
@@ -842,25 +863,32 @@ def bermudan_problem(
     payoff_fn = lambda s: payoff_put(s, K)
 
     # ---------------------------------------------------------------
-    # Stage A — train ETCNN on [t1, T]
+    # Stage A — train ETCNN on [t1, T]  (or use analytical BS)
     # ---------------------------------------------------------------
     torch.manual_seed(SEED)
-    etcnn_a = AmericanPutETCNN(K=K, r=r, sigma=sigma, T=T, normalize_input=True, g2_type=g2_type)
-    etcnn_a.to(DEVICE)
-    logger.info(f"  Stage A g2 type: {g2_type}")
+    hist_a = None
 
-    if load_etcnn_a is not None and load_etcnn_a.exists():
-        logger.info(f"Stage A: Loading pre-trained ETCNN_A from {load_etcnn_a} ...")
-        etcnn_a.load_state_dict(torch.load(load_etcnn_a, map_location=DEVICE))
+    if analytic_a:
+        logger.info("Stage A: using analytical Black-Scholes European put (no training)")
+        etcnn_a = AnalyticalEuropeanPut(K=K, r=r, sigma=sigma, T=T)
+        etcnn_a.to(DEVICE)
         etcnn_a.eval()
-        hist_a = None
     else:
-        logger.info(f"Stage A: training ETCNN_A on [t1, T] for {iters_a} iterations ...")
-        hist_a = train_model(
-            etcnn_a, iters_a, S_TRAIN_LO, S_TRAIN_HI, t1, T,
-            payoff_fn, label="ETCNN_A", weight_decay=weight_decay, tc_enforced=True,
-        )
-        plot_training_metrics(hist_a, "ETCNN_A", out_dir)
+        etcnn_a = AmericanPutETCNN(K=K, r=r, sigma=sigma, T=T, normalize_input=True, g2_type=g2_type)
+        etcnn_a.to(DEVICE)
+        logger.info(f"  Stage A g2 type: {g2_type}")
+
+        if load_etcnn_a is not None and load_etcnn_a.exists():
+            logger.info(f"Stage A: Loading pre-trained ETCNN_A from {load_etcnn_a} ...")
+            etcnn_a.load_state_dict(torch.load(load_etcnn_a, map_location=DEVICE))
+            etcnn_a.eval()
+        else:
+            logger.info(f"Stage A: training ETCNN_A on [t1, T] for {iters_a} iterations ...")
+            hist_a = train_model(
+                etcnn_a, iters_a, S_TRAIN_LO, S_TRAIN_HI, t1, T,
+                payoff_fn, label="ETCNN_A", weight_decay=weight_decay, tc_enforced=True,
+            )
+            plot_training_metrics(hist_a, "ETCNN_A", out_dir)
 
     # ---------------------------------------------------------------
     # Stage B — construct intermediate terminal condition at t1
@@ -895,7 +923,7 @@ def bermudan_problem(
 
     c_scale = float("nan")  # only set when extraction=True
 
-    if extraction:
+    if put_ansatz:
         # -----------------------------------------------------------
         # Singularity extraction ansatz
         # -----------------------------------------------------------
@@ -968,7 +996,7 @@ def bermudan_problem(
     logger.info("[OK] Plot B1a — Intermediate terminal condition (hold, exercise, Bermudan value, s*)")
 
     # === Plot B1c / B1d — mode-specific diagnostics ===
-    if extraction:
+    if put_ansatz:
         # B1c — Extracted residual g2 at t1
         s_plot_1d = torch.linspace(60.0, 140.0, 500)
         with torch.no_grad():
@@ -1196,16 +1224,27 @@ def bermudan_problem(
     resnet_b = ResNet(d_in=2, d_out=1, n=n, M=M, L=L_BLOCK)
     normalizer_b = InputNormalization(K)
 
-    if extraction:
+    if g2_gamma is not None:
+        logger.info(
+            f"Stage B temporal truncation: ACTIVE  h(t) = exp(-{g2_gamma}·(t1-t)²)"
+            f"  h(0) = {math.exp(-g2_gamma * t1**2):.4f}"
+        )
+    else:
+        logger.info("Stage B temporal truncation: OFF (h ≡ 1)")
+
+    if put_ansatz:
         # Singularity extraction: U_B = v + ũ_θ
         logger.info(f"Stage C+D: training BermudaETCNN on [0, t1] for {iters_b} iterations ...")
-        logger.info(f"  Ansatz: U_B(s,t) = v(s,t) + g1(s,t)·u_NN(s,t) + g2(s)")
+        logger.info(f"  Ansatz: U_B(s,t) = v(s,t) + g1(s,t)·u_NN(s,t) + h(t)·g2(s)")
         logger.info(f"  v(s,t) = {c_scale:.4f} · P^BS(s, {s_star:.2f}, r, σ, t1-t)")
 
         def g2_b(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
             return residual_interp(s)
 
-        etcnn_residual = ETCNN(resnet=resnet_b, g1=g1_b, g2=g2_b, normalizer=normalizer_b)
+        etcnn_residual = ETCNN(
+            resnet=resnet_b, g1=g1_b, g2=g2_b, normalizer=normalizer_b,
+            g2_temporal_gamma=g2_gamma, t_terminal=t1,
+        )
         fict_put.to(DEVICE)
         etcnn_b = BermudaETCNN(etcnn=etcnn_residual, fictitious_put=fict_put, bypass_v=bypass_v)
         payoff_t1 = lambda s: interp_vtarget(s)
@@ -1216,8 +1255,75 @@ def bermudan_problem(
         def g2_b(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
             return v_interp_t1(s)
 
-        etcnn_b = ETCNN(resnet=resnet_b, g1=g1_b, g2=g2_b, normalizer=normalizer_b)
+        etcnn_b = ETCNN(
+            resnet=resnet_b, g1=g1_b, g2=g2_b, normalizer=normalizer_b,
+            g2_temporal_gamma=g2_gamma, t_terminal=t1,
+        )
         payoff_t1 = lambda s: v_interp_t1(s)
+
+    # === Plot B_h — temporal truncation profile h(t) ===
+    if g2_gamma is not None:
+        t_plot_h = torch.linspace(0.0, t1, 500)
+        tau_plot = t1 - t_plot_h
+        h_plot = torch.exp(-g2_gamma * tau_plot ** 2)
+
+        fig_h, ax_h = plt.subplots(figsize=(7, 4))
+        ax_h.plot(to_np(t_plot_h), to_np(h_plot), color="tab:blue", linewidth=2.5,
+                  label=rf"$h(t) = \exp(-{g2_gamma}\,(t_1 - t)^2)$")
+        ax_h.axvline(t1, color="tab:red", linestyle="--", linewidth=1.4, label=f"$t_1 = {t1}$")
+        ax_h.axvline(0.0, color="grey", linestyle=":", linewidth=1.0)
+        ax_h.annotate(
+            f"$h(0) = {float(h_plot[0]):.4f}$",
+            xy=(0.0, float(h_plot[0])),
+            xytext=(t1 * 0.12, float(h_plot[0]) - 0.06),
+            fontsize=11,
+            arrowprops=dict(arrowstyle="->", color="black"),
+        )
+        ax_h.annotate(
+            "$h(t_1) = 1$",
+            xy=(t1, 1.0),
+            xytext=(t1 - t1 * 0.28, 1.04),
+            fontsize=11,
+            arrowprops=dict(arrowstyle="->", color="black"),
+        )
+        ax_h.set_xlabel("$t$", fontsize=13)
+        ax_h.set_ylabel("$h(t)$", fontsize=13)
+        ax_h.set_title(
+            rf"Temporal truncation profile $h(t) = \exp(-\gamma\,(t_1 - t)^2)$,"
+            rf"  $\gamma = {g2_gamma}$",
+            fontsize=12,
+        )
+        ax_h.set_xlim(-0.01, t1 + 0.02)
+        ax_h.set_ylim(-0.05, 1.12)
+        ax_h.legend(fontsize=11)
+        ax_h.grid(True, alpha=0.3)
+        fig_h.suptitle(
+            f"Plot B_h — $h(t)$ profile  ($\\gamma = {g2_gamma}$)\n{cfg_str}",
+            fontsize=10,
+        )
+        fig_h.tight_layout()
+        fig_h.savefig(out_dir / "diagnostics" / "plotBh_temporal_truncation.png", dpi=150)
+        plt.close(fig_h)
+        logger.info(f"[OK] Plot B_h — temporal truncation h(t)  (gamma={g2_gamma})")
+
+    # Evaluate ETCNN_B before training to enable before/after error comparison in Plot B7
+    etcnn_b.to(DEVICE)
+
+    if load_etcnn_b is not None:
+        _b_path = load_etcnn_b
+        if _b_path.is_dir():
+            _b_path = _b_path / "models" / "etcnn_b.pt"
+        if _b_path.exists():
+            logger.info(f"Stage B: loading pre-trained weights from {_b_path} ...")
+            etcnn_b.load_state_dict(torch.load(_b_path, map_location=DEVICE))
+            logger.info(f"  Weights loaded — will train for {iters_b} additional iterations.")
+        else:
+            logger.warning(f"Stage B: --load-etcnn-b path not found: {_b_path}  (starting from random init)")
+
+    _s_eval_init = torch.tensor(np.linspace(60.0, 140.0, 81), dtype=torch.get_default_dtype()).to(DEVICE)
+    _x_eval_init = torch.stack([_s_eval_init, torch.zeros_like(_s_eval_init)], dim=1)
+    with torch.no_grad():
+        etcnn_b_prices_init = to_np(etcnn_b(_x_eval_init).squeeze())
 
     _s_star_b = s_star if (not isinstance(s_star, float) or s_star == s_star) else None
     if use_spatial_weight:
@@ -1359,21 +1465,21 @@ def bermudan_problem(
     logger.info(f"  Max jump at t1 intermediate boundary: {jump:.4e}")
     logger.info("[OK] Plot B6 — Bermudan surface")
 
-    # === Plot B7 — Error vs BT at t=0 ===
+    # === Plot B7 — Error vs BT at t=0 (init vs trained) ===
+    err_vs_bt_init = np.abs(etcnn_b_prices_init - bt_prices)
     err_vs_bt = np.abs(etcnn_b_prices - bt_prices)
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(s_eval_arr, err_vs_bt, linewidth=2)
-    ax.set_xlabel("s")
-    ax.set_ylabel("$|$ETCNN$_B(s,0) - $BT$(s,0)|$")
-    ax.set_title(
-        f"$|$ETCNN$_B(s,0) - V^{{BT}}(s,0)|$  —  max error = {err_vs_bt.max():.2e}"
-    )
+    ax.plot(s_eval_arr, err_vs_bt_init, linewidth=2, linestyle="--", label=f"Init  (max={err_vs_bt_init.max():.2e})")
+    ax.plot(s_eval_arr, err_vs_bt, linewidth=2, label=f"Trained  (max={err_vs_bt.max():.2e})")
+    ax.set_xlabel("$s$")
+    ax.set_ylabel("$|$ETCNN$_B(s,0) - V^{BT}(s,0)|$")
+    ax.legend()
     ax.grid(True, alpha=0.3)
     fig.suptitle(f"Plot B7 — Pointwise error vs binomial tree at $t = 0$\n{cfg_str}", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_dir / "diagnostics" / "plotB7_error_vs_bt.png", dpi=150)
     plt.close(fig)
-    logger.info(f"[OK] Plot B7 — Error vs BT: max={err_vs_bt.max():.2e}")
+    logger.info(f"[OK] Plot B7 — Error vs BT: init max={err_vs_bt_init.max():.2e}, trained max={err_vs_bt.max():.2e}")
 
     # === Plot B8 — Greeks at t=0 ===
     s_greeks = torch.linspace(60.0, 140.0, 300).to(DEVICE)
@@ -1688,53 +1794,53 @@ def bermudan_problem(
         logger.info("[OK] Plot B9b — Spatio-temporal PDE residual heatmap")
 
     # === Plot B10 — Test III: Neuron Weight Magnitudes ===
-    logger.info("Running Test III: Neuron Weight Magnitudes in ETCNN_A ...")
-    weights = []
-    layer_names = []
+    if not hasattr(etcnn_a, "resnet"):
+        logger.info("[SKIP] Plot B10 — Stage A has no ResNet (analytic mode)")
+    else:
+        logger.info("Running Test III: Neuron Weight Magnitudes in ETCNN_A ...")
+        weights = []
+        layer_names = []
 
-    # Input layer (Sequential: Linear -> Tanh)
-    w = etcnn_a.resnet.input_layer[0].weight.detach().cpu().numpy().flatten()
-    weights.append(w)
-    layer_names.append("Input")
+        w = etcnn_a.resnet.input_layer[0].weight.detach().cpu().numpy().flatten()
+        weights.append(w)
+        layer_names.append("Input")
 
-    # Blocks
-    for i, block in enumerate(etcnn_a.resnet.blocks):
-        for j, layer in enumerate(block.layers):
-            if isinstance(layer, torch.nn.Linear):
-                w = layer.weight.detach().cpu().numpy().flatten()
-                weights.append(w)
-                layer_names.append(f"B{i} L{j//2}")
+        for i, block in enumerate(etcnn_a.resnet.blocks):
+            for j, layer in enumerate(block.layers):
+                if isinstance(layer, torch.nn.Linear):
+                    w = layer.weight.detach().cpu().numpy().flatten()
+                    weights.append(w)
+                    layer_names.append(f"B{i} L{j//2}")
 
-    # Output layer
-    w = etcnn_a.resnet.output_layer.weight.detach().cpu().numpy().flatten()
-    weights.append(w)
-    layer_names.append("Output")
+        w = etcnn_a.resnet.output_layer.weight.detach().cpu().numpy().flatten()
+        weights.append(w)
+        layer_names.append("Output")
 
-    fig, ax = plt.subplots(figsize=(12, 6))
-    parts = ax.violinplot(weights, showmeans=True, showextrema=True)
+        fig, ax = plt.subplots(figsize=(12, 6))
+        parts = ax.violinplot(weights, showmeans=True, showextrema=True)
 
-    for pc in parts['bodies']:
-        pc.set_facecolor('purple')
-        pc.set_edgecolor('black')
-        pc.set_alpha(0.5)
+        for pc in parts['bodies']:
+            pc.set_facecolor('purple')
+            pc.set_edgecolor('black')
+            pc.set_alpha(0.5)
 
-    ax.set_xticks(np.arange(1, len(layer_names) + 1))
-    ax.set_xticklabels(layer_names, rotation=45, ha="right")
-    ax.set_ylabel("Weight Value ($w$)")
-    ax.set_title(
-        "Plot B10 — Neuron weight magnitudes in ETCNN$^{(A)}$  "
-        f"(M={M} blocks × L={L_BLOCK} layers, n={n} hidden units)\n"
-        f"Large weights ($|w| > 1$) amplify high-frequency noise via $w^2$ in $\\partial^2_s \\tilde{{u}}$\n"
-        f"{cfg_str}"
-    )
-    ax.grid(True, alpha=0.3)
-    ax.axhline(1.0, color='red', linestyle=':', alpha=0.5)
-    ax.axhline(-1.0, color='red', linestyle=':', alpha=0.5)
+        ax.set_xticks(np.arange(1, len(layer_names) + 1))
+        ax.set_xticklabels(layer_names, rotation=45, ha="right")
+        ax.set_ylabel("Weight Value ($w$)")
+        ax.set_title(
+            "Plot B10 — Neuron weight magnitudes in ETCNN$^{(A)}$  "
+            f"(M={M} blocks × L={L_BLOCK} layers, n={n} hidden units)\n"
+            f"Large weights ($|w| > 1$) amplify high-frequency noise via $w^2$ in $\\partial^2_s \\tilde{{u}}$\n"
+            f"{cfg_str}"
+        )
+        ax.grid(True, alpha=0.3)
+        ax.axhline(1.0, color='red', linestyle=':', alpha=0.5)
+        ax.axhline(-1.0, color='red', linestyle=':', alpha=0.5)
 
-    fig.tight_layout()
-    fig.savefig(out_dir / "diagnostics" / "plotB10_test3_weight_distribution.png", dpi=150)
-    plt.close(fig)
-    logger.info("[OK] Plot B10 — Test III: Neuron Weight Magnitudes")
+        fig.tight_layout()
+        fig.savefig(out_dir / "diagnostics" / "plotB10_test3_weight_distribution.png", dpi=150)
+        plt.close(fig)
+        logger.info("[OK] Plot B10 — Test III: Neuron Weight Magnitudes")
 
     # Metrics
     l2_bt = np.sqrt(np.mean((etcnn_b_prices - bt_prices) ** 2))
@@ -1759,9 +1865,14 @@ def bermudan_problem(
     logger.info("=" * 60)
 
     model_dir = out_dir / "models"
-    torch.save(etcnn_a.state_dict(), model_dir / "etcnn_a.pt")
+    if not analytic_a:
+        torch.save(etcnn_a.state_dict(), model_dir / "etcnn_a.pt")
     torch.save(etcnn_b.state_dict(), model_dir / "etcnn_b.pt")
-    logger.info("  Saved models: models/etcnn_a.pt, models/etcnn_b.pt")
+    logger.info(
+        "  Saved models: "
+        + ("models/etcnn_a.pt, " if not analytic_a else "(no etcnn_a — analytic mode), ")
+        + "models/etcnn_b.pt"
+    )
 
     return {
         "rel_l2_bt": rel_l2_bt,
@@ -1772,6 +1883,11 @@ def bermudan_problem(
         "etcnn_b_at_K": etcnn_b_at_K,
         "euro_at_K": euro_at_K,
         "jump_at_t1": jump,
+        # Extra fields for ablation aggregation
+        "hist_b": hist_b,
+        "etcnn_b_prices": etcnn_b_prices,
+        "bt_prices": bt_prices,
+        "s_eval_arr": s_eval_arr,
     }
 
 
@@ -1784,11 +1900,11 @@ def main():
     parser.add_argument("--log-every", type=int, default=1000, help="Log interval")
     parser.add_argument(
         "--interp", type=str, default="cubic", choices=["cubic", "pchip", "linear"],
-        help="Interpolation for Bermudan V(s,t1) when --extraction is NOT set: "
+        help="Interpolation for Bermudan V(s,t1) when --put-ansatz is NOT set: "
              "'cubic' (C^2, default), 'pchip' (C^1, shape-preserving), or 'linear' (C^0)",
     )
     parser.add_argument(
-        "--extraction", action="store_true",
+        "--put-ansatz", action="store_true",
         help="Enable singularity extraction ansatz for Stage B (default: off). "
              "Decomposes U_B = v + u_tilde, removing the C^0 kink at s*.",
     )
@@ -1814,12 +1930,19 @@ def main():
     )
     parser.add_argument("--bermudan-only", action="store_true", help="Skip European problem and only run Bermudan")
     parser.add_argument("--european-only", action="store_true", help="Skip Bermudan problem and only run European")
+    parser.add_argument(
+        "--analytic-a", action="store_true",
+        help="Replace Stage A with the exact Black-Scholes European put formula. "
+             "No Stage A network is trained; the intermediate terminal condition "
+             "at t1 becomes max(Φ(s), V^e(s,t1)) exactly.  Useful to isolate "
+             "Stage B from Stage A approximation errors.",
+    )
     parser.add_argument("--weight-decay", type=float, default=0.0, help="L2 regularization penalty for Adam optimizer")
     parser.add_argument(
         "--spatial-weight", action="store_true",
         help="Enable inverted-Gaussian spatial weighting of the Stage B PDE loss "
              "to suppress the gradient spike from the C^1 PCHIP knot at s*. "
-             "Off by default (plain MSE). Requires --extraction.",
+             "Off by default (plain MSE). Requires --put-ansatz.",
     )
     parser.add_argument(
         "--sigma-w", type=float, default=1.0,
@@ -1833,6 +1956,16 @@ def main():
              "Only used when --spatial-weight is set.",
     )
     parser.add_argument(
+        "--g2-gamma",
+        type=float,
+        default=None,
+        help=(
+            "γ ≥ 0 for the temporal truncation h(t) = exp(-γ(t1-t)²) applied "
+            "to the Stage B g2 field.  Disabled by default (h ≡ 1).  "
+            "Typical values: 1–20."
+        ),
+    )
+    parser.add_argument(
         "--load-etcnn-a",
         type=str,
         default=None,
@@ -1841,8 +1974,22 @@ def main():
             "Can be either a .pt file or a run directory containing models/etcnn_a.pt"
         ),
     )
+    parser.add_argument(
+        "--load-etcnn-b",
+        type=str,
+        default=None,
+        help=(
+            "Path to a pre-trained etcnn_b.pt (or a run directory containing "
+            "models/etcnn_b.pt) to warm-start Stage B.  The architecture is "
+            "always rebuilt from the current flags; only the ResNet weights are "
+            "loaded.  Training then continues for the number of iterations given "
+            "by --iters."
+        ),
+    )
     parser.add_argument("--n-tc", type=int, default=1024, help="Number of terminal condition points")
     parser.add_argument("--n-f", type=int, default=4096, help="Number of interior PDE collocation points")
+    parser.add_argument("--lam-f", type=float, default=20.0, help="Weight for PDE loss (lambda_f)")
+    parser.add_argument("--lam-tc", type=float, default=1.0, help="Weight for terminal condition loss (lambda_tc)")
     parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float64"], help="PyTorch default dtype")
     args = parser.parse_args()
     
@@ -1854,18 +2001,23 @@ def main():
     _apply_device_arg(args.device)
 
     # Update global hyperparameters if provided
-    global N_TC, N_F
+    global N_TC, N_F, LAMBDA_F, LAMBDA_TC
     if args.n_tc is not None:
         N_TC = args.n_tc
     if args.n_f is not None:
         N_F = args.n_f
+    if getattr(args, 'lam_f', None) is not None:
+        LAMBDA_F = args.lam_f
+    if getattr(args, 'lam_tc', None) is not None:
+        LAMBDA_TC = args.lam_tc
 
     # Output directory
     timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
     iters_str = "_".join(map(str, args.iters))
-    mode_tag = "extraction" if args.extraction else f"interp-{args.interp}"
+    mode_tag = "put-ansatz" if args.put_ansatz else f"interp-{args.interp}"
+    gamma_tag = f"_h{args.g2_gamma}" if args.g2_gamma is not None else ""
     out_dir = Path("data/phase3_training") / (
-        f"{timestamp}_iters{iters_str}_K{K:.0f}_{mode_tag}_g2-{args.g2}"
+        f"{timestamp}_iters{iters_str}_K{K:.0f}_{mode_tag}_g2-{args.g2}{gamma_tag}"
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     
@@ -1899,11 +2051,14 @@ def main():
             "SEED": SEED,
             "iters": args.iters,
             "log_every": args.log_every,
-            "extraction": args.extraction,
+            "put_ansatz": args.put_ansatz,
             "bypass_v": args.bypass_v,
             "spatial_weight": args.spatial_weight,
             "sigma_w": args.sigma_w,
             "eps_w": args.eps_w,
+            "g2_gamma": args.g2_gamma,
+            "load_etcnn_b": args.load_etcnn_b,
+            "analytic_a": args.analytic_a,
             "interp_method": args.interp,
             "g2_type": args.g2,
             "device": args.device,
@@ -1938,11 +2093,13 @@ def main():
     logger.info(f"  Output: {out_dir}")
     logger.info(f"  Command: {' '.join(sys.argv)}")
     logger.info(f"  Iters: {args.iters}")
-    if args.extraction:
+    if args.put_ansatz:
         logger.info(f"  Stage B method: singularity extraction ansatz (PCHIP residual)")
     else:
         logger.info(f"  Stage B method: {args.interp} interpolation of V(s, t1)")
     logger.info(f"  g2 type (ETCNN terminal): {args.g2}")
+    if args.g2_gamma is not None:
+        logger.info(f"  Stage B g2 temporal truncation: gamma={args.g2_gamma}")
     logger.info(f"  Device (requested): {args.device}")
     logger.info(f"  Parameters: K={K}, r={r}, sigma={sigma}, T={T}, q={q}, t1={t1}")
     logger.info(f"  Hyperparameters: M={M}, L_BLOCK={L_BLOCK}, n={n}, N_TC={N_TC}, N_F={N_F}, LAMBDA_F={LAMBDA_F}, LAMBDA_TC={LAMBDA_TC}, SEED={SEED}")
@@ -1967,6 +2124,10 @@ def main():
         else:
             load_path = requested
 
+    load_b_path = Path(args.load_etcnn_b) if args.load_etcnn_b else None
+    if load_b_path is not None:
+        logger.info(f"  Stage B warm-start: {load_b_path}")
+
     run_european = not args.bermudan_only
     run_bermudan = not args.european_only
 
@@ -1985,7 +2146,7 @@ def main():
             out_dir,
             args.iters,
             interp_method=args.interp,
-            extraction=args.extraction,
+            put_ansatz=args.put_ansatz,
             weight_decay=args.weight_decay,
             load_etcnn_a=load_path,
             g2_type=args.g2,
@@ -1993,6 +2154,9 @@ def main():
             sigma_w=args.sigma_w,
             eps_w=args.eps_w,
             use_spatial_weight=args.spatial_weight,
+            g2_gamma=args.g2_gamma,
+            load_etcnn_b=load_b_path,
+            analytic_a=args.analytic_a,
         )
     else:
         ber_results = None
