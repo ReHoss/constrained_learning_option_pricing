@@ -41,6 +41,7 @@ from learning_option_pricing.models.etcnn import (
     PINN,
 )
 from learning_option_pricing.models.resnet import ResNet
+from learning_option_pricing.optimizers import ENGDOptimizer, flat_grad as _flat_grad
 from learning_option_pricing.pricing.interpolation import (
     CubicSplineInterpolator,
     PchipInterpolator,
@@ -349,6 +350,158 @@ def train_model(
     model.eval()
     elapsed = time.time() - t0
     logger.info(f"[{label}] Training done in {elapsed:.1f}s")
+    return history
+
+
+def train_model_engd(
+    model: torch.nn.Module,
+    total_iters: int,
+    s_lo: float,
+    s_hi: float,
+    t_lo: float,
+    t_hi: float,
+    payoff_fn,
+    label: str = "model",
+    log_every: int | None = None,
+    tc_enforced: bool = False,
+    n_gram: int = 128,
+    reg: float = 1e-4,
+    cg_iters: int = 50,
+    ls_steps: int = 30,
+    ls_step_max: float = 1.0,
+):
+    """Train a model with Empirical Natural Gradient Descent (ENGD) + grid line search.
+
+    Replaces the Adam + LR-schedule loop of :func:`train_model` with the
+    natural gradient preconditioned update from Zeinhofer et al. (ICML 2023).
+
+    The Gram matrix is assembled from ``n_gram`` interior points and
+    ``N_TC`` terminal points at each iteration.  For large models the
+    linear system $G\\delta = \\nabla L$ is solved by Conjugate Gradient
+    without forming $G$ explicitly.
+
+    Args:
+        model:        The PINN model.
+        total_iters:  Number of ENGD steps.
+        s_lo, s_hi:   Asset-price training domain.
+        t_lo, t_hi:   Time training domain.
+        payoff_fn:    Terminal payoff callable.
+        label:        Label used in log messages.
+        log_every:    Log frequency (defaults to ~50 log points).
+        tc_enforced:  True when the terminal condition is hard-enforced
+                      by the ansatz; suppresses the terminal Gram and labels
+                      $L_{tc}$ as ``<enforced>`` in the log.
+        n_gram:       Number of interior collocation points used for the
+                      Gram matrix.  Fewer points reduce cost but may give a
+                      noisier preconditioner (64–256 is typical).
+        reg:          Tikhonov regularisation $\\varepsilon$ on the Gram diagonal.
+        cg_iters:     Maximum Conjugate Gradient iterations per ENGD step.
+        ls_steps:     Grid line search resolution (step sizes $\\alpha_0 \\cdot 2^{-k}$).
+        ls_step_max:  Largest step size $\\alpha_0$ in the grid.
+
+    Returns:
+        history dict with keys ``loss``, ``loss_f``, ``loss_tc``, ``iter``,
+        ``grad_norm``, ``step_size``, ``cg_residual_norm``, ``J_F_norm``,
+        ``tc_enforced``.
+    """
+    if log_every is None:
+        log_every = _adaptive_log_every(total_iters)
+
+    # lam_tc=0 for exact-BC models so the terminal Gram is skipped entirely.
+    lam_tc_gram = 0.0 if tc_enforced else LAMBDA_TC
+
+    engd = ENGDOptimizer(
+        model,
+        r=r,
+        q=q,
+        sigma=sigma,
+        lam_f=LAMBDA_F,
+        lam_tc=lam_tc_gram,
+        reg=reg,
+        cg_iters=cg_iters,
+        ls_steps=ls_steps,
+        ls_step_max=ls_step_max,
+    )
+
+    history = {
+        "loss": [],
+        "loss_f": [],
+        "loss_tc": [],
+        "iter": [],
+        "grad_norm": [],
+        "step_size": [],
+        "cg_residual_norm": [],
+        "J_F_norm": [],
+        "tc_enforced": tc_enforced,
+    }
+    model.to(DEVICE)
+    model.train()
+    t0 = time.time()
+
+    for it in range(1, total_iters + 1):
+        # Fresh collocation batch
+        s_f, t_f, s_tc, t_tc = sample_collocation(N_F, N_TC, s_lo, s_hi, t_lo, t_hi)
+
+        # Standard gradient (used as the RHS of the natural gradient system)
+        model.zero_grad()
+        loss, lf, ltc = compute_losses(
+            model, s_f, t_f, s_tc, t_tc, payoff_fn, LAMBDA_F, LAMBDA_TC,
+        )
+        loss.backward()
+        g = _flat_grad(model)
+
+        total_norm = g.norm(2).item()
+
+        # Gram points: subsample interior batch + all terminal points
+        s_gram = s_f[:n_gram].detach()
+        t_gram = t_f[:n_gram].detach()
+
+        # Loss callable for line search (re-evaluates on the same batch)
+        s_f_det = s_f.detach().clone()
+        t_f_det = t_f.detach().clone()
+        s_tc_det = s_tc.detach()
+        t_tc_det = t_tc.detach()
+
+        def _loss_fn() -> torch.Tensor:
+            s_f_ls = s_f_det.clone().requires_grad_(True)
+            t_f_ls = t_f_det.clone().requires_grad_(True)
+            l, _, _ = compute_losses(
+                model, s_f_ls, t_f_ls, s_tc_det, t_tc_det,
+                payoff_fn, LAMBDA_F, LAMBDA_TC,
+            )
+            return l
+
+        info = engd.step(
+            g,
+            s_gram,
+            t_gram,
+            s_tc.detach()[:n_gram],
+            t_tc.detach()[:n_gram],
+            _loss_fn,
+        )
+
+        if it % log_every == 0 or it == 1:
+            history["loss"].append(loss.item())
+            history["loss_f"].append(lf)
+            history["loss_tc"].append(ltc)
+            history["grad_norm"].append(total_norm)
+            history["step_size"].append(info["step_size"])
+            history["cg_residual_norm"].append(info["cg_residual_norm"])
+            history["J_F_norm"].append(info["J_F_norm"])
+            history["iter"].append(it)
+
+            elapsed = time.time() - t0
+            ltc_str = f"<enforced>({ltc:.2e})" if tc_enforced else f"{ltc:.2e}"
+            logger.info(
+                f"[{label}|ENGD] iter {it:>6d}/{total_iters}  "
+                f"loss={loss.item():.4e}  L_f={lf:.4e}  L_tc={ltc_str}  "
+                f"|g|={total_norm:.2e}  α={info['step_size']:.2e}  "
+                f"CG_res={info['cg_residual_norm']:.2e}  ({elapsed:.1f}s)"
+            )
+
+    model.eval()
+    elapsed = time.time() - t0
+    logger.info(f"[{label}|ENGD] Training done in {elapsed:.1f}s")
     return history
 
 
