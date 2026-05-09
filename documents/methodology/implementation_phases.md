@@ -406,3 +406,119 @@ python3 experiments/python_scripts/exp1/phase3_training.py \
 | $s^*$ | Exercise boundary at $t_1$ | Sign-change detection in `bermudan_problem` |
 | $w(s)$ | Spatial weight function | `phase3_training.compute_losses` |
 | $W$ | Detached spatial weight tensor | `phase3_training.compute_losses` |
+
+---
+
+## Exp 2 — Singularity Study: European Call ($\tau=0$ singularity)
+
+**Script:** `experiments/python_scripts/exp_singularity_european_call/ablation_singularity.py`  
+**Output:** `data/exp_singularity_european_call/<timestamp>_<mode>_iters<N>/`
+
+### Background
+
+For a European call option, the payoff $\Phi(S) = (S-K)^+$ is $C^0$ but not $C^1$ at $S = K$.
+At maturity ($\tau = T - t = 0$), the Black–Scholes Gamma blows up:
+
+$$\Gamma(S, \tau) = \frac{N'(d_1)}{S\,\sigma\,\sqrt{\tau}} \xrightarrow{\tau \to 0} \delta(S - K)$$
+
+When a plain PINN (no $g_1/g_2$ ansatz) is trained with the PDE loss evaluated near $\tau = 0$, `torch.autograd` must differentiate through the $S=K$ kink, yielding arbitrarily large $\partial^2 V / \partial S^2$ estimates and causing gradient explosion or optimiser stagnation.
+
+### Three Methods Compared (primary ablation)
+
+All three methods use the same **PINN baseline** (no terminal-condition ansatz), same network ($M=4$, $L=2$, $n=50$, Adam $\text{lr}=0.01$), same $N_f = 4096$, $N_{tc} = 1024$, and same parameters $K=100$, $r=0.02$, $\sigma=0.25$, $T=1$.
+
+| Method | Key idea | Payoff at $\tau=0$ | PDE domain |
+|--------|-----------|--------------------|------------|
+| **Naïf** (control) | No modification | `torch.clamp(S-K, min=0)` — non-$C^1$ | $\tau \in [0, T]$ |
+| **$\varepsilon$-troncature** | Exclude singular region from PDE loss | `torch.clamp` (exact) | $\tau \in [\varepsilon, T]$ |
+| **Lissage Softplus** | Replace max by $C^\infty$ approximation | $\frac{1}{\beta}\ln(1+e^{\beta(S-K)}) - \frac{\ln 2}{\beta}$ | $\tau \in [0, T]$ |
+
+Default parameters for the primary comparison (`--mode compare-boundary-singularity-european-call`): $\varepsilon = 1\%\,T$, $\beta = 100$.
+
+**Why these defaults?**
+- $\varepsilon = 1\%\,T$: avoids the singular $\Gamma$ zone while keeping $99\%$ of the temporal domain for PDE training.
+- $\beta = 100$: payoff bias at $S=K$ is $\frac{\ln 2}{\beta} \approx 0.007\,K$; bounded Gamma $\leq \beta/4 = 25$ everywhere.
+
+**Centring of the Softplus payoff:**
+
+$$\tilde{\Phi}_\beta(S) = \underbrace{\frac{1}{\beta}\ln\!\left(1+e^{\beta(S-K)}\right)}_{\text{Softplus}} - \frac{\ln 2}{\beta}$$
+
+The shift $\frac{\ln 2}{\beta}$ ensures $\tilde{\Phi}_\beta(K) = 0$, matching the exact payoff at the ATM point.
+
+**Reference:** exact Black–Scholes call via put–call parity,
+
+$$C^{\mathrm{BS}}(S,\tau) = S - K\,e^{-r\tau} + P^{\mathrm{BS}}(S,\tau)$$
+
+reusing the existing `terminal.black_scholes_put`.
+
+### Secondary Ablation Modes
+
+These modes fix one method and sweep its hyperparameter to understand sensitivity.
+
+| `--mode` | Fixed method | Sweep |
+|----------|-------------|-------|
+| `ablation-eps` | $\varepsilon$-troncature | $\varepsilon \in \{0.5\%, 1\%, 2\%, 5\%, 10\%\}\times T$ |
+| `ablation-beta` | Lissage | $\beta \in \{10, 50, 100, 500, 1000\}$ |
+| `ablation-is` | $\varepsilon$-troncature + IS | $\sigma_{\mathrm{IS}} \in \{2, 5, 10\}$, mix $= 0.5$ |
+
+**Importance Sampling** (mode `ablation-is`): a fraction `mix` of collocation points is drawn from $\mathcal{N}(K, \sigma_{\mathrm{IS}}^2)$ (truncated to the domain) to concentrate coverage around the ATM region where the singularity is strongest.
+
+### Evaluation Metrics
+
+All metrics are computed on a held-out evaluation grid $S \in [60, 140]$, $\tau \in [10^{-2}, T]$ (avoiding $\tau = 0$).
+
+| Metric | Symbol | Definition |
+|--------|--------|------------|
+| Global relative $L^2$ | $\varepsilon_{L^2}$ | $\left\lVert \hat{V} - V^{\mathrm{BS}} \right\rVert_2 / \left\lVert V^{\mathrm{BS}} \right\rVert_2$ |
+| ATM relative $L^2$ | $\varepsilon_{L^2}^{\mathrm{ATM}}$ | Same restricted to $S \in [0.9K, 1.1K]$ |
+| Delta error | $\varepsilon_\Delta$ | Relative $L^2$ of $\partial\hat{V}/\partial S$ vs $N(d_1)$, at $\tau = T/2$ |
+| Gamma error | $\varepsilon_\Gamma$ | Relative $L^2$ of $\partial^2\hat{V}/\partial S^2$ vs $N'(d_1)/(S\sigma\sqrt{\tau})$, at $\tau = T/2$ |
+| Gradient Explosion Index | $\mathrm{GEI}$ | $\max(\lVert\nabla_\theta\mathcal{L}\rVert_2) / \operatorname{median}(\lVert\nabla_\theta\mathcal{L}\rVert_2)$ over the first $2/3$ of training |
+| PDE residual profile | $\bar{F}(\tau)$ | $\mathbb{E}_{S=K}\!\left[\lvert\mathcal{F}[\hat{V}]\rvert\right]$ as a function of $\tau$ |
+
+### CLI Reference
+
+```
+# Smoke test — 3-method comparison, 200 iters (~30 s on GPU):
+python3 experiments/python_scripts/exp_singularity_european_call/ablation_singularity.py \
+    --iters 200 --device cuda
+
+# Full 3-method comparison (main result):
+python3 experiments/python_scripts/exp_singularity_european_call/ablation_singularity.py \
+    --iters 30000 --device cuda
+
+# Sensitivity to epsilon:
+python3 experiments/python_scripts/exp_singularity_european_call/ablation_singularity.py \
+    --iters 30000 --device cuda --mode ablation-eps
+
+# Sensitivity to beta:
+python3 experiments/python_scripts/exp_singularity_european_call/ablation_singularity.py \
+    --iters 30000 --device cuda --mode ablation-beta
+
+# Importance sampling:
+python3 experiments/python_scripts/exp_singularity_european_call/ablation_singularity.py \
+    --iters 30000 --device cuda --mode ablation-is
+
+# Regenerate plots without retraining:
+python3 experiments/python_scripts/exp_singularity_european_call/ablation_singularity.py \
+    --replot data/exp_singularity_european_call/<run_dir>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--iters N` | `200` | Iterations per variant |
+| `--mode` | `compare-boundary-singularity-european-call` | `compare-boundary-singularity-european-call` \| `ablation-eps` \| `ablation-beta` \| `ablation-is` |
+| `--device` | `auto` | `auto` \| `cuda` \| `cpu` |
+| `--n-tc N` | `1024` | Terminal condition collocation points |
+| `--n-f N` | `4096` | Interior PDE collocation points |
+| `--replot DIR` | — | Reload a saved run and regenerate plots |
+
+### Math → Code Mapping (Exp 2)
+
+| Symbol | Description | Code location |
+|--------|-------------|---------------|
+| $\tilde{\Phi}_\beta$ | Centred Softplus payoff | `ablation_singularity.make_payoff_smooth` |
+| $\varepsilon$-sampler | Truncated collocation sampler | `ablation_singularity.make_sampler_truncated` |
+| IS sampler | Importance-sampling sampler | `ablation_singularity.make_sampler_importance` |
+| $C^{\mathrm{BS}}$ | Call reference via put–call parity | `ablation_singularity.bs_call` |
+| $\varepsilon_{L^2}, \varepsilon_\Delta, \varepsilon_\Gamma, \mathrm{GEI}, \bar{F}(\tau)$ | All evaluation metrics | `ablation_singularity.compute_metrics` |
