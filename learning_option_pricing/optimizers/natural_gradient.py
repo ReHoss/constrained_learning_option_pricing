@@ -194,6 +194,45 @@ def compute_jacobians(
 
 
 # ---------------------------------------------------------------------------
+# Generic Jacobian builder — for arbitrary measurement functions
+# ---------------------------------------------------------------------------
+
+
+def measurement_jacobian(
+    measurement_fn: Callable,
+    params_dict: dict,
+    *args,
+) -> torch.Tensor:
+    """Compute the Jacobian of a *vector-valued* measurement w.r.t. parameters.
+
+    Use this when your measurement function returns a *vector* of residuals
+    (e.g. weak-form residuals $R_{i,k}$ in a VPINN).  For *scalar* per-point
+    measurements (standard PINN), use :func:`compute_jacobians` which adds
+    a ``vmap`` over the batch dimension.
+
+    Parameters
+    ----------
+    measurement_fn:
+        Callable ``(params_dict, *args) -> Tensor`` of shape ``(M,)``.
+        Must be composable with ``torch.func.jacrev`` (i.e., use
+        ``functional_call`` / ``torch.func.grad`` rather than the live
+        model and ``torch.autograd.grad``).
+    params_dict:
+        Detached parameter snapshot — the variable jacrev differentiates against.
+    *args:
+        Additional fixed arguments forwarded to ``measurement_fn``.
+
+    Returns
+    -------
+    J : Tensor of shape ``(M, n_params)`` — Jacobian rows are flattened over
+        the parameter pytree (consistent with ``flat_grad``/``flat_params``).
+    """
+    jac_pytree = jacrev(measurement_fn, argnums=0)(params_dict, *args)
+    # jac_pytree[name] has shape (M, *params_dict[name].shape)
+    return torch.cat([j.flatten(start_dim=1) for j in jac_pytree.values()], dim=1)
+
+
+# ---------------------------------------------------------------------------
 # Conjugate Gradient solver — implicit Gram-vector products
 # ---------------------------------------------------------------------------
 
