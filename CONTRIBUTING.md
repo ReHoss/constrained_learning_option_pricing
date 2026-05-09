@@ -28,6 +28,13 @@ learning_option_pricing/   # core Python package
         etcnn.py           # ETCNN wrapper (trial solution = g1*NN + g2)
     solvers/
         binomial_tree.py   # reference CRR solver
+    optimizers/
+        natural_gradient.py        # Empirical Natural Gradient Descent (PINN, strong form)
+        natural_gradient_vpinn.py  # ENGD for variational PINNs (Galerkin form)
+    vpinn/
+        loss.py            # weak-form Black-Scholes residual loss
+        quadrature.py      # Gauss-Legendre quadrature
+        test_functions.py  # sinusoidal test functions
     visualization/
         option_plots.py    # price surface, error heatmap, free boundary plots
     utils/
@@ -77,9 +84,16 @@ ruff format .
 3. Store all generated plots and CSVs in that directory.
 4. Update this file if new dependencies are required.
 
-## Reference
+## References
 
-Zhang, W., Guo, Y., Lu, B. — *Exact Terminal Condition Neural Network for American
-Option Pricing Based on the Black–Scholes–Merton Equations*,
-J. Comput. Appl. Math. **480** (2026) 117253.
-https://doi.org/10.1016/j.cam.2025.117253
+* Zhang, W., Guo, Y., Lu, B. — *Exact Terminal Condition Neural Network for
+  American Option Pricing Based on the Black–Scholes–Merton Equations*,
+  J. Comput. Appl. Math. **480** (2026) 117253.
+  <https://doi.org/10.1016/j.cam.2025.117253>
+
+* Zeinhofer, M. et al. — *Natural Gradient PINNs*, ICML 2023.
+  <https://github.com/MariusZeinhofer/Natural-Gradient-PINNs-ICML23>
+  See `documents/methodology/engd_optimizer.md` for the PyTorch port,
+  the strong-form (`ENGDOptimizer`) and variational
+  (`VPINNENGDOptimizer`) variants, and the validated hyperparameter
+  recipe.

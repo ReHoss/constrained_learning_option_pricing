@@ -554,7 +554,7 @@ def compute_metrics(model: torch.nn.Module, hist: dict) -> dict:
 # Ground-truth comparison slices
 # ---------------------------------------------------------------------------
 
-_GT_TAU_SLICES = [0.02 * T, T / 4, T / 2, 3 * T / 4]   # includes near-singularity slice
+_GT_TAU_SLICES = [0.02 * T, T / 4, T / 2, 3 * T / 4, T]  # near-singularity → t=0
 _GT_N_X = 120
 
 
@@ -575,39 +575,44 @@ def _compute_gt_slices(model: torch.nn.Module) -> dict:
         V_pred_slices.append(V_pred.cpu().numpy())
         V_ref_slices.append(V_ref.cpu().numpy())
 
-    # Greeks at tau = T/2
-    tau_greek = T / 2.0
-    t_fix = T - tau_greek
-    x_1d = torch.linspace(X_EVAL_LO, X_EVAL_HI, _GT_N_X, device=device).requires_grad_(True)
-    t_1d = torch.full((_GT_N_X,), t_fix, device=device).requires_grad_(True)
-    V_1d = model(torch.stack([x_1d, t_1d], dim=1)).squeeze()
-    (dV_dx,) = torch.autograd.grad(V_1d.sum(), x_1d, create_graph=True)
-    (d2V_dx2,) = torch.autograd.grad(dV_dx.sum(), x_1d, create_graph=False)
-
-    with torch.no_grad():
-        x_d   = x_1d.detach()
-        S_1d  = x_d.exp()
-        tau_t = torch.full((_GT_N_X,), tau_greek, device=device)
-        d1    = (x_d - math.log(K) + (r + 0.5*sigma**2)*tau_t) / (sigma*tau_t.sqrt())
-        sqrt2 = math.sqrt(2.0)
-        delta_ref = 0.5 * torch.erfc(-d1 / sqrt2)
-        gamma_ref = (
-            torch.exp(-0.5 * d1**2) / math.sqrt(2 * math.pi)
-            / (S_1d * sigma * tau_t.sqrt())
-        )
-        delta_pred = dV_dx.detach()  * (-x_d).exp()
-        gamma_pred = (d2V_dx2.detach() - dV_dx.detach()) * (-2 * x_d).exp()
+    # Greeks at every tau in _GT_TAU_SLICES (so we can see near-singularity behaviour)
+    delta_pred_slices, delta_ref_slices = [], []
+    gamma_pred_slices, gamma_ref_slices = [], []
+    for tau_val in _GT_TAU_SLICES:
+        t_fix = T - tau_val
+        x_1d = torch.linspace(X_EVAL_LO, X_EVAL_HI, _GT_N_X, device=device).requires_grad_(True)
+        t_1d = torch.full((_GT_N_X,), t_fix, device=device).requires_grad_(True)
+        V_1d = model(torch.stack([x_1d, t_1d], dim=1)).squeeze()
+        (dV_dx,)   = torch.autograd.grad(V_1d.sum(), x_1d, create_graph=True)
+        (d2V_dx2,) = torch.autograd.grad(dV_dx.sum(), x_1d, create_graph=False)
+        with torch.no_grad():
+            x_d   = x_1d.detach()
+            S_1d  = x_d.exp()
+            tau_t = torch.full((_GT_N_X,), tau_val, device=device)
+            d1    = (x_d - math.log(K) + (r + 0.5*sigma**2)*tau_t) / (sigma*tau_t.sqrt())
+            sqrt2 = math.sqrt(2.0)
+            delta_ref = 0.5 * torch.erfc(-d1 / sqrt2)
+            gamma_ref = (
+                torch.exp(-0.5 * d1**2) / math.sqrt(2 * math.pi)
+                / (S_1d * sigma * tau_t.sqrt())
+            )
+            delta_pred = dV_dx.detach()  * (-x_d).exp()
+            gamma_pred = (d2V_dx2.detach() - dV_dx.detach()) * (-2 * x_d).exp()
+        delta_pred_slices.append(delta_pred.cpu().numpy())
+        delta_ref_slices.append(delta_ref.cpu().numpy())
+        gamma_pred_slices.append(gamma_pred.cpu().numpy())
+        gamma_ref_slices.append(gamma_ref.cpu().numpy())
 
     return {
-        "x_vals":        x_vals.cpu().numpy(),
-        "tau_slices":    np.array(_GT_TAU_SLICES),
-        "V_pred_slices": np.array(V_pred_slices),
-        "V_ref_slices":  np.array(V_ref_slices),
-        "x_greek":       x_d.cpu().numpy(),
-        "delta_pred":    delta_pred.cpu().numpy(),
-        "delta_ref":     delta_ref.cpu().numpy(),
-        "gamma_pred":    gamma_pred.cpu().numpy(),
-        "gamma_ref":     gamma_ref.cpu().numpy(),
+        "x_vals":             x_vals.cpu().numpy(),
+        "tau_slices":         np.array(_GT_TAU_SLICES),
+        "V_pred_slices":      np.array(V_pred_slices),
+        "V_ref_slices":       np.array(V_ref_slices),
+        "x_greek":            x_d.cpu().numpy(),
+        "delta_pred_slices":  np.array(delta_pred_slices),
+        "delta_ref_slices":   np.array(delta_ref_slices),
+        "gamma_pred_slices":  np.array(gamma_pred_slices),
+        "gamma_ref_slices":   np.array(gamma_ref_slices),
     }
 
 
@@ -956,30 +961,35 @@ def _plot_gt_per_variant(res: dict, vdir: Path) -> None:
     fig.savefig(out / "price_error_slices.png", dpi=150)
     plt.close(fig)
 
-    # ── Delta & Gamma ─────────────────────────────────────────────────────
-    S_greek = np.exp(gt["x_greek"])
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    axes[0].plot(S_greek, gt["delta_ref"],  "k--", linewidth=1.5,
-                 label=r"$\Delta^{\mathrm{BS}}=N(d_1)$", zorder=10)
-    axes[0].plot(S_greek, gt["delta_pred"], color=color, linestyle=ls, linewidth=lw,
-                 label=r"$\hat{\Delta}$")
-    axes[0].axvline(K, color="gray", linestyle=":", linewidth=0.8)
-    axes[0].set_xlabel(r"$S$"); axes[0].set_ylabel(r"$\Delta$")
-    axes[0].set_title(r"$\Delta$ at $\tau = T/2$")
-    axes[0].legend(fontsize=8); axes[0].grid(True, alpha=0.3)
+    # ── Delta & Gamma — one column per tau slice ──────────────────────────
+    S_greek    = np.exp(gt["x_greek"])
+    tau_slices = gt["tau_slices"]
+    n_tau      = len(tau_slices)
+    fig, axes = plt.subplots(2, n_tau, figsize=(5 * n_tau, 9))
+    if n_tau == 1:
+        axes = axes.reshape(2, 1)
+    for j, tau_val in enumerate(tau_slices):
+        ax_d, ax_g = axes[0, j], axes[1, j]
+        ax_d.plot(S_greek, gt["delta_ref_slices"][j],  "k--", linewidth=1.5,
+                  label=r"$\Delta^{\mathrm{BS}}$", zorder=10)
+        ax_d.plot(S_greek, gt["delta_pred_slices"][j], color=color, linestyle=ls, linewidth=lw,
+                  label=r"$\hat{\Delta}$")
+        ax_d.axvline(K, color="gray", linestyle=":", linewidth=0.8)
+        ax_d.set_ylabel(r"$\Delta$")
+        ax_d.set_title(rf"$\tau = {tau_val:.2f}$")
+        ax_d.legend(fontsize=8); ax_d.grid(True, alpha=0.3)
 
-    axes[1].plot(S_greek, gt["gamma_ref"],  "k--", linewidth=1.5,
-                 label=r"$\Gamma^{\mathrm{BS}}=N'(d_1)/(S\sigma\sqrt{\tau})$", zorder=10)
-    axes[1].plot(S_greek, gt["gamma_pred"], color=color, linestyle=ls, linewidth=lw,
-                 label=r"$\hat{\Gamma}$")
-    axes[1].axvline(K, color="gray", linestyle=":", linewidth=0.8)
-    axes[1].set_xlabel(r"$S$"); axes[1].set_ylabel(r"$\Gamma$")
-    axes[1].set_title(r"$\Gamma$ at $\tau = T/2$")
-    axes[1].legend(fontsize=8); axes[1].grid(True, alpha=0.3)
+        ax_g.plot(S_greek, gt["gamma_ref_slices"][j],  "k--", linewidth=1.5,
+                  label=r"$\Gamma^{\mathrm{BS}}$", zorder=10)
+        ax_g.plot(S_greek, gt["gamma_pred_slices"][j], color=color, linestyle=ls, linewidth=lw,
+                  label=r"$\hat{\Gamma}$")
+        ax_g.axvline(K, color="gray", linestyle=":", linewidth=0.8)
+        ax_g.set_xlabel(r"$S$"); ax_g.set_ylabel(r"$\Gamma$")
+        ax_g.legend(fontsize=8); ax_g.grid(True, alpha=0.3)
 
     fig.suptitle(f"{label} — Greeks vs BS\n{_SUPTITLE}", fontsize=9)
     fig.tight_layout()
-    _add_formula_box(fig, _FORMULA_GREEKS_CMP, bottom_margin=0.24)
+    _add_formula_box(fig, _FORMULA_GREEKS_CMP, bottom_margin=0.18)
     fig.savefig(out / "greeks_comparison.png", dpi=150)
     plt.close(fig)
 
@@ -1201,28 +1211,35 @@ def _plot_gt_comparison(results: list[dict], comp_dir: Path) -> None:
     _save(fig, "price_error_slices.png",
           r"$|\hat{V}(S,\tau) - C^{\mathrm{BS}}(S,\tau)|$  pointwise absolute error")
 
-    # ── Greeks comparison ─────────────────────────────────────────────────
-    S_greek = np.exp(valid[0]["gt_slices"]["x_greek"])
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    axes[0].plot(S_greek, valid[0]["gt_slices"]["delta_ref"], "k--", linewidth=1.5,
-                 label=r"$\Delta^{\mathrm{BS}}$", zorder=10)
-    axes[1].plot(S_greek, valid[0]["gt_slices"]["gamma_ref"], "k--", linewidth=1.5,
-                 label=r"$\Gamma^{\mathrm{BS}}$", zorder=10)
-    for r in valid:
-        axes[0].plot(S_greek, r["gt_slices"]["delta_pred"],
-                     color=r["color"], linestyle=r["linestyle"], linewidth=r["linewidth"],
-                     label=r["label"])
-        axes[1].plot(S_greek, r["gt_slices"]["gamma_pred"],
-                     color=r["color"], linestyle=r["linestyle"], linewidth=r["linewidth"],
-                     label=r["label"])
-    for ax, ylabel, title in zip(axes,
-                                  [r"$\Delta$", r"$\Gamma$"],
-                                  [r"$\Delta$ at $\tau=T/2$", r"$\Gamma$ at $\tau=T/2$"]):
-        ax.axvline(K, color="gray", linestyle=":", linewidth=0.8)
-        ax.set_xlabel(r"$S$"); ax.set_ylabel(ylabel)
-        ax.set_title(title); ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+    # ── Greeks comparison — one column per tau slice ──────────────────────
+    S_greek    = np.exp(valid[0]["gt_slices"]["x_greek"])
+    tau_slices_g = valid[0]["gt_slices"]["tau_slices"]
+    n_tau_g    = len(tau_slices_g)
+    fig, axes = plt.subplots(2, n_tau_g, figsize=(5 * n_tau_g, 9))
+    if n_tau_g == 1:
+        axes = axes.reshape(2, 1)
+    for j, tau_val in enumerate(tau_slices_g):
+        ax_d, ax_g = axes[0, j], axes[1, j]
+        ax_d.plot(S_greek, valid[0]["gt_slices"]["delta_ref_slices"][j],
+                  "k--", linewidth=1.5, label=r"$\Delta^{\mathrm{BS}}$", zorder=10)
+        ax_g.plot(S_greek, valid[0]["gt_slices"]["gamma_ref_slices"][j],
+                  "k--", linewidth=1.5, label=r"$\Gamma^{\mathrm{BS}}$", zorder=10)
+        for rv in valid:
+            ax_d.plot(S_greek, rv["gt_slices"]["delta_pred_slices"][j],
+                      color=rv["color"], linestyle=rv["linestyle"], linewidth=rv["linewidth"],
+                      label=rv["label"])
+            ax_g.plot(S_greek, rv["gt_slices"]["gamma_pred_slices"][j],
+                      color=rv["color"], linestyle=rv["linestyle"], linewidth=rv["linewidth"],
+                      label=rv["label"])
+        ax_d.axvline(K, color="gray", linestyle=":", linewidth=0.8)
+        ax_g.axvline(K, color="gray", linestyle=":", linewidth=0.8)
+        ax_d.set_ylabel(r"$\Delta$")
+        ax_d.set_title(rf"$\tau = {tau_val:.2f}$")
+        ax_d.legend(fontsize=7); ax_d.grid(True, alpha=0.3)
+        ax_g.set_xlabel(r"$S$"); ax_g.set_ylabel(r"$\Gamma$")
+        ax_g.legend(fontsize=7); ax_g.grid(True, alpha=0.3)
     fig.suptitle(f"Greeks vs BS — all variants  |  {_SUPTITLE}", fontsize=9)
-    _save(fig, "greeks_comparison.png", _FORMULA_GREEKS_CMP, bottom=0.24)
+    _save(fig, "greeks_comparison.png", _FORMULA_GREEKS_CMP, bottom=0.18)
 
 
 # ---------------------------------------------------------------------------
