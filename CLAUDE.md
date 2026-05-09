@@ -9,3 +9,6 @@
 - Log as much information as possible in experiments and scripts.
 - the virtual environment is installed here venv/venv_learning_option_pricing
 - Save the run statistics so that plots can be easily updated without re-running the experiments.
+- Please also make sure the metrics are (reasonably) recorded per run so that figure patches can be applied without re-running the experiments
+- Add a textbox below the figures that give the analytical formula for the symbols used in the figures.
+- Labels figures when you think comparison are unfair.

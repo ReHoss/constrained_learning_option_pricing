@@ -16,6 +16,13 @@ Some remarks:
 
 
 
+- Black&Scholes theorem
+- Framework for bermudean options
+
+
+
+
+
 
 
 ON THE NUMERICAL INTEGRATION APPROACH:
