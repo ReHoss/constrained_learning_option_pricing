@@ -1246,35 +1246,51 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
     fig.suptitle(_SUPTITLE, fontsize=10)
     _savefig(fig, "loss_tc.png", _FORMULA_LTC + "\n" + _FORMULA_IC_QUAD)
 
-    # Derivative norm comparison — one panel per tau probe, ∂_x and ∂_xx side-by-side
+    # Derivative norm comparison — aggregated grid: 2 rows (∂_x, ∂_xx) × N_probes cols
     valid_dx = [r for r in results if r["hist"].get("dx_rms")]
     if valid_dx:
+        n_probes = len(_DERIV_TAU_PROBES)
+        fig, axes = plt.subplots(2, n_probes, figsize=(4.5 * n_probes, 9),
+                                 sharex=True)
         for k, tau_val in enumerate(_DERIV_TAU_PROBES):
-            fig, (ax_dx, ax_d2x) = plt.subplots(1, 2, figsize=(14, 5))
+            ax_dx, ax_d2x = axes[0, k], axes[1, k]
             for res in valid_dx:
                 dx_arr  = np.array(res["hist"]["dx_rms"])
                 d2x_arr = np.array(res["hist"]["d2x_rms"])
-                ax_dx.semilogy(res["hist"]["iter"], dx_arr[:, k],
-                               label=res["label"], color=res["color"],
-                               linestyle=res["linestyle"], linewidth=res["linewidth"])
-                ax_d2x.semilogy(res["hist"]["iter"], d2x_arr[:, k],
-                                label=res["label"], color=res["color"],
-                                linestyle=res["linestyle"], linewidth=res["linewidth"])
-            tau_str = rf"\tau={tau_val:.2f}"
-            ax_dx.set_xlabel("Iteration")
-            ax_dx.set_ylabel(r"$\mathrm{RMS}(\partial_x\hat{V})$")
-            ax_dx.set_title(rf"$\|\partial_x\hat{{V}}\|$ at ${tau_str}$")
-            ax_dx.legend(fontsize=9); ax_dx.grid(True, alpha=0.3)
-            ax_d2x.set_xlabel("Iteration")
-            ax_d2x.set_ylabel(r"$\mathrm{RMS}(\partial_{xx}\hat{V})$")
-            ax_d2x.set_title(rf"$\|\partial_{{xx}}\hat{{V}}\|$ at ${tau_str}$")
-            ax_d2x.legend(fontsize=9); ax_d2x.grid(True, alpha=0.3)
-            fig.suptitle(
-                rf"Spatial derivative norms at $\tau={tau_val:.2f}$  |  " + _SUPTITLE,
-                fontsize=9,
-            )
-            slug = f"{tau_val:.2f}".replace(".", "p")
-            _savefig(fig, f"deriv_norms_tau{slug}.png", _FORMULA_DX_NORM)
+                kw = dict(label=res["label"], color=res["color"],
+                          linestyle=res["linestyle"], linewidth=res["linewidth"])
+                ax_dx.semilogy(res["hist"]["iter"],  dx_arr[:, k],  **kw)
+                ax_d2x.semilogy(res["hist"]["iter"], d2x_arr[:, k], **kw)
+            tau_str = rf"$\tau={tau_val:.2f}$"
+            ax_dx.set_title(tau_str, fontsize=10)
+            ax_dx.grid(True, alpha=0.3)
+            ax_d2x.set_xlabel("Iteration"); ax_d2x.grid(True, alpha=0.3)
+            if k == 0:
+                ax_dx.set_ylabel(r"$\mathrm{RMS}(\partial_x\hat{V})$")
+                ax_d2x.set_ylabel(r"$\mathrm{RMS}(\partial_{xx}\hat{V})$")
+            if k == n_probes - 1:
+                ax_dx.legend(fontsize=8)
+                ax_d2x.legend(fontsize=8)
+        # Add BS reference lines (analytical RMS values, precomputed)
+        try:
+            bs_dx  = [74.3, 72.9, 69.5, 65.2]   # precomputed RMS(∂_x V^BS)
+            bs_d2x = [387., 277., 211., 169.]     # precomputed RMS(∂_xx V^BS)
+            for k in range(n_probes):
+                axes[0, k].axhline(bs_dx[k],  color="k", linestyle=":", lw=1.0, alpha=0.6)
+                axes[1, k].axhline(bs_d2x[k], color="k", linestyle=":", lw=1.0, alpha=0.6)
+            axes[0, n_probes - 1].plot([], [], color="k", linestyle=":", lw=1.0,
+                                       alpha=0.6, label=r"BS ref")
+            axes[0, n_probes - 1].legend(fontsize=8)
+        except Exception:
+            pass
+        fig.suptitle(
+            r"Spatial derivative norms vs training — all variants  |  " + _SUPTITLE,
+            fontsize=9,
+        )
+        fig.tight_layout()
+        _add_formula_box(fig, _FORMULA_DX_NORM, bottom_margin=0.16)
+        fig.savefig(comp_dir / "deriv_norms_comparison.png", dpi=150)
+        plt.close(fig)
 
     _plot_gt_comparison(results, comp_dir)
     logger.info(f"Comparison plots saved to {comp_dir}/")
