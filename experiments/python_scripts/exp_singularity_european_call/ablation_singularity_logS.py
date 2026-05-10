@@ -53,6 +53,10 @@ from learning_option_pricing.models.etcnn import PINN, InputNormalization
 from learning_option_pricing.models.resnet import ResNet
 from learning_option_pricing.pricing.terminal import black_scholes_put
 from learning_option_pricing.vpinn import GaussLegendreQuadrature
+from learning_option_pricing.optimizers import (
+    flat_grad, flat_params, set_flat_params,
+    grid_line_search, measurement_jacobian, solve_cg,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -506,6 +510,180 @@ def train_variant_vpinn(
     return history
 
 
+def _vpinn_residuals_forward_logS(
+    params_dict: dict,
+    model: torch.nn.Module,
+    t_batch: torch.Tensor,
+    x_nodes: torch.Tensor,
+    phi_w: torch.Tensor,
+    dphi_w: torch.Tensor,
+    sigma_: float,
+    mu_: float,
+    r_: float,
+) -> torch.Tensor:
+    """Forward-time weak residuals R_{i,k} for the Gram-matrix Jacobian.
+
+    Mirrors ``_VPINNLossForwardLogS.forward`` but uses ``torch.func`` primitives
+    (``functional_call`` + ``vmap`` + ``func_grad``) so that ``jacrev`` can
+    differentiate through it w.r.t. ``params_dict``.
+
+    Model input convention: ``[x, t]`` (spatial first, time second) — forward time.
+    PDE residual (IBP on ∂_{xx}):
+        R_{i,k} = ∫ [(∂_t V + μ ∂_x V − r V) φ_k − (σ²/2) ∂_x V ∂_x φ_k] dx
+    """
+    from torch.func import vmap, grad as func_grad, functional_call as fc
+
+    def u_fn(t_val: torch.Tensor, x_val: torch.Tensor) -> torch.Tensor:
+        inp = torch.stack([x_val, t_val]).unsqueeze(0)  # (1, 2): x first, t second
+        return fc(model, params_dict, inp).squeeze()
+
+    def _u_at(t, x):
+        return u_fn(t, x)
+
+    def _du_dt_at(t, x):
+        return func_grad(lambda tv: u_fn(tv, x))(t)
+
+    def _du_dx_at(t, x):
+        return func_grad(lambda xv: u_fn(t, xv))(x)
+
+    u_vals = vmap(vmap(_u_at,    in_dims=(None, 0)), in_dims=(0, None))(t_batch, x_nodes)
+    u_t    = vmap(vmap(_du_dt_at, in_dims=(None, 0)), in_dims=(0, None))(t_batch, x_nodes)
+    u_x    = vmap(vmap(_du_dx_at, in_dims=(None, 0)), in_dims=(0, None))(t_batch, x_nodes)
+
+    # Forward-time BSM residual integrand (same as _VPINNLossForwardLogS)
+    f_phi  = u_t + mu_ * u_x - r_ * u_vals           # (N_t, N_q)
+    f_dphi = -(sigma_**2 / 2.0) * u_x                 # (N_t, N_q)
+
+    R = f_phi @ phi_w.T + f_dphi @ dphi_w.T  # (N_t, K)
+    return R.reshape(-1)  # (N_t * K,)
+
+
+def train_variant_vpinn_engd(
+    model: torch.nn.Module,
+    vpinn_module: _VPINNLossForwardLogS,
+    total_iters: int,
+    sampler_fn,
+    payoff_fn,
+    label: str = "vpinn_engd",
+    lam_f: float | None = None,
+    log_every: int | None = None,
+    engd_reg: float = 1e-3,
+    engd_cg_iters: int = 20,
+    engd_n_tau_gram: int = 4,
+    engd_K_test_gram: int = 8,
+    engd_n_quad_gram: int = 32,
+    engd_n_tau_ls: int = 32,
+) -> dict:
+    """VPINN training with ENGD (natural gradient).
+
+    The Gram matrix is built from the Jacobian of the forward-time weak residuals
+    ``_vpinn_residuals_forward_logS``, matching the ``_VPINNLossForwardLogS``
+    geometry.  IC loss is folded into the gradient before the ENGD step so that
+    a single natural-gradient update handles both terms simultaneously.
+
+    Performance notes
+    -----------------
+    * The Gram uses a *smaller* VPINN module (K_test=8, n_quad=32) and fewer
+      tau points (n_tau_gram=4) to keep Jacobian computation ≈ 0.7s on CPU
+      (J ∈ ℝ^{32 × n_params}).
+    * The line-search closure uses a fixed small t_ls grid (n_tau_ls=32 points)
+      instead of the 512-point random training batch, reducing LS from ~10s to
+      ~0.3s per ENGD step.  Total per-iteration cost ≈ 2s on CPU.
+    """
+    if log_every is None:
+        log_every = p3._adaptive_log_every(total_iters)
+    model.to(p3.DEVICE)
+    vpinn_module.to(p3.DEVICE)
+    lambda_f  = lam_f if lam_f is not None else p3.LAMBDA_F
+    lambda_tc = p3.LAMBDA_TC
+
+    # ── Dedicated small VPINN module for the Gram Jacobian ─────────────────
+    vpinn_gram = _VPINNLossForwardLogS(
+        sigma=vpinn_module.sigma, r=vpinn_module.r,
+        x_lo=X_LO, x_hi=X_HI,
+        K_test=engd_K_test_gram, n_quad=engd_n_quad_gram,
+    ).to(p3.DEVICE)
+
+    # Fixed grids: one for Gram, one for line-search (avoids 512-point LS cost)
+    t_gram = torch.linspace(1e-3, T - 1e-3, engd_n_tau_gram, device=p3.DEVICE)
+    t_ls   = torch.linspace(1e-3, T - 1e-3, engd_n_tau_ls,   device=p3.DEVICE)
+
+    history: dict = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [],
+                     "grad_norm": [], "lr": [], "dx_rms": [], "d2x_rms": []}
+    model.train()
+    t0 = time.time()
+    logger.info(
+        f"[{label}] VPINN+ENGD — reg={engd_reg}  cg_iters={engd_cg_iters}  "
+        f"n_tau_gram={engd_n_tau_gram}  K_test_gram={engd_K_test_gram}  "
+        f"n_quad_gram={engd_n_quad_gram}  n_tau_ls={engd_n_tau_ls}  "
+        f"λ_f={lambda_f}  λ_tc={lambda_tc}"
+    )
+
+    for it in range(1, total_iters + 1):
+        t_batch = sampler_fn()
+
+        # ── 1. Compute combined gradient g = λ_f ∇L_f + λ_tc ∇L_ic ──────
+        model.zero_grad()
+        lf_val  = vpinn_module(model, t_batch)
+        ltc_val = vpinn_module.ic_loss_quad(model, payoff_fn)
+        loss    = lambda_f * lf_val + lambda_tc * ltc_val
+        loss.backward()
+        g_total = flat_grad(model)
+
+        # ── 2. Gram Jacobian from the small dedicated VPINN module ────────
+        params_snap = {k: v.detach().clone() for k, v in model.named_parameters()}
+        J = measurement_jacobian(
+            _vpinn_residuals_forward_logS,
+            params_snap, model,
+            t_gram.detach(),
+            vpinn_gram.x_nodes,
+            vpinn_gram.phi_w,
+            vpinn_gram.dphi_w,
+            vpinn_gram.sigma,
+            vpinn_gram.mu,
+            vpinn_gram.r,
+        )
+
+        # ── 3. Solve G δ = g via CG ───────────────────────────────────────
+        empty_TC = torch.zeros((0, J.shape[1]), dtype=J.dtype, device=J.device)
+        delta = solve_cg(
+            g_total, J, empty_TC,
+            lam_f=1.0, lam_tc=0.0, reg=engd_reg, n_iters=engd_cg_iters,
+        )
+
+        # ── 4. Grid line search with fixed small t_ls (fast evaluation) ───
+        def _loss_fn():
+            return (lambda_f * vpinn_module(model, t_ls)
+                    + lambda_tc * vpinn_module.ic_loss_quad(model, payoff_fn))
+
+        step_size = grid_line_search(model, _loss_fn, delta, n_steps=30, step_max=1.0)
+        flat0 = flat_params(model)
+        set_flat_params(model, flat0 - step_size * delta)
+
+        if it % log_every == 0 or it == 1:
+            total_norm = g_total.norm().item()
+            dx_rms, d2x_rms = _compute_deriv_norms(model)
+            history["loss"].append(loss.item())
+            history["loss_f"].append(lf_val.item())
+            history["loss_tc"].append(ltc_val.item())
+            history["grad_norm"].append(total_norm)
+            history["lr"].append(float(step_size))
+            history["iter"].append(it)
+            history["dx_rms"].append(dx_rms)
+            history["d2x_rms"].append(d2x_rms)
+            logger.info(
+                f"[{label}] iter {it:>5d}/{total_iters}  "
+                f"loss={loss.item():.4e}  Lf={lf_val.item():.4e}  L_ic={ltc_val.item():.4e}  "
+                f"alpha={step_size:.2e}  |g|={total_norm:.2e}  "
+                f"dx_rms(τ={_DERIV_TAU_PROBES[0]:.2f})={dx_rms[0]:.2e}  "
+                f"({time.time()-t0:.1f}s)"
+            )
+
+    model.eval()
+    logger.info(f"[{label}] Training done in {time.time()-t0:.1f}s")
+    return history
+
+
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
@@ -909,6 +1087,14 @@ def _build_variants(mode: str) -> list[dict]:
                  # eps=0.0: no temporal truncation — train on full [0,T] including singularity
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
                  color="tab:red", linestyle=":", linewidth=2.0),
+            dict(name="vpinn_engd", label="VPINN + ENGD (nat. grad.)",
+                 sampler_type="vpinn_engd", payoff_type="exact",
+                 eps=0.0, beta=None, sigma_is=None, mix=0.0,
+                 n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
+                 # max_iters: ENGD steps are ~100× more expensive per iteration;
+                 #   1000 natural-gradient steps ≈ 20k Adam steps wall-clock.
+                 max_iters=1000,
+                 color="tab:purple", linestyle=(0, (3, 2, 1, 2)), linewidth=2.0),
         ]
 
     if mode == "ablation-eps":
@@ -965,7 +1151,7 @@ def _build_sampler(cfg: dict, n_f: int, n_tc: int):
         return make_sampler_importance_logS(n_f, n_tc,
                                             sigma_is=cfg["sigma_is"],
                                             mix=cfg["mix"], eps=cfg["eps"])
-    if t == "vpinn":
+    if t in ("vpinn", "vpinn_engd"):
         return make_sampler_vpinn_logS(cfg.get("n_tau", 512),
                                        eps=cfg.get("eps", 0.01 * T))
     raise ValueError(f"Unknown sampler_type: {t!r}")
@@ -1020,8 +1206,9 @@ def _plot_variant(res: dict, vdir: Path) -> None:
     axes[2].set_xlabel("Iteration"); axes[2].grid(True, alpha=0.3)
     fig.suptitle(f"{label}\n{_SUPTITLE}", fontsize=10)
     fig.tight_layout()
-    lf_formula  = _FORMULA_LF_VPINN if res.get("sampler_type") == "vpinn" else _FORMULA_LF
-    ltc_formula = _FORMULA_IC_QUAD  if res.get("sampler_type") == "vpinn" else _FORMULA_LTC
+    _vpinn_like = res.get("sampler_type") in ("vpinn", "vpinn_engd")
+    lf_formula  = _FORMULA_LF_VPINN if _vpinn_like else _FORMULA_LF
+    ltc_formula = _FORMULA_IC_QUAD  if _vpinn_like else _FORMULA_LTC
     _add_formula_box(fig, lf_formula + "\n" + ltc_formula + "\n" + _FORMULA_GRAD,
                      bottom_margin=0.44)
     fig.savefig(out / "training_curves.png", dpi=150)
@@ -1178,7 +1365,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         plt.close(fig)
 
     # Loss Lf
-    has_vpinn = any(r.get("sampler_type") == "vpinn" for r in results)
+    has_vpinn = any(r.get("sampler_type") in ("vpinn", "vpinn_engd") for r in results)
     fig, ax = plt.subplots(figsize=(10, 6))
     for i, res in enumerate(results):
         ax.semilogy(res["hist"]["iter"], res["hist"]["loss_f"],
@@ -1284,27 +1471,129 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         fig2.savefig(comp_dir / "fair_comparison_overview.png", dpi=150)
         plt.close(fig2)
 
-    # Metric bar chart
-    metric_keys  = ["rel_l2", "rel_l2_atm", "rel_l2_delta", "rel_l2_gamma", "gei"]
-    metric_names = [r"$\varepsilon_{L^2}$", r"$\varepsilon_{L^2}^{\mathrm{ATM}}$",
-                    r"$\varepsilon_{\Delta}$", r"$\varepsilon_{\Gamma}$", r"GEI"]
-    fig, axes = plt.subplots(1, 5, figsize=(20, 6))
+    # Metric bar chart  (3 rows: global metrics / εΔ per τ / εΓ per τ)
+    # Three representative tau slices: near-singularity, mid, full maturity
+    _MB_TAU_IDX  = [0, 2, 4]   # indices into _GT_TAU_SLICES: 0.02T, T/2, T
+    _mb_tau_vals = [_GT_TAU_SLICES[i] for i in _MB_TAU_IDX]
+
+    metric_keys  = ["rel_l2", "rel_l2_atm", "gei"]
+    metric_names = [
+        r"$\varepsilon_{L^2}$",
+        r"$\varepsilon_{L^2}^{\mathrm{ATM}}$",
+        r"GEI",
+    ]
+    fig, axes = plt.subplots(3, 3, figsize=(13, 14))
+
+    # Row 0: global scalar metrics
     for j, (mk, mn) in enumerate(zip(metric_keys, metric_names)):
         vals = [res["metrics"][mk] for res in results]
-        bars = axes[j].bar(range(len(results)), vals, color=colors)
-        axes[j].set_xticks(range(len(results)))
-        axes[j].set_xticklabels(labels, rotation=40, ha="right", fontsize=8)
-        axes[j].set_title(mn, fontsize=10); axes[j].set_yscale("log")
-        axes[j].grid(axis="y", alpha=0.3)
+        bars = axes[0, j].bar(range(len(results)), vals, color=colors)
+        axes[0, j].set_xticks(range(len(results)))
+        axes[0, j].set_xticklabels(labels, rotation=40, ha="right", fontsize=8)
+        axes[0, j].set_title(mn, fontsize=10)
+        axes[0, j].set_yscale("log")
+        axes[0, j].grid(axis="y", alpha=0.3)
         for br, val in zip(bars, vals):
-            axes[j].text(br.get_x() + br.get_width()/2, val*1.1,
-                         f"{val:.2e}", ha="center", va="bottom", fontsize=7)
+            axes[0, j].text(br.get_x() + br.get_width()/2, val * 1.1,
+                            f"{val:.2e}", ha="center", va="bottom", fontsize=7)
+
+    # Rows 1–2: εΔ and εΓ at three representative τ values (one col per τ)
+    for row_idx, (pred_key, ref_key, ylbl) in enumerate([
+        ("delta_pred_slices", "delta_ref_slices", r"$\varepsilon_{\Delta}(\tau)$"),
+        ("gamma_pred_slices", "gamma_ref_slices", r"$\varepsilon_{\Gamma}(\tau)$"),
+    ], start=1):
+        for k, (i_tau, tau_v) in enumerate(zip(_MB_TAU_IDX, _mb_tau_vals)):
+            ax = axes[row_idx, k]
+            vals = []
+            for res in results:
+                gs = res.get("gt_slices")
+                if gs is not None:
+                    gp = gs[pred_key][i_tau]
+                    gr = gs[ref_key][i_tau]
+                    eps = float(np.linalg.norm(gp - gr) / (np.linalg.norm(gr) + 1e-12))
+                else:
+                    eps = float("nan")
+                vals.append(eps)
+            bars = ax.bar(range(len(results)), vals, color=colors)
+            ax.set_xticks(range(len(results)))
+            ax.set_xticklabels(labels, rotation=40, ha="right", fontsize=8)
+            ax.set_title(rf"{ylbl}    $\tau={tau_v:.2f}$", fontsize=10)
+            ax.set_yscale("log")
+            ax.grid(axis="y", alpha=0.3)
+            for br, val in zip(bars, vals):
+                if not np.isnan(val):
+                    ax.text(br.get_x() + br.get_width()/2, val * 1.1,
+                            f"{val:.2e}", ha="center", va="bottom", fontsize=7)
+
     fig.suptitle(f"Metric comparison — mode={mode}, {iters} iters\n{_SUPTITLE}", fontsize=10)
-    fig.subplots_adjust(bottom=0.44, top=0.88, wspace=0.35)
-    fig.text(0.5, 0.01, _FORMULA_METRICS, ha="center", va="bottom",
+    _formula_metrics_bar = "\n".join([
+        r"$\varepsilon_{L^2}=\|\hat{V}-C^{\mathrm{BS}}\|_2/\|C^{\mathrm{BS}}\|_2$"
+        r"   (grid $x\in[\ln 60,\ln 140]$, $t\in[0,\,T-0.01]$)",
+        r"$\varepsilon_{L^2}^{\mathrm{ATM}}$: same restricted to $x\in[\ln(0.9K),\ln(1.1K)]$     "
+        r"$\mathrm{GEI}=\max\|\nabla_\theta\mathcal{L}\|/\mathrm{median}\|\nabla_\theta\mathcal{L}\|$"
+        r"   (first 2/3 of training)",
+        r"Rows 1–2: $\varepsilon_\Delta(\tau)$, $\varepsilon_\Gamma(\tau)$ — rel. $L^2$ error"
+        r" over $S\in[60,140]$ at $\tau\in\{"
+        + ", ".join(f"{v:.2f}" for v in _mb_tau_vals)
+        + r"\}$ (near-singularity / mid / full maturity)",
+        r"$\hat{\Delta}=e^{-x}\partial_x\hat{V}$,  $\hat{\Gamma}=e^{-2x}(\partial_{xx}\hat{V}-\partial_x\hat{V})$"
+        r"     $C^{\mathrm{BS}}=S-Ke^{-r\tau}+P^{\mathrm{BS}}$,  $d_1=(x-\ln K+(r+\sigma^2/2)\tau)/(\sigma\sqrt{\tau})$",
+    ])
+    fig.subplots_adjust(bottom=0.30, top=0.92, wspace=0.40, hspace=0.85)
+    fig.text(0.5, 0.01, _formula_metrics_bar, ha="center", va="bottom",
              fontsize=7.5, bbox=_BOX_STYLE)
     fig.savefig(comp_dir / "metrics_bar.png", dpi=150)
     plt.close(fig)
+
+    # Payoff comparison — exact vs smooth softplus (analytical, no model needed)
+    smooth_results = [r for r in results
+                      if r.get("payoff_type") == "smooth" and r.get("beta") is not None]
+    if smooth_results:
+        with torch.no_grad():
+            x_fine    = torch.linspace(X_EVAL_LO, X_EVAL_HI, 600)
+            phi_exact = payoff_exact_logS(x_fine).numpy()
+        S_fine = x_fine.exp().numpy()
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+        ax1.plot(S_fine, phi_exact, color="k", linewidth=2.5,
+                 label=r"Exact: $(S-K)^+$", zorder=10)
+        for sv in smooth_results:
+            beta = sv["beta"]
+            with torch.no_grad():
+                phi_sm = make_payoff_smooth_logS(beta)(x_fine).numpy()
+            ax1.plot(S_fine, phi_sm, color=sv["color"], linestyle=sv["linestyle"],
+                     linewidth=sv["linewidth"],
+                     label=rf"$\tilde{{\Phi}}_{{\beta={beta}}}$  ({sv['label']})")
+        ax1.axvline(K, color="gray", linestyle=":", linewidth=1.0, label=rf"$K={K:.0f}$ (ATM)")
+        ax1.set_xlabel(r"$S = e^x$"); ax1.set_ylabel(r"Payoff $\Phi(x)$")
+        ax1.set_title("Terminal condition — exact vs smooth payoff")
+        ax1.legend(fontsize=9); ax1.grid(True, alpha=0.3)
+
+        ax2.set_title(r"Smoothing error $|\tilde{\Phi}_\beta(x) - (S-K)^+|$")
+        for sv in smooth_results:
+            beta = sv["beta"]
+            with torch.no_grad():
+                phi_sm = make_payoff_smooth_logS(beta)(x_fine).numpy()
+            err = np.abs(phi_sm - phi_exact)
+            ax2.plot(S_fine, err, color=sv["color"], linestyle=sv["linestyle"],
+                     linewidth=sv["linewidth"],
+                     label=rf"$\beta={beta}$,  max$={err.max():.2e}$")
+        ax2.axvline(K, color="gray", linestyle=":", linewidth=1.0, label=rf"$K={K:.0f}$ (ATM)")
+        ax2.set_xlabel(r"$S = e^x$"); ax2.set_ylabel("Absolute error")
+        ax2.set_yscale("log")
+        ax2.legend(fontsize=9); ax2.grid(True, alpha=0.3)
+
+        fig.suptitle(f"Payoff smoothing  |  {_SUPTITLE}", fontsize=10)
+        _formula_payoff = "\n".join([
+            r"Exact:  $\Phi(x) = (e^x-K)^+$   — discontinuous slope at $x=\ln K$"
+            r" (source of the terminal-condition singularity)",
+            r"Smooth: $\tilde{\Phi}_\beta(x) = \frac{1}{\beta}\ln(1+e^{\beta(e^x-K)})"
+            r" - \frac{\ln 2}{\beta}$   (softplus, centré en $\tilde{\Phi}_\beta(\ln K)=0$)",
+            r"Max error: $\max_x|\tilde{\Phi}_\beta-\Phi| = \frac{\ln 2}{\beta}$"
+            r"   atteint en $x=\ln K$ (ATM)",
+        ])
+        _savefig(fig, "payoff_comparison.png", _formula_payoff, bottom=0.20)
 
     # TC loss
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -1576,17 +1865,25 @@ def _train_one_variant(
     total_iters: int,
 ) -> dict:
     """Build, train, evaluate, and save one variant; return the result dict."""
+    # variant config may cap total_iters (e.g. ENGD is expensive per step)
+    # min() ensures smoke tests with small --iters still finish quickly
+    effective_iters = min(v.get("max_iters", total_iters), total_iters)
     model      = _build_pinn()
     sampler_fn = _build_sampler(v, n_f, n_tc)
     payoff_fn  = _build_payoff(v)
 
     if v["sampler_type"] == "vpinn":
         vpinn_module = _build_vpinn_loss(v)
-        hist = train_variant_vpinn(model, vpinn_module, total_iters,
+        hist = train_variant_vpinn(model, vpinn_module, effective_iters,
                                    sampler_fn, payoff_fn, v["name"],
                                    lam_f=v.get("lam_f"))
+    elif v["sampler_type"] == "vpinn_engd":
+        vpinn_module = _build_vpinn_loss(v)
+        hist = train_variant_vpinn_engd(model, vpinn_module, effective_iters,
+                                        sampler_fn, payoff_fn, v["name"],
+                                        lam_f=v.get("lam_f"))
     else:
-        hist = train_variant(model, total_iters, sampler_fn, payoff_fn, v["name"])
+        hist = train_variant(model, effective_iters, sampler_fn, payoff_fn, v["name"])
 
     metrics   = compute_metrics(model, hist)
     gt_slices = _compute_gt_slices(model)
