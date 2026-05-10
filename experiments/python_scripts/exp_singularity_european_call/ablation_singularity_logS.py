@@ -323,8 +323,9 @@ def make_sampler_vpinn_logS(n_tau: int, eps: float = 0.01 * T):
 # Derivative norm monitoring
 # ---------------------------------------------------------------------------
 
-_DERIV_TAU_PROBES = [0.01 * T, 0.05 * T, 0.25 * T, T]
-_DERIV_N_PTS      = 64   # spatial evaluation points for norm computation
+_DERIV_TAU_PROBES    = [0.01 * T, 0.05 * T, 0.25 * T, T]
+_DERIV_N_PTS         = 64   # spatial evaluation points for norm computation
+_DERIV_SPATIAL_N     = 200  # spatial evaluation points for distribution plots
 
 
 def _compute_deriv_norms(model: torch.nn.Module) -> tuple[list[float], list[float]]:
@@ -654,6 +655,30 @@ def _compute_gt_slices(model: torch.nn.Module) -> dict:
         gamma_pred_slices.append(gamma_pred.cpu().numpy())
         gamma_ref_slices.append(gamma_ref.cpu().numpy())
 
+    # Raw ∂_x V̂ and ∂_xx V̂ on a fine grid at _DERIV_TAU_PROBES (for spatial distribution plots)
+    x_sp = torch.linspace(X_EVAL_LO, X_EVAL_HI, _DERIV_SPATIAL_N, device=device)
+    dx_pred_sp, d2x_pred_sp, dx_ref_sp, d2x_ref_sp = [], [], [], []
+    sqrt2 = math.sqrt(2.0)
+    for tau_val in _DERIV_TAU_PROBES:
+        t_fix = T - tau_val
+        x_1d = x_sp.detach().clone().requires_grad_(True)
+        t_1d = torch.full((_DERIV_SPATIAL_N,), t_fix, device=device).requires_grad_(True)
+        V_1d = model(torch.stack([x_1d, t_1d], dim=1)).squeeze()
+        (dV_dx,)   = torch.autograd.grad(V_1d.sum(), x_1d, create_graph=True)
+        (d2V_dx2,) = torch.autograd.grad(dV_dx.sum(), x_1d, create_graph=False)
+        with torch.no_grad():
+            x_d_sp  = x_1d.detach()
+            tau_t   = torch.full((_DERIV_SPATIAL_N,), tau_val, device=device)
+            d1      = (x_d_sp - math.log(K) + (r + 0.5*sigma**2)*tau_t) / (sigma*tau_t.sqrt())
+            Nd1     = 0.5 * torch.erfc(-d1 / sqrt2)
+            phid1   = torch.exp(-0.5 * d1**2) / math.sqrt(2 * math.pi)
+            dx_ref  = x_d_sp.exp() * Nd1
+            d2x_ref = x_d_sp.exp() * (Nd1 + phid1 / (sigma * tau_t.sqrt()))
+        dx_pred_sp.append(dV_dx.detach().cpu().numpy())
+        d2x_pred_sp.append(d2V_dx2.detach().cpu().numpy())
+        dx_ref_sp.append(dx_ref.cpu().numpy())
+        d2x_ref_sp.append(d2x_ref.cpu().numpy())
+
     return {
         "x_vals":             x_vals.cpu().numpy(),
         "tau_slices":         np.array(_GT_TAU_SLICES),
@@ -664,6 +689,11 @@ def _compute_gt_slices(model: torch.nn.Module) -> dict:
         "delta_ref_slices":   np.array(delta_ref_slices),
         "gamma_pred_slices":  np.array(gamma_pred_slices),
         "gamma_ref_slices":   np.array(gamma_ref_slices),
+        "x_deriv_spatial":    x_sp.cpu().numpy(),
+        "dx_pred_spatial":    np.array(dx_pred_sp),
+        "d2x_pred_spatial":   np.array(d2x_pred_sp),
+        "dx_ref_spatial":     np.array(dx_ref_sp),
+        "d2x_ref_spatial":    np.array(d2x_ref_sp),
     }
 
 
@@ -794,6 +824,14 @@ _FORMULA_DX_NORM = "\n".join([
     r"  —  $x_i$ uniform on $[x_{lo},x_{hi}]$, $N=" + str(_DERIV_N_PTS) + r"$",
     r"Near $\tau=0$: singularity in $\partial_x\hat{V}$ (discontinuous payoff slope at $x=\ln K$)."
     r"  $\mathrm{RMS}(\partial_{xx}\hat{V})$ amplifies this further.",
+])
+_FORMULA_DERIV_SPATIAL = "\n".join([
+    r"$\partial_x V^{\mathrm{BS}} = e^x N(d_1)$"
+    r",  $\partial_{xx} V^{\mathrm{BS}} = e^x\!\left[N(d_1)+\frac{\varphi(d_1)}{\sigma\sqrt{\tau}}\right]$"
+    r"  where $\varphi = \frac{e^{-d_1^2/2}}{\sqrt{2\pi}}$,  $d_1=\frac{x-\ln K+(r+\sigma^2/2)\tau}{\sigma\sqrt{\tau}}$",
+    r"Near $\tau\to 0$: $\partial_x V^{\mathrm{BS}}\to e^x H(x-\ln K)$ (step),"
+    r"  $\partial_{xx} V^{\mathrm{BS}}\sim e^x\,\delta(x-\ln K)/(\sigma^2\tau)$ (diverges)."
+    r"  Dashed line = BS reference.",
 ])
 
 
@@ -1290,6 +1328,47 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         fig.tight_layout()
         _add_formula_box(fig, _FORMULA_DX_NORM, bottom_margin=0.16)
         fig.savefig(comp_dir / "deriv_norms_comparison.png", dpi=150)
+        plt.close(fig)
+
+    # Spatial derivative distribution — ∂_x V̂(x) and ∂_xx V̂(x) vs x at τ probes
+    valid_sp = [r for r in results
+                if r.get("gt_slices") and "dx_pred_spatial" in (r["gt_slices"] or {})]
+    if valid_sp:
+        n_probes = len(_DERIV_TAU_PROBES)
+        fig, axes = plt.subplots(2, n_probes, figsize=(4.5 * n_probes, 9))
+        x_sp = valid_sp[0]["gt_slices"]["x_deriv_spatial"]
+        for k, tau_val in enumerate(_DERIV_TAU_PROBES):
+            ax_dx  = axes[0, k]
+            ax_d2x = axes[1, k]
+            # BS reference (same for all variants)
+            ax_dx.plot(x_sp, valid_sp[0]["gt_slices"]["dx_ref_spatial"][k],
+                       "k--", lw=1.5, label=r"$\partial_x V^{\mathrm{BS}}$", zorder=10)
+            ax_d2x.plot(x_sp, valid_sp[0]["gt_slices"]["d2x_ref_spatial"][k],
+                        "k--", lw=1.5, label=r"$\partial_{xx} V^{\mathrm{BS}}$", zorder=10)
+            for res in valid_sp:
+                gt = res["gt_slices"]
+                kw = dict(label=res["label"], color=res["color"],
+                          linestyle=res["linestyle"], linewidth=res["linewidth"])
+                ax_dx.plot(x_sp,  gt["dx_pred_spatial"][k],  **kw)
+                ax_d2x.plot(x_sp, gt["d2x_pred_spatial"][k], **kw)
+            ax_dx.axvline(math.log(K), color="gray", linestyle=":", lw=0.8)
+            ax_d2x.axvline(math.log(K), color="gray", linestyle=":", lw=0.8)
+            ax_dx.set_title(rf"$\tau={tau_val:.2f}$", fontsize=10)
+            ax_dx.grid(True, alpha=0.3)
+            ax_d2x.set_xlabel(r"$x = \ln S$"); ax_d2x.grid(True, alpha=0.3)
+            if k == 0:
+                ax_dx.set_ylabel(r"$\partial_x \hat{V}$")
+                ax_d2x.set_ylabel(r"$\partial_{xx} \hat{V}$")
+            if k == n_probes - 1:
+                ax_dx.legend(fontsize=8)
+                ax_d2x.legend(fontsize=8)
+        fig.suptitle(
+            r"Spatial derivative distribution — all variants  |  " + _SUPTITLE,
+            fontsize=9,
+        )
+        fig.tight_layout()
+        _add_formula_box(fig, _FORMULA_DERIV_SPATIAL, bottom_margin=0.20)
+        fig.savefig(comp_dir / "deriv_spatial_comparison.png", dpi=150)
         plt.close(fig)
 
     _plot_gt_comparison(results, comp_dir)
