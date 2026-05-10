@@ -1244,7 +1244,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
     ax.set_title(r"Terminal-condition loss $\mathcal{L}_{tc}$")
     ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
     fig.suptitle(_SUPTITLE, fontsize=10)
-    _savefig(fig, "loss_tc.png", _FORMULA_LTC + "\n" + _FORMULA_IC_QUAD)
+    _savefig(fig, "loss_tc.png", _FORMULA_LTC + "\n" + _FORMULA_IC_QUAD, bottom=0.30)
 
     # Derivative norm comparison — aggregated grid: 2 rows (∂_x, ∂_xx) × N_probes cols
     valid_dx = [r for r in results if r["hist"].get("dx_rms")]
