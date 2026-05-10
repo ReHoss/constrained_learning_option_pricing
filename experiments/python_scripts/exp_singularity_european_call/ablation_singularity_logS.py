@@ -608,6 +608,30 @@ def compute_metrics(model: torch.nn.Module, hist: dict) -> dict:
 
 _GT_TAU_SLICES = [0.02 * T, T / 4, T / 2, 3 * T / 4, T]  # near-singularity → t=0
 _GT_N_X = 120
+# τ grid for weak-residual profile (denser near singularity)
+_WEAK_RES_TAU = [0.01*T, 0.02*T, 0.05*T, 0.10*T, T/4, T/2, 3*T/4, T]
+
+
+def _compute_weak_residual_profile(model: torch.nn.Module) -> np.ndarray:
+    """Evaluate mean weak-form PDE residual at each τ in _WEAK_RES_TAU.
+
+    Uses the same GL quadrature and sine test functions as _VPINNLossForwardLogS,
+    applied to any variant — strong-form PINNs included.
+    Returns an array of shape (len(_WEAK_RES_TAU),).
+    """
+    device = p3.DEVICE
+    vpinn_eval = _VPINNLossForwardLogS(
+        sigma, r, X_LO, X_HI, K_test=20, n_quad=100
+    ).to(device)
+    model.eval()
+    vals = []
+    for tau_val in _WEAK_RES_TAU:
+        t_val = T - tau_val
+        t_batch = torch.tensor([t_val], device=device)
+        with torch.enable_grad():
+            lf = vpinn_eval(model, t_batch).item()
+        vals.append(lf)
+    return np.array(vals)
 
 
 def _compute_gt_slices(model: torch.nn.Module) -> dict:
@@ -694,6 +718,8 @@ def _compute_gt_slices(model: torch.nn.Module) -> dict:
         "d2x_pred_spatial":   np.array(d2x_pred_sp),
         "dx_ref_spatial":     np.array(dx_ref_sp),
         "d2x_ref_spatial":    np.array(d2x_ref_sp),
+        "weak_residual_tau":  np.array(_WEAK_RES_TAU),
+        "weak_residual":      _compute_weak_residual_profile(model),
     }
 
 
@@ -749,7 +775,7 @@ def _load_variant(vdir: Path, summary_entry: dict) -> dict:
 _BOX_STYLE = dict(boxstyle="round,pad=0.6", facecolor="lightyellow", edgecolor="gray", alpha=0.9)
 
 
-def _add_formula_box(fig, text: str, bottom_margin: float = 0.20) -> None:
+def _add_formula_box(fig, text: str, bottom_margin: float = 0.12) -> None:
     fig.text(0.5, 0.01, text, ha="center", va="bottom", fontsize=8,
              bbox=_BOX_STYLE, linespacing=1.6)
     fig.subplots_adjust(bottom=bottom_margin)
@@ -832,6 +858,14 @@ _FORMULA_DERIV_SPATIAL = "\n".join([
     r"Near $\tau\to 0$: $\partial_x V^{\mathrm{BS}}\to e^x H(x-\ln K)$ (step),"
     r"  $\partial_{xx} V^{\mathrm{BS}}\sim e^x\,\delta(x-\ln K)/(\sigma^2\tau)$ (diverges)."
     r"  Dashed line = BS reference.",
+])
+_FORMULA_WEAK_RES = "\n".join([
+    r"$\mathcal{L}_f^{var}(\hat{V},\tau)=\frac{1}{K}\sum_{k=1}^{K}R_k(\tau)^2$,"
+    r"  $R_k=\int\left[\partial_t\hat{V}\,\phi_k"
+    r"-\frac{\sigma^2}{2}\partial_x\hat{V}\,\partial_x\phi_k"
+    r"+\mu\,\partial_x\hat{V}\,\phi_k-r\hat{V}\,\phi_k\right]dx$  (IBP on $\partial_{xx}$)",
+    r"$K=20$ sine test functions, GL quadrature — same metric applied to ALL variants."
+    r"  Left: strong-form $|\mathcal{F}[\hat{V}]|$ along $x=\ln K$.",
 ])
 
 
@@ -989,7 +1023,7 @@ def _plot_variant(res: dict, vdir: Path) -> None:
     lf_formula  = _FORMULA_LF_VPINN if res.get("sampler_type") == "vpinn" else _FORMULA_LF
     ltc_formula = _FORMULA_IC_QUAD  if res.get("sampler_type") == "vpinn" else _FORMULA_LTC
     _add_formula_box(fig, lf_formula + "\n" + ltc_formula + "\n" + _FORMULA_GRAD,
-                     bottom_margin=0.52)
+                     bottom_margin=0.44)
     fig.savefig(out / "training_curves.png", dpi=150)
     plt.close(fig)
 
@@ -1004,7 +1038,7 @@ def _plot_variant(res: dict, vdir: Path) -> None:
     ax.grid(True, alpha=0.3)
     fig.suptitle(f"{label}\n{_SUPTITLE}", fontsize=10)
     fig.tight_layout()
-    _add_formula_box(fig, _FORMULA_PDE_TAU, bottom_margin=0.24)
+    _add_formula_box(fig, _FORMULA_PDE_TAU, bottom_margin=0.16)
     fig.savefig(out / "pde_residual_tau.png", dpi=150)
     plt.close(fig)
 
@@ -1031,7 +1065,7 @@ def _plot_variant(res: dict, vdir: Path) -> None:
         ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
         fig.suptitle(f"{label}\n{_SUPTITLE}", fontsize=10)
         fig.tight_layout()
-        _add_formula_box(fig, _FORMULA_DX_NORM, bottom_margin=0.30)
+        _add_formula_box(fig, _FORMULA_DX_NORM, bottom_margin=0.20)
         fig.savefig(out / "deriv_norms.png", dpi=150)
         plt.close(fig)
 
@@ -1120,7 +1154,7 @@ def _plot_gt_per_variant(res: dict, vdir: Path) -> None:
 
     fig.suptitle(f"{label} — Greeks vs BS\n{_SUPTITLE}", fontsize=9)
     fig.tight_layout()
-    _add_formula_box(fig, _FORMULA_GREEKS_CMP, bottom_margin=0.18)
+    _add_formula_box(fig, _FORMULA_GREEKS_CMP, bottom_margin=0.12)
     fig.savefig(out / "greeks_comparison.png", dpi=150)
     plt.close(fig)
 
@@ -1137,7 +1171,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
     labels     = [r["label"]     for r in results]
     linewidths = [r["linewidth"] for r in results]
 
-    def _savefig(fig, name, formula, bottom=0.15):
+    def _savefig(fig, name, formula, bottom=0.10):
         fig.tight_layout()
         _add_formula_box(fig, formula, bottom_margin=bottom)
         fig.savefig(comp_dir / name, dpi=150)
@@ -1245,7 +1279,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
                 r"Right (fair): $\bar{F}(\tau)=\frac{1}{N}\sum_i|\mathcal{F}[\hat{V}](x=\ln K,\,T-\tau)|$"
                 r" — same strong-form operator for all methods",
             ]),
-            bottom_margin=0.22,
+            bottom_margin=0.14,
         )
         fig2.savefig(comp_dir / "fair_comparison_overview.png", dpi=150)
         plt.close(fig2)
@@ -1282,7 +1316,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
     ax.set_title(r"Terminal-condition loss $\mathcal{L}_{tc}$")
     ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
     fig.suptitle(_SUPTITLE, fontsize=10)
-    _savefig(fig, "loss_tc.png", _FORMULA_LTC + "\n" + _FORMULA_IC_QUAD, bottom=0.30)
+    _savefig(fig, "loss_tc.png", _FORMULA_LTC + "\n" + _FORMULA_IC_QUAD, bottom=0.22)
 
     # Derivative norm comparison — aggregated grid: 2 rows (∂_x, ∂_xx) × N_probes cols
     valid_dx = [r for r in results if r["hist"].get("dx_rms")]
@@ -1326,7 +1360,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
             fontsize=9,
         )
         fig.tight_layout()
-        _add_formula_box(fig, _FORMULA_DX_NORM, bottom_margin=0.16)
+        _add_formula_box(fig, _FORMULA_DX_NORM, bottom_margin=0.10)
         fig.savefig(comp_dir / "deriv_norms_comparison.png", dpi=150)
         plt.close(fig)
 
@@ -1367,8 +1401,35 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
             fontsize=9,
         )
         fig.tight_layout()
-        _add_formula_box(fig, _FORMULA_DERIV_SPATIAL, bottom_margin=0.20)
+        _add_formula_box(fig, _FORMULA_DERIV_SPATIAL, bottom_margin=0.13)
         fig.savefig(comp_dir / "deriv_spatial_comparison.png", dpi=150)
+        plt.close(fig)
+
+    # Weak-form residual profile — fair comparison for all variants
+    valid_wr = [r for r in results
+                if r.get("gt_slices") and "weak_residual" in (r["gt_slices"] or {})]
+    if valid_wr:
+        fig, (ax_strong, ax_weak) = plt.subplots(1, 2, figsize=(12, 5))
+        for res in valid_wr:
+            kw = dict(label=res["label"], color=res["color"],
+                      linestyle=res["linestyle"], linewidth=res["linewidth"],
+                      marker="o", markersize=4)
+            pde = res["metrics"]["pde_residual_tau"]
+            ax_strong.semilogy(pde["tau"], pde["residual"], **kw)
+            gt = res["gt_slices"]
+            ax_weak.semilogy(gt["weak_residual_tau"], gt["weak_residual"], **kw)
+        for ax, title in [
+            (ax_strong, r"Strong-form residual $|\mathcal{F}[\hat{V}]|$ along $x=\ln K$"),
+            (ax_weak,   r"Weak-form residual $\mathcal{L}_f^{var}(\hat{V},\tau)$  [all variants, same metric]"),
+        ]:
+            ax.set_xlabel(r"$\tau$"); ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
+            ax.set_title(title, fontsize=9)
+        ax_strong.set_ylabel(r"$|\mathcal{F}[\hat{V}]|$")
+        ax_weak.set_ylabel(r"$\mathcal{L}_f^{var}$")
+        fig.suptitle(r"Residual comparison — strong vs weak form  |  " + _SUPTITLE, fontsize=9)
+        fig.tight_layout()
+        _add_formula_box(fig, _FORMULA_WEAK_RES, bottom_margin=0.14)
+        fig.savefig(comp_dir / "weak_residual_comparison.png", dpi=150)
         plt.close(fig)
 
     _plot_gt_comparison(results, comp_dir)
@@ -1385,7 +1446,7 @@ def _plot_gt_comparison(results: list[dict], comp_dir: Path) -> None:
     S_vals     = np.exp(valid[0]["gt_slices"]["x_vals"])
     n_tau      = len(tau_slices)
 
-    def _save(fig, name, formula, bottom=0.20):
+    def _save(fig, name, formula, bottom=0.12):
         fig.tight_layout()
         _add_formula_box(fig, formula, bottom_margin=bottom)
         fig.savefig(comp_dir / name, dpi=150)
@@ -1457,7 +1518,7 @@ def _plot_gt_comparison(results: list[dict], comp_dir: Path) -> None:
         ax_g.set_xlabel(r"$S$"); ax_g.set_ylabel(r"$\Gamma$")
         ax_g.legend(fontsize=7); ax_g.grid(True, alpha=0.3)
     fig.suptitle(f"Greeks vs BS — all variants  |  {_SUPTITLE}", fontsize=9)
-    _save(fig, "greeks_comparison.png", _FORMULA_GREEKS_CMP, bottom=0.18)
+    _save(fig, "greeks_comparison.png", _FORMULA_GREEKS_CMP, bottom=0.12)
 
 
 # ---------------------------------------------------------------------------
