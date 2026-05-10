@@ -124,9 +124,10 @@ class _VPINNLossForwardLogS(torch.nn.Module):
     Loss: $\mathcal{L}_f = \mathrm{mean}_{i,k}\,R_{i,k}^2$.
     """
 
-    phi_w:   torch.Tensor
-    dphi_w:  torch.Tensor
-    x_nodes: torch.Tensor
+    phi_w:        torch.Tensor
+    dphi_w:       torch.Tensor
+    x_nodes:      torch.Tensor
+    weights:      torch.Tensor
 
     def __init__(
         self,
@@ -154,9 +155,11 @@ class _VPINNLossForwardLogS(torch.nn.Module):
         phi     = torch.sin(freq * x_shift)                                       # (K, N_q)
         dphi    = freq * torch.cos(freq * x_shift)                               # (K, N_q)
 
+        self.domain_length = L
         self.register_buffer("phi_w",   phi  * weights)   # (K, N_q)
         self.register_buffer("dphi_w",  dphi * weights)   # (K, N_q)
         self.register_buffer("x_nodes", x_nodes)          # (N_q,)
+        self.register_buffer("weights", weights)           # (N_q,)
 
     def forward(self, model: torch.nn.Module, t_batch: torch.Tensor) -> torch.Tensor:
         """Compute VPINN PDE residual loss.
@@ -193,6 +196,20 @@ class _VPINNLossForwardLogS(torch.nn.Module):
         # R_{i,k} = Σ_j [f_phi_{i,j}·φ_w_{k,j} + f_dphi_{i,j}·dφ_w_{k,j}]
         R = f_phi @ self.phi_w.T + f_dphi @ self.dphi_w.T  # (N_t, K)
         return R.pow(2).mean()
+
+    def ic_loss_quad(self, model: torch.nn.Module, payoff_fn) -> torch.Tensor:
+        r"""IC loss at t=T via quadrature: $\frac{1}{|\Omega|}\sum_q w_q|u_\theta(T,x_q)-h(x_q)|^2$.
+
+        Uses the same spatial nodes as the PDE residual — consistent with the
+        weak L² formulation.  Normalised by domain length so the scale matches
+        a Monte-Carlo MSE estimator.
+        """
+        x_q = self.x_nodes.detach()
+        t_T = torch.full_like(x_q, T)
+        with torch.no_grad():
+            h_q = payoff_fn(x_q)
+        u_T = model(torch.stack([x_q, t_T], dim=1)).squeeze()
+        return ((u_T - h_q).pow(2) * self.weights).sum() / self.domain_length
 
 
 # ---------------------------------------------------------------------------
@@ -288,52 +305,74 @@ def make_sampler_importance_logS(n_f: int, n_tc: int,
     return _sample
 
 
-def make_sampler_vpinn_logS(n_tau: int, n_tc: int, eps: float = 0.01 * T):
-    """Return t_batch (collocation times for the VPINN) + TC points.
+def make_sampler_vpinn_logS(n_tau: int, eps: float = 0.01 * T):
+    """Return t_batch (time collocation points for the VPINN weak residual).
 
-    The spatial quadrature is handled inside _VPINNLossForwardLogS; the sampler
-    only needs to draw time collocation points and terminal-condition points.
-    Returns (t_batch, x_tc, t_tc).
+    The IC at t=T is enforced via quadrature inside _VPINNLossForwardLogS.ic_loss_quad,
+    so no separate TC points are needed here.
 
     Args:
-        eps: Temporal truncation — PDE collocation points are drawn from
-             [0, T - eps] to avoid the near-terminal singularity zone where
-             ∂V/∂t is large (same rationale as the truncated variant).
+        eps: Temporal truncation — PDE collocation points drawn from [0, T−eps].
     """
     def _sample():
-        device = p3.DEVICE
-        t_batch = torch.rand(n_tau, device=device) * (T - eps)  # (n_tau,) in [0, T-eps]
-        x_tc = torch.rand(n_tc, device=device) * (X_HI - X_LO) + X_LO
-        t_tc = torch.full((n_tc,), T, device=device)
-        return t_batch, x_tc, t_tc
+        return torch.rand(n_tau, device=p3.DEVICE) * (T - eps)
     return _sample
+
+
+# ---------------------------------------------------------------------------
+# Derivative norm monitoring
+# ---------------------------------------------------------------------------
+
+_DERIV_TAU_PROBES = [0.01 * T, 0.05 * T, 0.25 * T, T]
+_DERIV_N_PTS      = 64   # spatial evaluation points for norm computation
+
+
+def _compute_deriv_norms(model: torch.nn.Module) -> tuple[list[float], list[float]]:
+    """RMS of ∂_x V and ∂_xx V at each τ in _DERIV_TAU_PROBES over [X_EVAL_LO, X_EVAL_HI].
+
+    Returns two lists (dx_rms, d2x_rms), one entry per tau probe.
+    Gradients are taken w.r.t. the spatial input — not w.r.t. model parameters.
+    """
+    was_training = model.training
+    model.eval()
+    device = p3.DEVICE
+    dx_rms, d2x_rms = [], []
+    for tau_val in _DERIV_TAU_PROBES:
+        t_val = T - tau_val
+        x_p = torch.linspace(X_EVAL_LO, X_EVAL_HI, _DERIV_N_PTS,
+                              device=device).requires_grad_(True)
+        t_p = torch.full((_DERIV_N_PTS,), t_val, device=device).requires_grad_(True)
+        V_p = model(torch.stack([x_p, t_p], dim=1)).squeeze()
+        (dV_dx,)   = torch.autograd.grad(V_p.sum(), x_p, create_graph=True)
+        (d2V_dx2,) = torch.autograd.grad(dV_dx.sum(), x_p, create_graph=False)
+        dx_rms.append(dV_dx.detach().pow(2).mean().sqrt().item())
+        d2x_rms.append(d2V_dx2.detach().pow(2).mean().sqrt().item())
+    if was_training:
+        model.train()
+    return dx_rms, d2x_rms
 
 
 def compute_losses_vpinn_logS(
     model,
     t_batch: torch.Tensor,
     vpinn_module: _VPINNLossForwardLogS,
-    x_tc: torch.Tensor,
-    t_tc: torch.Tensor,
     payoff_fn,
     lam_f: float | None = None,
 ):
-    """Total loss for VPINN: weak PDE loss + terminal-condition MSE.
+    """Total loss for VPINN: weak PDE residual + variational (quadrature) IC loss.
+
+    The IC is evaluated at the Gauss-Legendre quadrature nodes — same as the
+    PDE residual — giving the true discrete L² penalty:
+        L_ic = (1/|Ω|) Σ_q w_q |u_θ(T, x_q) − h(x_q)|²
 
     The VPINN weak residual L_f is structurally ~10x smaller than the
-    strong-form collocation L_f (because it is an integral average over K
-    test functions rather than a pointwise residual).  Pass lam_f explicitly
-    to override p3.LAMBDA_F and restore the ~50/50 PDE/TC balance that the
-    strong-form variants enjoy.
+    strong-form collocation L_f; pass lam_f explicitly to rescale.
     """
     lambda_f = lam_f if lam_f is not None else p3.LAMBDA_F
-    loss_f = vpinn_module(model, t_batch)
-    with torch.no_grad():
-        phi = payoff_fn(x_tc)
-    u_tc   = model(torch.stack([x_tc, t_tc], dim=1)).squeeze()
-    loss_tc = ((u_tc - phi) ** 2).mean()
-    total   = lambda_f * loss_f + p3.LAMBDA_TC * loss_tc
-    return total, loss_f.item(), loss_tc.item()
+    loss_f  = vpinn_module(model, t_batch)
+    loss_ic = vpinn_module.ic_loss_quad(model, payoff_fn)
+    total   = lambda_f * loss_f + p3.LAMBDA_TC * loss_ic
+    return total, loss_f.item(), loss_ic.item()
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +392,8 @@ def train_variant(
     model.to(p3.DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01, betas=(0.9, 0.999))
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, p3.build_lr_lambda(total_iters))
-    history: dict = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [], "grad_norm": [], "lr": []}
+    history: dict = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [], "grad_norm": [], "lr": [],
+                     "dx_rms": [], "d2x_rms": []}
     model.train()
     t0 = time.time()
 
@@ -373,16 +413,21 @@ def train_variant(
 
         if it % log_every == 0 or it == 1:
             lr_now = optimizer.param_groups[0]["lr"]
+            dx_rms, d2x_rms = _compute_deriv_norms(model)
             history["loss"].append(loss.item())
             history["loss_f"].append(lf)
             history["loss_tc"].append(ltc)
             history["grad_norm"].append(total_norm)
             history["lr"].append(lr_now)
             history["iter"].append(it)
+            history["dx_rms"].append(dx_rms)
+            history["d2x_rms"].append(d2x_rms)
             logger.info(
                 f"[{label}] iter {it:>6d}/{total_iters}  "
                 f"loss={loss.item():.4e}  Lf={lf:.4e}  Ltc={ltc:.4e}  "
-                f"|g|={total_norm:.2e}  lr={lr_now:.5f}  ({time.time()-t0:.1f}s)"
+                f"|g|={total_norm:.2e}  lr={lr_now:.5f}  "
+                f"dx_rms(τ={_DERIV_TAU_PROBES[0]:.2f})={dx_rms[0]:.2e}  "
+                f"({time.time()-t0:.1f}s)"
             )
 
     model.eval()
@@ -409,19 +454,20 @@ def train_variant_vpinn(
     lambda_tc = p3.LAMBDA_TC
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01, betas=(0.9, 0.999))
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, p3.build_lr_lambda(total_iters))
-    history: dict = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [], "grad_norm": [], "lr": []}
+    history: dict = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [], "grad_norm": [], "lr": [],
+                     "dx_rms": [], "d2x_rms": []}
     model.train()
     t0 = time.time()
     logger.info(
-        f"[{label}] loss = λ_f·Lf + λ_tc·Ltc  "
-        f"with λ_f={lambda_f}, λ_tc={lambda_tc}"
+        f"[{label}] loss = λ_f·Lf + λ_tc·L_ic  "
+        f"with λ_f={lambda_f}, λ_tc={lambda_tc}  (L_ic = variational quadrature IC)"
     )
 
     for it in range(1, total_iters + 1):
         optimizer.zero_grad()
-        t_batch, x_tc, t_tc = sampler_fn()
+        t_batch = sampler_fn()
         loss, lf, ltc = compute_losses_vpinn_logS(
-            model, t_batch, vpinn_module, x_tc, t_tc, payoff_fn, lam_f=lam_f
+            model, t_batch, vpinn_module, payoff_fn, lam_f=lam_f
         )
         loss.backward()
 
@@ -435,18 +481,23 @@ def train_variant_vpinn(
 
         if it % log_every == 0 or it == 1:
             lr_now = optimizer.param_groups[0]["lr"]
+            dx_rms, d2x_rms = _compute_deriv_norms(model)
             history["loss"].append(loss.item())
             history["loss_f"].append(lf)
             history["loss_tc"].append(ltc)
             history["grad_norm"].append(total_norm)
             history["lr"].append(lr_now)
             history["iter"].append(it)
+            history["dx_rms"].append(dx_rms)
+            history["d2x_rms"].append(d2x_rms)
             logger.info(
                 f"[{label}] iter {it:>6d}/{total_iters}  "
                 f"loss={loss.item():.4e}  "
-                f"(λ_f·Lf={lambda_f * lf:.4e}  λ_tc·Ltc={lambda_tc * ltc:.4e})  "
-                f"Lf={lf:.4e}  Ltc={ltc:.4e}  "
-                f"|g|={total_norm:.2e}  lr={lr_now:.5f}  ({time.time()-t0:.1f}s)"
+                f"(λ_f·Lf={lambda_f * lf:.4e}  λ_tc·L_ic={lambda_tc * ltc:.4e})  "
+                f"Lf={lf:.4e}  L_ic={ltc:.4e}  "
+                f"|g|={total_norm:.2e}  lr={lr_now:.5f}  "
+                f"dx_rms(τ={_DERIV_TAU_PROBES[0]:.2f})={dx_rms[0]:.2e}  "
+                f"({time.time()-t0:.1f}s)"
             )
 
     model.eval()
@@ -730,6 +781,20 @@ _FORMULA_LF_VPINN = "\n".join([
     r"$\phi_k(x)=\sin\left(\frac{k\pi(x-X_{lo})}{X_{hi}-X_{lo}}\right)$"
     r"  — IBP on $\partial_{xx}\hat{V}$ eliminates 2nd-order autograd",
 ])
+_FORMULA_IC_QUAD = "\n".join([
+    r"$\mathcal{L}_{ic}^{var}(\theta)="
+    r"\frac{\lambda_{tc}}{|\Omega|}\sum_{q=1}^{N_q}w_q\,|\hat{u}(T,x_q)-h(x_q)|^2"
+    r"\approx\frac{\lambda_{tc}}{|\Omega|}\|\hat{u}(T,\cdot)-h\|^2_{L^2(\Omega)}$",
+    r"Uses Gauss-Legendre nodes $\{x_q,w_q\}$ (same as PDE residual)"
+    r" — consistent $L^2$ penalization, no extra random samples.",
+])
+_FORMULA_DX_NORM = "\n".join([
+    r"$\mathrm{RMS}_\tau(\partial_x\hat{V})"
+    r"=\left(\frac{1}{N}\sum_{i=1}^N|\partial_x\hat{V}(x_i,\,T-\tau)|^2\right)^{1/2}$"
+    r"  —  $x_i$ uniform on $[x_{lo},x_{hi}]$, $N=" + str(_DERIV_N_PTS) + r"$",
+    r"Near $\tau=0$: singularity in $\partial_x\hat{V}$ (discontinuous payoff slope at $x=\ln K$)."
+    r"  $\mathrm{RMS}(\partial_{xx}\hat{V})$ amplifies this further.",
+])
 
 
 # ---------------------------------------------------------------------------
@@ -829,7 +894,7 @@ def _build_sampler(cfg: dict, n_f: int, n_tc: int):
                                             sigma_is=cfg["sigma_is"],
                                             mix=cfg["mix"], eps=cfg["eps"])
     if t == "vpinn":
-        return make_sampler_vpinn_logS(cfg.get("n_tau", 512), n_tc,
+        return make_sampler_vpinn_logS(cfg.get("n_tau", 512),
                                        eps=cfg.get("eps", 0.01 * T))
     raise ValueError(f"Unknown sampler_type: {t!r}")
 
@@ -883,8 +948,9 @@ def _plot_variant(res: dict, vdir: Path) -> None:
     axes[2].set_xlabel("Iteration"); axes[2].grid(True, alpha=0.3)
     fig.suptitle(f"{label}\n{_SUPTITLE}", fontsize=10)
     fig.tight_layout()
-    lf_formula = _FORMULA_LF_VPINN if res.get("sampler_type") == "vpinn" else _FORMULA_LF
-    _add_formula_box(fig, lf_formula + "\n" + _FORMULA_LTC + "\n" + _FORMULA_GRAD,
+    lf_formula  = _FORMULA_LF_VPINN if res.get("sampler_type") == "vpinn" else _FORMULA_LF
+    ltc_formula = _FORMULA_IC_QUAD  if res.get("sampler_type") == "vpinn" else _FORMULA_LTC
+    _add_formula_box(fig, lf_formula + "\n" + ltc_formula + "\n" + _FORMULA_GRAD,
                      bottom_margin=0.52)
     fig.savefig(out / "training_curves.png", dpi=150)
     plt.close(fig)
@@ -903,6 +969,33 @@ def _plot_variant(res: dict, vdir: Path) -> None:
     _add_formula_box(fig, _FORMULA_PDE_TAU, bottom_margin=0.24)
     fig.savefig(out / "pde_residual_tau.png", dpi=150)
     plt.close(fig)
+
+    # ── Spatial derivative norms vs training ─────────────────────────────
+    if res["hist"].get("dx_rms"):
+        _colors_probe = ["tab:red", "tab:orange", "tab:blue", "tab:gray"]
+        tau_labels = [rf"$\tau={p:.2f}$" for p in _DERIV_TAU_PROBES]
+        dx_arr  = np.array(res["hist"]["dx_rms"])   # (n_log, n_probes)
+        d2x_arr = np.array(res["hist"]["d2x_rms"])  # (n_log, n_probes)
+        iters   = res["hist"]["iter"]
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+        for k in range(dx_arr.shape[1]):
+            c = _colors_probe[k % len(_colors_probe)]
+            ax1.semilogy(iters, dx_arr[:, k],  label=tau_labels[k], color=c)
+            ax2.semilogy(iters, d2x_arr[:, k], label=tau_labels[k], color=c)
+        ax1.set_xlabel("Iteration")
+        ax1.set_ylabel(r"$\mathrm{RMS}(\partial_x\hat{V})$")
+        ax1.set_title(r"Spatial gradient norm $\|\partial_x\hat{V}\|$ per $\tau$")
+        ax1.legend(fontsize=8); ax1.grid(True, alpha=0.3)
+        ax2.set_xlabel("Iteration")
+        ax2.set_ylabel(r"$\mathrm{RMS}(\partial_{xx}\hat{V})$")
+        ax2.set_title(r"Second derivative norm $\|\partial_{xx}\hat{V}\|$ per $\tau$")
+        ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
+        fig.suptitle(f"{label}\n{_SUPTITLE}", fontsize=10)
+        fig.tight_layout()
+        _add_formula_box(fig, _FORMULA_DX_NORM, bottom_margin=0.22)
+        fig.savefig(out / "deriv_norms.png", dpi=150)
+        plt.close(fig)
 
     _plot_gt_per_variant(res, vdir)
 
@@ -1151,7 +1244,37 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
     ax.set_title(r"Terminal-condition loss $\mathcal{L}_{tc}$")
     ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
     fig.suptitle(_SUPTITLE, fontsize=10)
-    _savefig(fig, "loss_tc.png", _FORMULA_LTC)
+    _savefig(fig, "loss_tc.png", _FORMULA_LTC + "\n" + _FORMULA_IC_QUAD)
+
+    # Derivative norm comparison — one panel per tau probe, ∂_x and ∂_xx side-by-side
+    valid_dx = [r for r in results if r["hist"].get("dx_rms")]
+    if valid_dx:
+        for k, tau_val in enumerate(_DERIV_TAU_PROBES):
+            fig, (ax_dx, ax_d2x) = plt.subplots(1, 2, figsize=(14, 5))
+            for res in valid_dx:
+                dx_arr  = np.array(res["hist"]["dx_rms"])
+                d2x_arr = np.array(res["hist"]["d2x_rms"])
+                ax_dx.semilogy(res["hist"]["iter"], dx_arr[:, k],
+                               label=res["label"], color=res["color"],
+                               linestyle=res["linestyle"], linewidth=res["linewidth"])
+                ax_d2x.semilogy(res["hist"]["iter"], d2x_arr[:, k],
+                                label=res["label"], color=res["color"],
+                                linestyle=res["linestyle"], linewidth=res["linewidth"])
+            tau_str = rf"\tau={tau_val:.2f}"
+            ax_dx.set_xlabel("Iteration")
+            ax_dx.set_ylabel(r"$\mathrm{RMS}(\partial_x\hat{V})$")
+            ax_dx.set_title(rf"$\|\partial_x\hat{{V}}\|$ at ${tau_str}$")
+            ax_dx.legend(fontsize=9); ax_dx.grid(True, alpha=0.3)
+            ax_d2x.set_xlabel("Iteration")
+            ax_d2x.set_ylabel(r"$\mathrm{RMS}(\partial_{xx}\hat{V})$")
+            ax_d2x.set_title(rf"$\|\partial_{{xx}}\hat{{V}}\|$ at ${tau_str}$")
+            ax_d2x.legend(fontsize=9); ax_d2x.grid(True, alpha=0.3)
+            fig.suptitle(
+                rf"Spatial derivative norms at $\tau={tau_val:.2f}$  |  " + _SUPTITLE,
+                fontsize=9,
+            )
+            slug = f"{tau_val:.2f}".replace(".", "p")
+            _savefig(fig, f"deriv_norms_tau{slug}.png", _FORMULA_DX_NORM)
 
     _plot_gt_comparison(results, comp_dir)
     logger.info(f"Comparison plots saved to {comp_dir}/")
