@@ -12,4 +12,4 @@
 - Please also make sure the metrics are (reasonably) recorded per run so that figure patches can be applied without re-running the experiments
 - Add a textbox below the figures that give the analytical formula for the symbols used in the figures.
 - Labels figures when you think comparison are unfair.
-- When running experiments, give the command to follow the progress of the experiment in real time.
+- When running experiments, give the command to follow the progress of the experiment in real time. Please give the full absolute path to the log file so that it can be easily followed.

@@ -943,7 +943,17 @@ def _load_variant(vdir: Path, summary_entry: dict) -> dict:
     if gt_path.exists():
         g = np.load(gt_path)
         gt_slices = {k: g[k] for k in g.files}
-    return {**summary_entry, "hist": hist, "metrics": metrics, "gt_slices": gt_slices}
+    # Matplotlib needs tuples for complex linestyles; YAML safe_load produces lists.
+    def _to_mpl_ls(ls):
+        if isinstance(ls, list):
+            return tuple(_to_mpl_ls(x) if isinstance(x, list) else x for x in ls)
+        return ls
+
+    return {
+        **summary_entry,
+        "linestyle": _to_mpl_ls(summary_entry.get("linestyle", "-")),
+        "hist": hist, "metrics": metrics, "gt_slices": gt_slices,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1094,7 +1104,7 @@ def _build_variants(mode: str) -> list[dict]:
                  # max_iters: ENGD steps are ~100× more expensive per iteration;
                  #   1000 natural-gradient steps ≈ 20k Adam steps wall-clock.
                  max_iters=1000,
-                 color="tab:purple", linestyle=(0, (3, 2, 1, 2)), linewidth=2.0),
+                 color="tab:purple", linestyle=[0, [3, 2, 1, 2]], linewidth=2.0),
         ]
 
     if mode == "ablation-eps":
