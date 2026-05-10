@@ -993,7 +993,7 @@ def _plot_variant(res: dict, vdir: Path) -> None:
         ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
         fig.suptitle(f"{label}\n{_SUPTITLE}", fontsize=10)
         fig.tight_layout()
-        _add_formula_box(fig, _FORMULA_DX_NORM, bottom_margin=0.22)
+        _add_formula_box(fig, _FORMULA_DX_NORM, bottom_margin=0.30)
         fig.savefig(out / "deriv_norms.png", dpi=150)
         plt.close(fig)
 
