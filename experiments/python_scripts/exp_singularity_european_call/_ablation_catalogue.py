@@ -375,6 +375,7 @@ def handle_init_only_cli() -> None:
     parser.add_argument("--n-f",  dest="n_f",  type=int, default=None)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--init-only", dest="init_only", action="store_true")
+    parser.add_argument("--debug", action="store_true")
     # ``parse_known_args`` so that flags we don't care about here
     # (e.g. --add-variant, --replot) don't trip the parser.
     args, _ = parser.parse_known_args()
@@ -384,9 +385,17 @@ def handle_init_only_cli() -> None:
 
     timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
     variant_suffix = f"_variant_{args.variant}" if args.variant else ""
+    # Test / smoke runs prepend ``_debug_``.  Real runs start with a digit
+    # (the timestamp) and the underscore sorts after digits in C/UTF-8
+    # locale, so debug runs land in a contiguous block at the bottom of
+    # ``ls`` — visually separated from real runs without manual filtering,
+    # and trivially wipeable with
+    #     find data -type d -name '_debug_*' -prune -exec rm -rf {} +
+    debug_prefix = "_debug_" if args.debug else ""
     data_root = Path(data_root_for_mode(args.mode))
     ablation_dir = (
-        data_root / f"{timestamp}_{args.mode}_logS_iters{args.iters}{variant_suffix}"
+        data_root
+        / f"{debug_prefix}{timestamp}_{args.mode}_logS_iters{args.iters}{variant_suffix}"
     )
     ablation_dir.mkdir(parents=True, exist_ok=True)
     (ablation_dir / "comparison").mkdir(exist_ok=True)

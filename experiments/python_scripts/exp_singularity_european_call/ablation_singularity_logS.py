@@ -3559,6 +3559,14 @@ def main() -> None:
                               "plots). Useful for smoke tests."))
     parser.add_argument("--resume", action="store_true",
                         help="Resume from checkpoint.pt in the variant dir (for ENGD/LBFGS)")
+    parser.add_argument("--debug", action="store_true",
+                        help=("Mark this run as a test/smoke run.  The "
+                              "timestamped ablation directory is prefixed "
+                              "with '_debug_' so it is visually separated "
+                              "from real runs in `ls` (leading underscore "
+                              "sorts first) and can be cleaned in bulk via:"
+                              "  find data -type d -name '_debug_*' -prune "
+                              "-exec rm -rf {} +"))
     parser.add_argument("--init-only", action="store_true",
                         help=("Create the timestamped ablation directory + "
                               "metadata.yaml + empty summary.yaml and exit, "
@@ -3708,10 +3716,20 @@ def main() -> None:
 
     timestamp    = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
     variant_suffix = f"_variant_{args.variant}" if args.variant else ""
+    # ``--debug`` prepends ``_debug_`` to the timestamped folder.  The
+    # underscore sorts after digits in C/UTF-8 locale, so debug runs land in
+    # a contiguous block at the bottom of ``ls`` — visually separated from
+    # real runs and wipeable in one command (see --help).  Keep this
+    # consistent with the torch-free fast path in
+    # ``_ablation_catalogue.handle_init_only_cli``.
+    debug_prefix = "_debug_" if args.debug else ""
     # data_root_for_mode lives in _ablation_catalogue so the init-only fast
     # path and the launcher's YAML generation use the same routing logic.
     data_root = Path(_cat.data_root_for_mode(args.mode))
-    ablation_dir = data_root / f"{timestamp}_{args.mode}_logS_iters{args.iters}{variant_suffix}"
+    ablation_dir = (
+        data_root
+        / f"{debug_prefix}{timestamp}_{args.mode}_logS_iters{args.iters}{variant_suffix}"
+    )
     ablation_dir.mkdir(parents=True, exist_ok=True)
     (ablation_dir / "comparison").mkdir(exist_ok=True)
 
