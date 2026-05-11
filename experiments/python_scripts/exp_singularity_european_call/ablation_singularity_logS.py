@@ -2285,7 +2285,7 @@ def _build_variants(mode: str) -> list[dict]:
                  sampler_type="vpinn", payoff_type="exact",
                  eps=0.0, beta=None, sigma_is=None, mix=0.0,
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
-                 # iters_override : force 50 000 iters Adam, ignore --iters et max_iters.
+                 # iters_override: force 50,000 Adam iters, ignore --iters and max_iters.
                  # At 20k iters the log-log slope of the loss is ~-2.8 → still
                  # in rapid descent. Adam preserves the γ singularity near τ=0
                  # better than L-BFGS does (stochastic averaging effect, no

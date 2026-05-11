@@ -371,7 +371,7 @@ _COLORS    = ["tab:blue", "tab:orange", "tab:green", "tab:red",
 
 def _build_variants(mode: str) -> list[dict]:
     naive_cfg = dict(
-        name="naive", label="Naïf (control)",
+        name="naive", label="Naive (control)",
         sampler_type="naive", payoff_type="exact",
         eps=0.0, beta=None, sigma_is=None, mix=0.0,
         color="tab:blue", linestyle="-", linewidth=2.5,
@@ -487,7 +487,7 @@ _FORMULA_LF = "\n".join([
 ])
 _FORMULA_LTC = "\n".join([
     r"$\mathcal{L}_{tc} = \frac{1}{N_{tc}}\sum_{i}(\hat{V}(S_i,T)-\Phi(S_i))^2$",
-    r"Naïf / trunc.:  $\Phi(S)=(S-K)^{+}$",
+    r"Naive / trunc.:  $\Phi(S)=(S-K)^{+}$",
     r"Smooth:  $\tilde{\Phi}_\beta(S)=\frac{1}{\beta}\ln(1+e^{\beta(S-K)})-\frac{\ln 2}{\beta}$   (bounded Gamma $\leq\beta/4$)",
 ])
 _FORMULA_GRAD = "\n".join([

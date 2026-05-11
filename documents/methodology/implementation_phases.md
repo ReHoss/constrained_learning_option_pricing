@@ -429,9 +429,9 @@ All three methods use the same **PINN baseline** (no terminal-condition ansatz),
 
 | Method | Key idea | Payoff at $\tau=0$ | PDE domain |
 |--------|-----------|--------------------|------------|
-| **Naïf** (control) | No modification | `torch.clamp(S-K, min=0)` — non-$C^1$ | $\tau \in [0, T]$ |
-| **$\varepsilon$-troncature** | Exclude singular region from PDE loss | `torch.clamp` (exact) | $\tau \in [\varepsilon, T]$ |
-| **Lissage Softplus** | Replace max by $C^\infty$ approximation | $\frac{1}{\beta}\ln(1+e^{\beta(S-K)}) - \frac{\ln 2}{\beta}$ | $\tau \in [0, T]$ |
+| **Naive** (control) | No modification | `torch.clamp(S-K, min=0)` — non-$C^1$ | $\tau \in [0, T]$ |
+| **$\varepsilon$-truncation** | Exclude singular region from PDE loss | `torch.clamp` (exact) | $\tau \in [\varepsilon, T]$ |
+| **Softplus smoothing** | Replace max by $C^\infty$ approximation | $\frac{1}{\beta}\ln(1+e^{\beta(S-K)}) - \frac{\ln 2}{\beta}$ | $\tau \in [0, T]$ |
 
 Default parameters for the primary comparison (`--mode compare-boundary-singularity-european-call`): $\varepsilon = 1\%\,T$, $\beta = 100$.
 
@@ -457,9 +457,9 @@ These modes fix one method and sweep its hyperparameter to understand sensitivit
 
 | `--mode` | Fixed method | Sweep |
 |----------|-------------|-------|
-| `ablation-eps` | $\varepsilon$-troncature | $\varepsilon \in \{0.5\%, 1\%, 2\%, 5\%, 10\%\}\times T$ |
-| `ablation-beta` | Lissage | $\beta \in \{10, 50, 100, 500, 1000\}$ |
-| `ablation-is` | $\varepsilon$-troncature + IS | $\sigma_{\mathrm{IS}} \in \{2, 5, 10\}$, mix $= 0.5$ |
+| `ablation-eps` | $\varepsilon$-truncation | $\varepsilon \in \{0.5\%, 1\%, 2\%, 5\%, 10\%\}\times T$ |
+| `ablation-beta` | Softplus smoothing | $\beta \in \{10, 50, 100, 500, 1000\}$ |
+| `ablation-is` | $\varepsilon$-truncation + IS | $\sigma_{\mathrm{IS}} \in \{2, 5, 10\}$, mix $= 0.5$ |
 
 **Importance Sampling** (mode `ablation-is`): a fraction `mix` of collocation points is drawn from $\mathcal{N}(K, \sigma_{\mathrm{IS}}^2)$ (truncated to the domain) to concentrate coverage around the ATM region where the singularity is strongest.
 

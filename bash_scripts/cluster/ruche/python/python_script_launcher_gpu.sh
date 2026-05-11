@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Launch a single Python script on Ruche (LISN/Mésocentre) — GPU partition.
+# Launch a single Python script on Ruche (LISN Mesocentre) — GPU partition.
 #
 # Usage:
 #   bash python_script_launcher_gpu.sh \

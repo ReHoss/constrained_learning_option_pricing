@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Launch a single Python script on Ruche (LISN/Mésocentre) — CPU partition.
+# Launch a single Python script on Ruche (LISN Mesocentre) — CPU partition.
 #
 # Usage:
 #   bash python_script_launcher.sh \
