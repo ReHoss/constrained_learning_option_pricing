@@ -54,8 +54,11 @@ echo "Script basename: $BASENAME_SCRIPT"
 echo
 
 # Per-variant log subdirectory so concurrent submissions do not clash.
-# A short variant tag is extracted from ARGS_PYTHON_SCRIPT (--add-variant <name>).
-VARIANT_TAG=$(echo "$ARGS_PYTHON_SCRIPT" | grep -oP '(?<=--add-variant )\S+' | head -n1)
+# A short variant tag is extracted from ARGS_PYTHON_SCRIPT, matching either
+#   --variant NAME           (single-variant standalone run)
+#   --add-variant NAME:DIR   (append to existing ablation dir)
+# In both cases we keep just NAME (the part before the first colon).
+VARIANT_TAG=$(echo "$ARGS_PYTHON_SCRIPT" | grep -oP '(?<=--(add-)?variant )\S+' | head -n1 | cut -d: -f1)
 PATH_LOG_DIR="$WORKDIR"/logs/$NAME_PROJECT/"$BASENAME_SCRIPT"/$(date +"%Y-%m-%d_%H-%M-%S")${VARIANT_TAG:+_$VARIANT_TAG}
 echo "Log directory: $PATH_LOG_DIR"
 echo
