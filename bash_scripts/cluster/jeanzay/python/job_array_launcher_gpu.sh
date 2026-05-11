@@ -56,26 +56,33 @@ echo
 # Create the log directory for the current config file
 mkdir -p "$PATH_LOG_DIR"/"$CONFIG_FILE_NAME"
 
-# Create MLFlow data given the xp_name entry from the first yaml file in PATH_FOLDER_CONFIGS
-echo "Creating MLFlow experiments..."
-echo
-
-# Get the first yaml file in PATH_FOLDER_CONFIGS with find program
-PATH_CONFIG_FILE=$(find "$PATH_FOLDER_CONFIGS" -name "*.yaml" -print -quit)
-
-# Get the xp_name entry from the yaml file
-XP_NAME=$(grep -oP '(?<=xp_name: ).*' "$PATH_CONFIG_FILE")
-
-# Set the MLFlow tracking URI
-export MLFLOW_TRACKING_URI=file:"$PATH_CONTENT_ROOT"/data/mlruns
-
-# Create the MLFlow data
-# If last command failed, then the experiment already exists
-if ! $PATH_CONDA_BIN run --no-capture-output --name "$CONDA_ENV" mlflow data create --experiment-name "$XP_NAME"; then
-  echo "Experiment $XP_NAME already exists (or command failed?)."
+# Optional MLFlow experiment creation, gated behind ENABLE_MLFLOW=1.
+# Projects that do not use MLFlow (such as constrained_learning_option_pricing)
+# can leave this disabled — the variable is unset by default.
+if [ "${ENABLE_MLFLOW:-0}" = "1" ]; then
+  echo "Creating MLFlow experiments..."
   echo
+
+  # Get the first yaml file in PATH_FOLDER_CONFIGS with find program
+  PATH_CONFIG_FILE=$(find "$PATH_FOLDER_CONFIGS" -name "*.yaml" -print -quit)
+
+  # Get the xp_name entry from the yaml file
+  XP_NAME=$(grep -oP '(?<=xp_name: ).*' "$PATH_CONFIG_FILE")
+
+  # Set the MLFlow tracking URI
+  export MLFLOW_TRACKING_URI=file:"$PATH_CONTENT_ROOT"/data/mlruns
+
+  # Create the MLFlow data
+  # If last command failed, then the experiment already exists
+  if ! $PATH_CONDA_BIN run --no-capture-output --name "$CONDA_ENV" mlflow data create --experiment-name "$XP_NAME"; then
+    echo "Experiment $XP_NAME already exists (or command failed?)."
+    echo
+  else
+    echo "Experiment $XP_NAME created."
+    echo
+  fi
 else
-  echo "Experiment $XP_NAME created."
+  echo "MLFlow integration disabled (set ENABLE_MLFLOW=1 to enable)."
   echo
 fi
 
