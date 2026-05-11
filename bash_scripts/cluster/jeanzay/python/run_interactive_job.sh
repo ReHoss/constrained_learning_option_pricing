@@ -36,7 +36,7 @@ S_RUN_TIME=00:30:00
 # QoS: qos_gpu-dev → 2h, higher priority for testing.
 S_RUN_QOS=qos_gpu-dev
 # Account: depends on your allocation — check `idracct`.
-S_RUN_ACCOUNT=oym@v100
+S_RUN_ACCOUNT=ucd32aq@v100
 S_RUN_NODES=1
 S_RUN_CPU_PER_TASK=4
 S_RUN_GPUS=1

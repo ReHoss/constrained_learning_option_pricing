@@ -6,7 +6,7 @@ module load singularity/3.8.3/gcc-11.2.0
 #SBATCH --job-name=batch_experiment_hosseinkhan_default_file # Name of the job by default
 
 #SBATCH --mail-type=ALL # The points during the execution to send an email
-#SBATCH --mail-user=remy.hosseinkhan@lisn.fr
+#SBATCH --mail-user=remy.hosseinkhan@polytechnique.edu
 
 
 # Check if environment variables are defined

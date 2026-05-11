@@ -3,7 +3,7 @@
 #SBATCH --job-name=batch_experiment_hosseinkhan_default_file # Name of the job by default
 
 #SBATCH --mail-type=ALL # The points during the execution to send an email
-#SBATCH --mail-user=remy.hosseinkhan@lisn.fr
+#SBATCH --mail-user=remy.hosseinkhan@polytechnique.edu
 
 # The below environment variables should be broadcasted by the sbatch command
 # --export=NAME_PROJECT,PATH_PYTHON_SCRIPT,PATH_FOLDER_CONFIGS,WORKDIR

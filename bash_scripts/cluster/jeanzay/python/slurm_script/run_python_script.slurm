@@ -9,7 +9,7 @@
 
 #SBATCH --job-name=batch_experiment_hosseinkhan_default
 #SBATCH --mail-type=ALL
-#SBATCH --mail-user=remy.hosseinkhan@lisn.fr
+#SBATCH --mail-user=remy.hosseinkhan@polytechnique.edu
 
 # --- Required env-var checks ------------------------------------------------
 for var in NAME_PROJECT PATH_PYTHON_SCRIPT WORKDIR PATH_CONTENT_ROOT V_ENV_NAME; do
