@@ -1,95 +1,77 @@
 #!/bin/bash
+#
+# SLURM job script — runs a single Python script inside the project venv on Ruche.
+# Invoked by python_script_launcher.sh (CPU) or python_script_launcher_gpu.sh.
+#
+# Required environment variables (broadcast via --export):
+#   NAME_PROJECT, PATH_PYTHON_SCRIPT, ARGS_PYTHON_SCRIPT, WORKDIR,
+#   PATH_CONTENT_ROOT, V_ENV_NAME
 
-#SBATCH --job-name=batch_experiment_hosseinkhan_default # Name of the job by default
-
-#SBATCH --mail-type=ALL # The points during the execution to send an email
+#SBATCH --job-name=batch_experiment_hosseinkhan_default
+#SBATCH --mail-type=ALL
 #SBATCH --mail-user=remy.hosseinkhan@lisn.fr
 
-# The below environment variables should be broadcasted by the sbatch command
-# --export=NAME_PROJECT="$NAME_PROJECT",PATH_PYTHON_SCRIPT="$PATH_PYTHON_SCRIPT",ARGS_PYTHON_SCRIPT="$ARGS_PYTHON_SCRIPT"
-
-# Check if NAME_PROJECT,PATH_PYTHON_SCRIPT,PATH_FOLDER_CONFIGS,WORKDIR are defined
-if [ -z "$NAME_PROJECT" ]; then
-    echo "The environment variable NAME_PROJECT is not defined"
+# --- Required env-var checks ------------------------------------------------
+for var in NAME_PROJECT PATH_PYTHON_SCRIPT WORKDIR PATH_CONTENT_ROOT V_ENV_NAME; do
+  if [ -z "${!var}" ]; then
+    echo "The environment variable $var is not defined" >&2
     exit 1
-fi
+  fi
+done
 
-if [ -z "$PATH_PYTHON_SCRIPT" ]; then
-    echo "The environment variable PATH_PYTHON_SCRIPT is not defined"
-    exit 1
-fi
+PATH_PARENT=$( cd "$(dirname "${BASH_SOURCE[0]}")" || exit ; pwd -P )
 
-if [ -z "$WORKDIR" ]; then
-    echo "The environment variable WORKDIR is not defined"
-    exit 1
-fi
-
-PATH_PARENT=$(
-  cd "$(dirname "${BASH_SOURCE[0]}")" || exit
-  pwd -P
-)
-# Path to the project's content root directory
-PATH_CONTENT_ROOT="$WORKDIR"/pycharm_remote_project/"$NAME_PROJECT"
-
-# Get the venv name from the command line
-V_ENV_NAME="control_dde"
-# Get the path of the virtual environment
+# --- Activate the project venv (pure venv, no conda) -----------------------
 PATH_VENV_BIN="$PATH_CONTENT_ROOT"/venv/"$V_ENV_NAME"/bin/activate
-echo PATH_VENV_BIN: "$PATH_VENV_BIN"
+echo "PATH_VENV_BIN: $PATH_VENV_BIN"
 echo
-# Activate the virtual environment, if working echo the name of the venv
-# shellcheck source=/home/hosseinkhan/Documents/work/phd/git_repositories/doe4rl/venv/venv_control_dde/bin/activate
+# shellcheck disable=SC1090
 source "$PATH_VENV_BIN" && echo "Activation of virtual environment: $V_ENV_NAME"
 echo
 
-# Print some path variables
-echo Starting "$SLURM_JOB_NAME" on "$SLURMD_NODENAME" with the following parameters:
-echo PWD: "$PWD"
-echo WORKDIR: "$WORKDIR"
-echo PATH_PARENT: "$PATH_PARENT"
+# --- Diagnostics: self-contained log ----------------------------------------
+# Aligned with CLAUDE.md: every log file must capture the full environment.
+echo "Starting $SLURM_JOB_NAME on $SLURMD_NODENAME with the following parameters:"
+echo "PWD:               $PWD"
+echo "WORKDIR:           $WORKDIR"
+echo "PATH_PARENT:       $PATH_PARENT"
+echo "PATH_CONTENT_ROOT: $PATH_CONTENT_ROOT"
 echo
-# Echo the number of processors and more information
-echo Number of processors: "$NPROCS"
+echo "Python version:    $(python --version 2>&1)"
+echo "Python executable: $(which python)"
+python -c "import torch; print(f'PyTorch:          {torch.__version__}'); \
+print(f'CUDA available:   {torch.cuda.is_available()}'); \
+print(f'CUDA toolkit:     {torch.version.cuda}') if torch.cuda.is_available() else None; \
+print(f'GPU:              {torch.cuda.get_device_name(0)}') if torch.cuda.is_available() else None" 2>/dev/null || \
+  echo "(torch not importable in this environment)"
 echo
-echo  SLURM_SUBMIT_HOST: "$SLURM_SUBMIT_HOST"
-echo  SLURM_JOB_QOS: "$SLURM_JOB_QOS"
-echo  SLURM_SUBMIT_DIR "$SLURM_SUBMIT_DIR"
-echo  SLURM_JOB_ID "$SLURM_JOB_ID"
-echo  SLURM_JOB_NAME "$SLURM_JOB_NAME"
-echo  SLURM_JOB_ACCOUNT "$SLURM_JOB_ACCOUNT"
-echo  SLURM_JOB_PARTITION "$SLURM_JOB_PARTITION"
-echo  SLURM_JOB_NODELIST "$SLURM_JOB_NODELIST"
-echo  SLURM_JOB_NUM_NODES "$SLURM_JOB_NUM_NODES"
-echo  SLURM_NTASKS "$SLURM_NTASKS"
-echo  SLURM_NTASKS_PER_NODE "$SLURM_NTASKS_PER_NODE"
-echo  SLURM_NTASKS_PER_SOCKET "$SLURM_NTASKS_PER_SOCKET"
-echo  SLURM_NTASKS_PER_CORE "$SLURM_NTASKS_PER_CORE"
-echo  SLURM_MEM_PER_CPU "$SLURM_MEM_PER_CPU"
-echo  SLURM_MEM_PER_NODE "$SLURM_MEM_PER_NODE"
-echo  SLURM_CPUS_ON_NODE "$SLURM_CPUS_ON_NODE"
-echo  SLURM_JOB_CPUS_PER_NODE "$SLURM_JOB_CPUS_PER_NODE"
-echo  SLURM_RESTART_COUNT "$SLURM_RESTART_COUNT"
-echo  SLURM_CHECKPOINT_IMAGE_DIR "$SLURM_CHECKPOINT_IMAGE_DIR"
+echo "SLURM_SUBMIT_HOST:      $SLURM_SUBMIT_HOST"
+echo "SLURM_JOB_QOS:          $SLURM_JOB_QOS"
+echo "SLURM_SUBMIT_DIR:       $SLURM_SUBMIT_DIR"
+echo "SLURM_JOB_ID:           $SLURM_JOB_ID"
+echo "SLURM_JOB_NAME:         $SLURM_JOB_NAME"
+echo "SLURM_JOB_ACCOUNT:      $SLURM_JOB_ACCOUNT"
+echo "SLURM_JOB_PARTITION:    $SLURM_JOB_PARTITION"
+echo "SLURM_JOB_NODELIST:     $SLURM_JOB_NODELIST"
+echo "SLURM_JOB_NUM_NODES:    $SLURM_JOB_NUM_NODES"
+echo "SLURM_NTASKS:           $SLURM_NTASKS"
+echo "SLURM_NTASKS_PER_NODE:  $SLURM_NTASKS_PER_NODE"
+echo "SLURM_MEM_PER_CPU:      $SLURM_MEM_PER_CPU"
+echo "SLURM_MEM_PER_NODE:     $SLURM_MEM_PER_NODE"
+echo "SLURM_CPUS_ON_NODE:     $SLURM_CPUS_ON_NODE"
+echo "SLURM_JOB_CPUS_PER_NODE:$SLURM_JOB_CPUS_PER_NODE"
+echo "SLURM_GPUS:             $SLURM_GPUS"
+echo "SLURM_JOB_GPUS:         $SLURM_JOB_GPUS"
+echo "SLURM_RESTART_COUNT:    $SLURM_RESTART_COUNT"
 echo
 
-
-# Get the name of the conda environment
-CONDA_ENV=$(cat "$PATH_CONTENT_ROOT"/bash_scripts/conda_env_name.txt)
-echo Conda environment: "$CONDA_ENV"
-echo
-
-# Add the project root to the PYTHONPATH
+# Add the project root to PYTHONPATH so `learning_option_pricing` is importable
 export PYTHONPATH="${PYTHONPATH}:$PATH_CONTENT_ROOT"
 
-# Get the path to the config file that is broadcasted by the sbatch command
-echo PATH_CONFIG_FILE: "$PATH_CONFIG_FILE"
-echo
-
-# Split the arguments of the python script with mapfile
-# ARGS_PYTHON_SCRIPT environment variable is also broadcasted
+# Split args (ARGS_PYTHON_SCRIPT is broadcast by sbatch --export)
 IFS=" " read -r -a LIST_ARGS_PYTHON_SCRIPT <<< "$ARGS_PYTHON_SCRIPT"
 
-# Run the main script
-echo Running the script "$PATH_PYTHON_SCRIPT" with the following arguments: "$ARGS_PYTHON_SCRIPT"
+echo "Running: python $PATH_PYTHON_SCRIPT ${LIST_ARGS_PYTHON_SCRIPT[*]}"
+echo
 python "$PATH_PYTHON_SCRIPT" "${LIST_ARGS_PYTHON_SCRIPT[@]}"
 echo
