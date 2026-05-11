@@ -5,16 +5,16 @@ Fixed settings for all variants:
     tc_enforced  = True   (hard-enforced terminal condition via ETCNN ansatz)
 
 Ablation axes (Stage B only, on [0, t1]):
-    extraction         singularity extraction ansatz (U_B = v + ũ_θ)
+    put_ansatz         singularity extraction ansatz (U_B = v + ũ_θ)
     bypass_v           operator bypass: drop fictitious put v from PDE loss
     use_spatial_weight inverted-Gaussian weighting of PDE loss near s*
 
 Five variants:
-    baseline       extraction=False, bypass_v=False, spatial_weight=False
-    +extraction    extraction=True,  bypass_v=False, spatial_weight=False
-    +bypass        extraction=True,  bypass_v=True,  spatial_weight=False
-    +spatial_wt    extraction=True,  bypass_v=False, spatial_weight=True
-    full           extraction=True,  bypass_v=True,  spatial_weight=True
+    baseline       put_ansatz=False, bypass_v=False, spatial_weight=False
+    +put-ansatz    put_ansatz=True,  bypass_v=False, spatial_weight=False
+    +bypass        put_ansatz=True,  bypass_v=True,  spatial_weight=False
+    +spatial_wt    put_ansatz=True,  bypass_v=False, spatial_weight=True
+    full           put_ansatz=True,  bypass_v=True,  spatial_weight=True
 
 Stage A (ETCNN on [t1, T]) is trained once and shared across all Stage B variants
 so that only Stage B design choices are compared.
@@ -75,7 +75,7 @@ logger = logging.getLogger(__name__)
 VARIANTS: list[dict] = [
     {
         "name": "baseline",
-        "label": "Baseline (no extraction)",
+        "label": "Baseline (no put-ansatz)",
         "put_ansatz": False,
         "bypass_v": False,
         "use_spatial_weight": False,
@@ -85,8 +85,8 @@ VARIANTS: list[dict] = [
         "linewidth": 2.0,
     },
     {
-        "name": "extraction",
-        "label": r"$+$extraction",
+        "name": "put-ansatz",
+        "label": r"$+$put-ansatz",
         "put_ansatz": True,
         "bypass_v": False,
         "use_spatial_weight": False,
@@ -97,7 +97,7 @@ VARIANTS: list[dict] = [
     },
     {
         "name": "bypass",
-        "label": r"$+$extraction $+$bypass$_v$",
+        "label": r"$+$put-ansatz $+$bypass$_v$",
         "put_ansatz": True,
         "bypass_v": True,
         "use_spatial_weight": False,
@@ -108,7 +108,7 @@ VARIANTS: list[dict] = [
     },
     {
         "name": "spatial_wt",
-        "label": r"$+$extraction $+$spatial weight",
+        "label": r"$+$put-ansatz $+$spatial weight",
         "put_ansatz": True,
         "bypass_v": False,
         "use_spatial_weight": True,
@@ -168,7 +168,7 @@ _FORMULA_GRAD = "\n".join([
 ])
 _FORMULA_ANSATZ = "\n".join([
     r"Baseline:      $\tilde{u}^{(B)}_\theta(S, t) = (t_1-t)\,u_\theta(S,t) + V^{\mathrm{Berm}}_{\bar{\theta}}(S,t_1)$",
-    r"$+$extraction: $\tilde{u}^{(B)}_\theta(S, t) = v(S,t) + (t_1-t)\,u_\theta(S,t) + g_2(S)$",
+    r"$+$put-ansatz: $\tilde{u}^{(B)}_\theta(S, t) = v(S,t) + (t_1-t)\,u_\theta(S,t) + g_2(S)$",
     r"where $v(S,t)$ is the fictitious European put and $g_2(S)=V^{\mathrm{Berm}}_{\bar{\theta}}(S,t_1)-v(S,t_1)$ is the $C^1$ residual",
     r"$+$bypass$_v$: $v$ is dropped from the PDE residual to prevent derivative cancellation near $s^*$",
     r"$+$spatial weight: $w(S)=1-(1-\varepsilon_w)\exp(-(S-s^*)^2/(2\sigma_w^2))$ applied to PDE loss",
@@ -802,7 +802,7 @@ def _replot(ablation_dir: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Ablation study — Bermuda put ansatz design choices (extraction, bypass_v, spatial_weight)"
+        description="Ablation study — Bermuda put ansatz design choices (put-ansatz, bypass_v, spatial_weight)"
     )
     parser.add_argument(
         "--iters-a", type=int, default=50,
@@ -893,7 +893,7 @@ def main() -> None:
     logging.getLogger("matplotlib.mathtext").setLevel(logging.WARNING)
 
     logger.info("=" * 70)
-    logger.info("ABLATION STUDY — Bermuda put ansatz (extraction / bypass_v / spatial_weight)")
+    logger.info("ABLATION STUDY — Bermuda put ansatz (put-ansatz / bypass_v / spatial_weight)")
     logger.info("=" * 70)
     logger.info(f"  Command: {' '.join(sys.argv)}")
     logger.info(f"  Python {sys.version}")
@@ -918,7 +918,7 @@ def main() -> None:
         "command":   " ".join(sys.argv),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "fixed": {"g2_type": "bs", "tc_enforced": True},
-        "ablation_axes": ["extraction", "bypass_v", "use_spatial_weight"],
+        "ablation_axes": ["put_ansatz", "bypass_v", "use_spatial_weight"],
         "variants": [
             {k: v for k, v in var.items()
              if k not in ("color", "linestyle", "linewidth")}
