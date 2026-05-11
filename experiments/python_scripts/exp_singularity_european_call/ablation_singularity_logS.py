@@ -13,6 +13,10 @@ Usage (from repo root):
     python3 experiments/python_scripts/exp_singularity_european_call/ablation_singularity_logS.py \\
         --iters 200 --device cuda
 
+    # Cheaper smoke test — single variant (naive), 20k iters on GPU:
+    python3 experiments/python_scripts/exp_singularity_european_call/ablation_singularity_logS.py \\
+        --variant naive --iters 20000 --device cuda
+
     # Full 3-method comparison:
     python3 experiments/python_scripts/exp_singularity_european_call/ablation_singularity_logS.py \\
         --iters 30000 --device cuda
@@ -3582,6 +3586,10 @@ def main() -> None:
     parser.add_argument("--add-variant", type=str, default=None,
                         metavar="NAME:DIR",
                         help="Train variant NAME and append results to existing ablation DIR")
+    parser.add_argument("--variant", type=str, default=None, metavar="NAME",
+                        help=("Train a single variant NAME standalone in a fresh "
+                              "ablation directory (skips multi-variant comparison "
+                              "plots). Useful for smoke tests."))
     parser.add_argument("--resume", action="store_true",
                         help="Resume from checkpoint.pt in the variant dir (for ENGD/LBFGS)")
     args = parser.parse_args()
@@ -3673,14 +3681,23 @@ def main() -> None:
     n_f  = args.n_f  if args.n_f  is not None else p3.N_F
 
     timestamp    = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    variant_suffix = f"_variant_{args.variant}" if args.variant else ""
     ablation_dir = (
         Path("data/exp_singularity_european_call")
-        / f"{timestamp}_{args.mode}_logS_iters{args.iters}"
+        / f"{timestamp}_{args.mode}_logS_iters{args.iters}{variant_suffix}"
     )
     ablation_dir.mkdir(parents=True, exist_ok=True)
     (ablation_dir / "comparison").mkdir(exist_ok=True)
 
     variants = _build_variants(args.mode)
+    if args.variant is not None:
+        matching = [vv for vv in variants if vv["name"] == args.variant]
+        if not matching:
+            raise SystemExit(
+                f"--variant {args.variant!r} not found in mode {args.mode!r}. "
+                f"Available: {[vv['name'] for vv in variants]}"
+            )
+        variants = matching
     for v in variants:
         for sub in ("training_metrics", "models"):
             (ablation_dir / f"variant_{v['name']}" / sub).mkdir(parents=True, exist_ok=True)
@@ -3738,7 +3755,10 @@ def main() -> None:
     with open(ablation_dir / "summary.yaml", "w") as f:
         yaml.safe_dump({"variants": summary_variants}, f, allow_unicode=True)
 
-    _plot_comparison(results, ablation_dir, args.iters, args.mode)
+    if len(results) > 1:
+        _plot_comparison(results, ablation_dir, args.iters, args.mode)
+    else:
+        logger.info("Single-variant run — skipping comparison plots.")
     logger.info(f"\nAll done — results in {ablation_dir}")
 
 
