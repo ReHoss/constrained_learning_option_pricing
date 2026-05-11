@@ -296,14 +296,20 @@ def _capture_rng_state() -> dict:
 
 def _restore_rng_state(state: dict) -> None:
     """Restore the global RNGs from a snapshot produced by
-    :func:`_capture_rng_state`.  Silently ignores per-device CUDA RNG state
-    when no CUDA device is available (e.g. resuming a GPU-trained checkpoint
-    on a CPU-only machine for inspection)."""
-    torch.set_rng_state(state["torch_cpu"])
+    :func:`_capture_rng_state`.  RNG-state tensors must live on CPU (for the
+    torch CPU generator) and on the GPU (for the per-device CUDA generators),
+    so we explicitly move them back: ``torch.load(..., map_location=cuda)``
+    would otherwise have shifted the CPU tensor to the GPU.  Silently ignores
+    per-device CUDA RNG state when no CUDA device is available (e.g. resuming
+    a GPU-trained checkpoint on a CPU-only machine for inspection)."""
+    torch.set_rng_state(state["torch_cpu"].cpu().to(torch.uint8))
     np.random.set_state(state["numpy"])
     random.setstate(state["python_random"])
     if "torch_cuda" in state and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(state["torch_cuda"])
+        # CUDA RNG state tensors must be on CPU as torch.uint8 before being
+        # handed back to set_rng_state_all (which copies them to each device).
+        cuda_states = [s.cpu().to(torch.uint8) for s in state["torch_cuda"]]
+        torch.cuda.set_rng_state_all(cuda_states)
 
 
 def _save_training_checkpoint(
@@ -353,7 +359,10 @@ def _load_training_checkpoint(
     Returns ``(iter_done, total_iters_saved, history)`` so the caller can
     continue training from ``iter_done + 1``.
     """
-    payload = torch.load(checkpoint_path, map_location=DEVICE)
+    # weights_only=False is required because the checkpoint also carries
+    # numpy and python random RNG states (and a torch CUDA RNG list).  This
+    # is safe here: the file was produced by us in the same repository.
+    payload = torch.load(checkpoint_path, map_location=DEVICE, weights_only=False)
     model.load_state_dict(payload["model_state"])
     optimizer.load_state_dict(payload["optimizer_state"])
     scheduler.load_state_dict(payload["scheduler_state"])
