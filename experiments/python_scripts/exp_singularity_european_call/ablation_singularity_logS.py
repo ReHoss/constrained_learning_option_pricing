@@ -3335,7 +3335,15 @@ def _replot(ablation_dir: Path) -> None:
 
     for res, entry in zip(results, visible_entries):
         _plot_variant(res, ablation_dir / f"variant_{entry['name']}")
-    _plot_comparison(results, ablation_dir, meta["iters"], meta["mode"])
+    # Older metadata may still carry the legacy ``iters`` field; new runs
+    # write ``num_iterations`` (which can be null when each variant uses its
+    # own default).  Fall back to 0 so ``_plot_comparison`` always receives
+    # an int.
+    iters_for_title = (
+        meta.get("num_iterations")
+        if "num_iterations" in meta else meta.get("iters", 0)
+    ) or 0
+    _plot_comparison(results, ablation_dir, iters_for_title, meta["mode"])
 
 
 # ---------------------------------------------------------------------------
@@ -3365,7 +3373,7 @@ def _train_one_variant(
     vdir: Path,
     n_f: int,
     n_tc: int,
-    total_iters: int,
+    total_iters: int | None,
     resume: bool = False,
 ) -> dict:
     """Build, train, evaluate, and save one variant; return the result dict.
@@ -3394,18 +3402,16 @@ def _train_one_variant(
     so different variants — and the two roles within a variant — are
     decorrelated.
     """
-    # Three possible semantics for the effective iteration count:
-    #   - iters_override: forces this exact value, ignoring --iters and max_iters
-    #     → for variants that need more iters than --iters provides
-    #       (e.g. Adam 50k to better resolve a singularity).
-    #   - max_iters: upper cap, take min(max_iters, total_iters)
-    #     → variants expensive per step that must stay under total_iters
-    #       (ENGD, L-BFGS).
-    #   - otherwise: follow total_iters (--iters).
-    if "iters_override" in v:
-        effective_iters = v["iters_override"]
+    # Effective iteration count: each variant declares its own natural budget
+    # via ``default_num_iterations``; the user can override the whole ablation
+    # at the CLI with ``--num-iterations N`` (typically for smoke tests).  No
+    # min/max gymnastics — one number per variant, one global override.
+    # ``total_iters`` is the resolved CLI override or ``None`` (= use each
+    # variant's default).
+    if total_iters is not None:
+        effective_iters = total_iters
     else:
-        effective_iters = min(v.get("max_iters", total_iters), total_iters)
+        effective_iters = v["default_num_iterations"]
 
     # Deterministic model init (only matters for from-scratch runs; on resume
     # the weights are loaded from the checkpoint).
@@ -3549,7 +3555,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Ablation — European call PINN, x=ln(S) coordinates"
     )
-    parser.add_argument("--iters",  type=int, default=200)
+    parser.add_argument("--num-iterations", dest="num_iterations",
+                        type=int, default=None,
+                        help=("Global override for every variant's "
+                              "default_num_iterations.  Omit (the default) to "
+                              "let each variant use its own natural budget "
+                              "declared in the catalogue — recommended for "
+                              "real ablations.  Useful for smoke tests "
+                              "(combine with --debug)."))
     parser.add_argument("--mode",   type=str,
                         default="compare-boundary-singularity-european-call",
                         choices=["compare-boundary-singularity-european-call",
@@ -3627,8 +3640,8 @@ def main() -> None:
             )
         args.mode = cfg_yaml["mode"]
         args.add_variant = f"{cfg_yaml['variant_name']}:{cfg_yaml['ablation_dir']}"
-        if "iters" in cfg_yaml:
-            args.iters = int(cfg_yaml["iters"])
+        if "num_iterations" in cfg_yaml and cfg_yaml["num_iterations"] is not None:
+            args.num_iterations = int(cfg_yaml["num_iterations"])
         if "device" in cfg_yaml and args.device == "auto":
             args.device = cfg_yaml["device"]
         if cfg_yaml.get("resume", False):
@@ -3681,7 +3694,16 @@ def main() -> None:
         _log_environment()
         logger.info(f"device={p3.DEVICE}  N_TC={n_tc}  N_F={n_f}")
 
-        res = _train_one_variant(v, vdir, n_f, n_tc, meta["iters"], resume=args.resume)
+        # The CLI flag wins over what's recorded in metadata.yaml when both
+        # are provided.  When --num-iterations is omitted, fall back to the
+        # value the init step persisted (which itself may be null = use
+        # per-variant defaults).
+        num_iterations_override = args.num_iterations
+        if num_iterations_override is None:
+            num_iterations_override = meta.get("num_iterations")
+        res = _train_one_variant(
+            v, vdir, n_f, n_tc, num_iterations_override, resume=args.resume,
+        )
         _plot_variant(res, vdir)
 
         m = res["metrics"]
@@ -3734,12 +3756,20 @@ def main() -> None:
     # consistent with the torch-free fast path in
     # ``_ablation_catalogue.handle_init_only_cli``.
     debug_prefix = "_debug_" if args.debug else ""
+    # The folder name carries an explicit iteration count only when the user
+    # provided a global ``--num-iterations`` override; otherwise each variant
+    # uses its own ``default_num_iterations`` and a single global number in
+    # the path would be misleading.
+    num_iterations_tag = (
+        f"_num_iterations_{args.num_iterations}"
+        if args.num_iterations is not None else ""
+    )
     # data_root_for_mode lives in _ablation_catalogue so the init-only fast
     # path and the launcher's YAML generation use the same routing logic.
     data_root = Path(_cat.data_root_for_mode(args.mode))
     ablation_dir = (
         data_root
-        / f"{debug_prefix}{timestamp}_{args.mode}_logS_iters{args.iters}{variant_suffix}"
+        / f"{debug_prefix}{timestamp}_{args.mode}_logS{num_iterations_tag}{variant_suffix}"
     )
     ablation_dir.mkdir(parents=True, exist_ok=True)
     (ablation_dir / "comparison").mkdir(exist_ok=True)
@@ -3764,7 +3794,10 @@ def main() -> None:
     )
     logging.getLogger("matplotlib.mathtext").setLevel(logging.WARNING)
 
-    logger.info(f"{Path(__file__).stem}  coords=logS  mode={args.mode}  iters={args.iters}")
+    logger.info(
+        f"{Path(__file__).stem}  coords=logS  mode={args.mode}  "
+        f"num_iterations={args.num_iterations!r} (None = per-variant default)"
+    )
     logger.info(f"cmdline: {' '.join(sys.argv)}")
     _log_environment()
     logger.info(f"device={p3.DEVICE}  N_TC={n_tc}  N_F={n_f}")
@@ -3775,16 +3808,16 @@ def main() -> None:
 
     with open(ablation_dir / "metadata.yaml", "w", encoding="utf-8") as f:
         yaml.safe_dump({
-            "cmdline":     sys.argv,
-            "mode":        args.mode,
-            "iters":       args.iters,
-            "coords":      "logS",
-            "device":      str(p3.DEVICE),
-            "n_tc":        n_tc,
-            "n_f":         n_f,
-            "K":           K,  "r": r, "sigma": sigma, "T": T,
-            "x_lo":        X_LO,      "x_hi":      X_HI,      "x_atm":      X_ATM,
-            "x_eval_lo":   X_EVAL_LO, "x_eval_hi": X_EVAL_HI,
+            "cmdline":         sys.argv,
+            "mode":            args.mode,
+            "num_iterations":  args.num_iterations,
+            "coords":          "logS",
+            "device":          str(p3.DEVICE),
+            "n_tc":            n_tc,
+            "n_f":             n_f,
+            "K":               K,  "r": r, "sigma": sigma, "T": T,
+            "x_lo":            X_LO,      "x_hi":      X_HI,      "x_atm":      X_ATM,
+            "x_eval_lo":       X_EVAL_LO, "x_eval_hi": X_EVAL_HI,
         }, f)
 
     # ── Init-only short-circuit ──────────────────────────────────────────────
@@ -3812,7 +3845,7 @@ def main() -> None:
         vdir = ablation_dir / f"variant_{v['name']}"
         logger.info(f"\n{'='*60}\n  Variant: {v['name']} — {v['label']}\n{'='*60}")
 
-        res = _train_one_variant(v, vdir, n_f, n_tc, args.iters)
+        res = _train_one_variant(v, vdir, n_f, n_tc, args.num_iterations)
         _plot_variant(res, vdir)
         results.append(res)
 
@@ -3830,7 +3863,12 @@ def main() -> None:
         yaml.safe_dump({"variants": summary_variants}, f, allow_unicode=True)
 
     if len(results) > 1:
-        _plot_comparison(results, ablation_dir, args.iters, args.mode)
+        # _plot_comparison still receives a single iters value for its title;
+        # pass the user override or 0 as a placeholder (the title text isn't
+        # critical — the per-variant captions carry their actual iter counts).
+        _plot_comparison(results, ablation_dir,
+                         args.num_iterations if args.num_iterations is not None else 0,
+                         args.mode)
     else:
         logger.info("Single-variant run — skipping comparison plots.")
     logger.info(f"\nAll done — results in {ablation_dir}")
