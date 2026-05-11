@@ -39,7 +39,10 @@ dev = [
     "ruff",
 ]
 ml = [
-    "torch>=2.0",
+    # Upper bound: torch 2.7+ ships default PyPI wheels built for CUDA 13
+    # with compute capabilities >= 7.5, dropping V100 (CC 7.0). 2.6.x wheels
+    # still include CC 7.0 SASS, so they run on V100, A100 and H100.
+    "torch>=2.0,<2.7",
 ]
 notebook = [
     "notebook",
