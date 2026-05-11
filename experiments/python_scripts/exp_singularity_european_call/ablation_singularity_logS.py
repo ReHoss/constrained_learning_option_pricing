@@ -2017,7 +2017,16 @@ _BOX_STYLE = dict(boxstyle="round,pad=0.6", facecolor="lightyellow", edgecolor="
 
 
 def _add_formula_box(fig, text: str, bottom_margin: float = 0.12) -> None:
-    fig.text(0.5, 0.01, text, ha="center", va="bottom", fontsize=8,
+    """Anchor an annotation box strictly *below* the figure body.
+
+    The text is placed at y = -0.04 (in figure coords) with vertical anchor
+    "top" — so it sits beneath the plotting area.  When the figure is saved
+    with ``bbox_inches="tight"``, matplotlib expands the saved bitmap to
+    include the box, producing a clear visible gap between the plots and
+    the formula text.  ``bottom_margin`` still pads the body so subplot
+    labels do not overlap the legend or x-axis ticks.
+    """
+    fig.text(0.5, -0.04, text, ha="center", va="top", fontsize=8,
              bbox=_BOX_STYLE, linespacing=1.6)
     fig.subplots_adjust(bottom=bottom_margin)
 
@@ -2508,23 +2517,28 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
     def _apply_outside_legend(fig):
         """Replace every per-axis legend with one shared figure-level legend.
 
-        Harvests handles/labels from the first axis with labelled artists,
-        removes all per-axis legends to avoid duplicates, then attaches a
-        single legend on the right of the figure and shrinks the right
-        margin so the plotting area does not overlap it.
+        Walks *all* axes (not just the first one) and collects every
+        labelled artist, deduplicating by label so a variant that appears
+        in several axes shows up only once.  This matters for multi-row
+        figures where each row plots a disjoint subset of variants — the
+        figure-level legend then carries the union of all subsets, not
+        just whichever row matplotlib happened to look at first.
         """
-        handles, labels = [], []
+        all_handles, all_labels = [], []
+        seen = set()
         for ax in fig.axes:
             h, lbl = ax.get_legend_handles_labels()
-            if lbl:
-                handles, labels = h, lbl
-                break
+            for hh, ll in zip(h, lbl):
+                if ll not in seen:
+                    seen.add(ll)
+                    all_handles.append(hh)
+                    all_labels.append(ll)
         for ax in fig.axes:
             leg = ax.get_legend()
             if leg is not None:
                 leg.remove()
-        if handles:
-            fig.legend(handles, labels,
+        if all_handles:
+            fig.legend(all_handles, all_labels,
                        loc="center left",
                        bbox_to_anchor=(0.83, 0.5),
                        fontsize=9, frameon=True)
@@ -3020,19 +3034,25 @@ def _plot_gt_comparison(results: list[dict], comp_dir: Path) -> None:
 
     def _outside_legend(fig):
         """Same as the helper in _plot_comparison — replace per-axis legends
-        with one figure-level legend on the right of the plotting area."""
-        handles, labels = [], []
+        with one figure-level legend on the right.  Collects labels from
+        every axis (deduplicated) so multi-axis figures still show every
+        variant in the shared legend.
+        """
+        all_handles, all_labels = [], []
+        seen = set()
         for ax in fig.axes:
             h, lbl = ax.get_legend_handles_labels()
-            if lbl:
-                handles, labels = h, lbl
-                break
+            for hh, ll in zip(h, lbl):
+                if ll not in seen:
+                    seen.add(ll)
+                    all_handles.append(hh)
+                    all_labels.append(ll)
         for ax in fig.axes:
             leg = ax.get_legend()
             if leg is not None:
                 leg.remove()
-        if handles:
-            fig.legend(handles, labels,
+        if all_handles:
+            fig.legend(all_handles, all_labels,
                        loc="center left",
                        bbox_to_anchor=(0.83, 0.5),
                        fontsize=9, frameon=True)
