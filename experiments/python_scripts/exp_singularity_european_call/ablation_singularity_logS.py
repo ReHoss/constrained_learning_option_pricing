@@ -53,7 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "exp1"))
 
 import phase3_training as p3
-from learning_option_pricing.models.etcnn import PINN, InputNormalization
+from learning_option_pricing.models.etcnn import PINN, ETCNN, InputNormalization
 from learning_option_pricing.models.resnet import ResNet
 from learning_option_pricing.pricing.terminal import black_scholes_put
 from learning_option_pricing.vpinn import GaussLegendreQuadrature
@@ -2377,6 +2377,39 @@ def _build_variants(mode: str) -> list[dict]:
                  color="#ab47bc", linestyle="-", linewidth=2.0),
         ]
 
+    if mode == "hard-ic-ansatz-european-call":
+        # ──────────────────────────────────────────────────────────────────
+        # Hard-IC ansatz experiment.
+        # V(x, t) = ((T - t)/T) · NN(x, t) + (e^x - K)^+   (see
+        # _build_hard_ic_ansatz_pinn).  IC is exact by construction so the
+        # variants set lam_tc = 0 — only the PDE residual is minimised.
+        # ──────────────────────────────────────────────────────────────────
+        return [
+            dict(
+                name="hard_ic_uniform",
+                label=r"Hard-IC ansatz + L-BFGS (uniform $\tau$, fixed batch)",
+                model_type="hard_ic_ansatz",
+                sampler_type="vpinn_lbfgs_full_batch", payoff_type="exact",
+                eps=0.0, beta=None, sigma_is=None, mix=0.0,
+                n_tau=512, K_test=20, n_quad=100,
+                lam_f=200.0, lam_tc=0.0,
+                max_iters=400,
+                color="#2962ff", linestyle="-", linewidth=2.0,
+            ),
+            dict(
+                name="hard_ic_is_tau",
+                label=r"Hard-IC ansatz + L-BFGS (IS $\tau\to0$, fixed batch)",
+                model_type="hard_ic_ansatz",
+                sampler_type="vpinn_lbfgs_is_tau_full_batch", payoff_type="exact",
+                eps=0.001 * T, beta=None, sigma_is=None, mix=0.0,
+                n_tau=512, K_test=20, n_quad=100,
+                lam_f=200.0, lam_tc=0.0,
+                is_tau_alpha=0.3,
+                max_iters=400,
+                color="#aa00ff", linestyle="-", linewidth=2.0,
+            ),
+        ]
+
     if mode == "ablation-eps":
         variants = [naive_cfg]
         for i, eps in enumerate(_EPS_GRID):
@@ -2472,6 +2505,31 @@ def _build_payoff(cfg: dict):
 def _build_pinn() -> PINN:
     # No InputNormalization — x = ln(S) is already well-scaled
     return PINN(resnet=ResNet(d_in=2, d_out=1, n=50, M=4, L=2))
+
+
+def _build_hard_ic_ansatz_pinn() -> ETCNN:
+    r"""Hard-IC ansatz: $V(x,t) = \frac{T-t}{T}\,\mathrm{NN}(x,t) + (e^x - K)^+$.
+
+    The linear ramp $g_1(t) = (T-t)/T$ vanishes at maturity, completely
+    suppressing the network output at $t = T$, while $g_2(x) = (e^x - K)^+$
+    is the exact terminal payoff.  Therefore $V(\cdot, T) = g_2(\cdot)$ holds
+    by construction: the terminal condition is exact (bit-for-bit) and no
+    $\mathcal{L}_{ic}$ soft penalty is required.  Variants using this model
+    should set ``lam_tc=0`` so that only the PDE residual is optimised.
+
+    Backbone is identical to :func:`_build_pinn` (ResNet d_in=2, d_out=1,
+    n=50, M=4, L=2) to keep the parameter count comparable.
+    """
+    def g1(x_in: torch.Tensor, t_in: torch.Tensor) -> torch.Tensor:
+        # (T - t) / T  — vanishes at t = T (the maturity / initial condition)
+        return (T - t_in) / T
+
+    def g2(x_in: torch.Tensor, t_in: torch.Tensor) -> torch.Tensor:
+        # Exact European-call payoff in log-S space: (e^x - K)^+
+        return torch.clamp(x_in.exp() - K, min=0.0)
+
+    resnet = ResNet(d_in=2, d_out=1, n=50, M=4, L=2)
+    return ETCNN(resnet=resnet, g1=g1, g2=g2)
 
 
 def _build_engd_pinn(hidden: int = 32) -> torch.nn.Module:
@@ -3319,7 +3377,17 @@ def _plot_gt_comparison(results: list[dict], comp_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _build_model_for_variant(v: dict) -> torch.nn.Module:
-    """Instantiate the correct architecture for a variant config."""
+    """Instantiate the correct architecture for a variant config.
+
+    Dispatch order:
+      * ``model_type == "hard_ic_ansatz"``  → :func:`_build_hard_ic_ansatz_pinn`
+        (forces V(·,T) = payoff by construction, used with ``lam_tc=0``)
+      * ``sampler_type == "engd"``          → :func:`_build_engd_pinn`
+        (paper-faithful small MLP for natural-gradient experiments)
+      * default                             → :func:`_build_pinn`
+    """
+    if v.get("model_type") == "hard_ic_ansatz":
+        return _build_hard_ic_ansatz_pinn()
     if v["sampler_type"] == "engd":
         return _build_engd_pinn(hidden=v.get("hidden", 32))
     return _build_pinn()
@@ -3341,6 +3409,11 @@ def _load_model_for_variant(ablation_dir: Path, variant_name: str,
     candidates = [_build_pinn] if not variant_name.startswith("engd") else [_build_engd_pinn, _build_pinn]
     if variant_name.startswith("engd"):
         candidates = [_build_engd_pinn, _build_pinn]
+    # Hard-IC ansatz variants store ETCNN weights with a different key layout
+    # than the plain PINN; try the ansatz builder first so load_state_dict
+    # succeeds.
+    if v is not None and v.get("model_type") == "hard_ic_ansatz":
+        candidates = [_build_hard_ic_ansatz_pinn, _build_pinn]
     for build_fn in candidates:
         model = build_fn()
         try:
@@ -3576,7 +3649,8 @@ def main() -> None:
     parser.add_argument("--mode",   type=str,
                         default="compare-boundary-singularity-european-call",
                         choices=["compare-boundary-singularity-european-call",
-                                 "ablation-eps", "ablation-beta", "ablation-is"])
+                                 "ablation-eps", "ablation-beta", "ablation-is",
+                                 "hard-ic-ansatz-european-call"])
     parser.add_argument("--device", type=str, default="auto",
                         choices=["auto", "cuda", "cpu"])
     parser.add_argument("--n-tc",   type=int, default=None)
@@ -3682,10 +3756,15 @@ def main() -> None:
 
     timestamp    = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
     variant_suffix = f"_variant_{args.variant}" if args.variant else ""
-    ablation_dir = (
-        Path("data/exp_singularity_european_call")
-        / f"{timestamp}_{args.mode}_logS_iters{args.iters}{variant_suffix}"
-    )
+    # The hard-IC ansatz uses a different network architecture (ETCNN) and
+    # disables the IC loss — keep its outputs in a separate data folder so
+    # that --replot / --add-variant from the standard ablations cannot mix
+    # the two architectures by accident.
+    if args.mode == "hard-ic-ansatz-european-call":
+        data_root = Path("data/exp_hard_ic_ansatz_european_call")
+    else:
+        data_root = Path("data/exp_singularity_european_call")
+    ablation_dir = data_root / f"{timestamp}_{args.mode}_logS_iters{args.iters}{variant_suffix}"
     ablation_dir.mkdir(parents=True, exist_ok=True)
     (ablation_dir / "comparison").mkdir(exist_ok=True)
 
