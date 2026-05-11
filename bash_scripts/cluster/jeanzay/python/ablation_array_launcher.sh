@@ -24,16 +24,23 @@
 #
 # Usage (from the project root on Jean Zay):
 #     bash bash_scripts/cluster/jeanzay/python/ablation_array_launcher.sh \
-#         --mode  hard-ic-ansatz-european-call
+#         --mode hard-ic-ansatz-european-call
 #         # → every variant uses its own catalogue-declared
 #         #   default_num_iterations.  Recommended for real ablations.
 #
-#     # Override every variant with the same iteration count (smoke test):
-#     bash ... --mode hard-ic-ansatz-european-call --num-iterations 50 --debug
+#     # Smoke test → use --debug so the run lands under _debug_<ts>_...
+#     bash ... --mode hard-ic-ansatz-european-call --debug
 #
-# All sbatch defaults (account, qos, time, GPUs) live as variables at the
-# top so this script remains the single source of truth — no need to edit
-# the worker .slurm template.
+# Scope: this launcher owns SLURM-deployment concerns only (account, qos,
+# wall-clock, GPU count, project paths, debug marker).  Training
+# hyperparameters live in the catalogue — every variant declares its own
+# `default_num_iterations`, so no `--num-iterations` flag is exposed here.
+# If you need a different iter count on the cluster for one run, either:
+#   • tweak the catalogue's `default_num_iterations` on a feature branch
+#     (cleanest: the change is reviewable and reproducible), or
+#   • edit `<EXPDIR>/configs/*.yaml` between Phase 1 and Phase 2 (set
+#     `num_iterations: <N>`).  The launcher pauses between phases just
+#     long enough to make this awkward — it is meant for production runs.
 # =============================================================================
 
 set -euo pipefail
@@ -42,10 +49,6 @@ set -euo pipefail
 NAME_PROJECT="constrained_learning_option_pricing"
 V_ENV_NAME="venv_learning_option_pricing"
 MODE=""
-# Empty string = no --num-iterations passed → each variant uses its
-# catalogue-declared default_num_iterations.  A positive integer overrides
-# every variant in lockstep (used for smoke tests).
-NUM_ITERATIONS=""
 
 # SLURM resource defaults (match the legacy job_array_launcher_gpu.sh)
 S_BATCH_TIME="04:00:00"
@@ -60,7 +63,6 @@ DEBUG=0                              # mark run as test (folder prefixed `_debug
 while (( $# )); do
     case "$1" in
         --mode)              MODE="$2";                  shift 2 ;;
-        --num-iterations)    NUM_ITERATIONS="$2";        shift 2 ;;
         --account)           S_BATCH_ACCOUNT="$2";       shift 2 ;;
         --qos)               S_BATCH_QOS="$2";           shift 2 ;;
         --time)              S_BATCH_TIME="$2";          shift 2 ;;
@@ -96,12 +98,11 @@ for path in "$PATH_CONTENT_ROOT" "$PATH_PYTHON_SCRIPT" "$PATH_VENV_BIN" "$PATH_W
     fi
 done
 
-echo "Project root:   $PATH_CONTENT_ROOT"
-echo "Python:         $PATH_PYTHON_SCRIPT"
-echo "Venv:           $PATH_VENV_BIN"
-echo "Worker:         $PATH_WORKER_SLURM"
-echo "Mode:           $MODE"
-echo "Num-iterations: ${NUM_ITERATIONS:-<per-variant default_num_iterations>}"
+echo "Project root: $PATH_CONTENT_ROOT"
+echo "Python:       $PATH_PYTHON_SCRIPT"
+echo "Venv:         $PATH_VENV_BIN"
+echo "Worker:       $PATH_WORKER_SLURM"
+echo "Mode:         $MODE  (each variant uses its catalogue default_num_iterations)"
 echo
 
 # ── Activate venv on the login node (for --init-only and YAML generation) ───
@@ -115,17 +116,9 @@ if (( DEBUG == 1 )); then
     DEBUG_FLAG="--debug"
     echo "DEBUG mode: the timestamped folder will be prefixed with '_debug_'"
 fi
-# Only forward --num-iterations when the user passed it; otherwise the
-# Python script leaves args.num_iterations=None and every variant uses its
-# own catalogue default.
-NUM_ITERATIONS_FLAG=""
-if [[ -n "$NUM_ITERATIONS" ]]; then
-    NUM_ITERATIONS_FLAG="--num-iterations $NUM_ITERATIONS"
-fi
 echo "Phase 1: --init-only (login node)..."
 EXPDIR="$(python "$PATH_PYTHON_SCRIPT" \
             --mode "$MODE" --init-only \
-            $NUM_ITERATIONS_FLAG \
             $DEBUG_FLAG \
             --device cpu 2>/dev/null | tail -n1)"
 
@@ -150,17 +143,17 @@ mode    = "$MODE"
 expdir  = Path("$EXPDIR")
 out_dir = Path("$PATH_FOLDER_CONFIGS")
 written = []
-# Empty NUM_ITERATIONS string = let each variant use its catalogue default.
-_num_iter_raw = "$NUM_ITERATIONS"
-_num_iter_override = int(_num_iter_raw) if _num_iter_raw else None
 for v in ac._build_variants(mode):
     if v["name"] in ac._PLOT_EXCLUDED_VARIANTS:
         continue
+    # ``num_iterations: null`` instructs the worker to let each variant use
+    # its catalogue-declared ``default_num_iterations``.  If you need to
+    # override on the cluster, edit this YAML before the array starts.
     cfg = {
         "mode":            mode,
         "variant_name":    v["name"],
         "ablation_dir":    str(expdir),
-        "num_iterations":  _num_iter_override,   # null → use default_num_iterations
+        "num_iterations":  None,
     }
     (out_dir / f"{v['name']}.yaml").write_text(yaml.safe_dump(cfg))
     written.append(v["name"])
@@ -221,8 +214,7 @@ cat <<EOF_SUMMARY
 ──────────────────────────────────────────────────────────────────────
   Ablation submitted in parallel.
 
-  Mode           : $MODE
-  Num-iterations : ${NUM_ITERATIONS:-<per-variant default_num_iterations>}
+  Mode      : $MODE  (each variant uses its catalogue default_num_iterations)
   Variants  : $N_CONFIGS  (see $PATH_FOLDER_CONFIGS/*.yaml)
   Exp dir   : $EXPDIR
 
