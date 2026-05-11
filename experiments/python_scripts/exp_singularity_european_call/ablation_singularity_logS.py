@@ -2767,16 +2767,45 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         ])
         _savefig(fig, "payoff_comparison.png", _formula_payoff, bottom=0.20)
 
-    # TC loss
-    fig, ax = plt.subplots(figsize=(10, 6))
-    for i, res in enumerate(results):
-        ax.semilogy(res["hist"]["iter"], res["hist"]["loss_tc"],
-                    label=labels[i], color=colors[i],
-                    linestyle=linestyles[i], linewidth=linewidths[i])
-    ax.set_xlabel("Iteration"); ax.set_ylabel(r"$\mathcal{L}_{tc}$")
-    ax.set_title(r"Terminal-condition loss $\mathcal{L}_{tc}$")
-    ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
-    fig.suptitle(_SUPTITLE, fontsize=10)
+    # Terminal-condition loss — split into two rows like loss_pde.png because the
+    # strong-form variants use a Monte-Carlo MSE at randomly sampled (x_i, T)
+    # points while the VPINN variants use a deterministic Gauss-Legendre
+    # quadrature.  Both estimate the same L²(Ω) norm of the payoff-fit error,
+    # but the discrete values differ (MC noise vs deterministic rule) so we
+    # avoid sitting them on a shared axis.
+    rows_tc = []
+    if strong_idx:
+        rows_tc.append((
+            strong_idx,
+            r"Strong-form terminal-condition loss  "
+            r"$\mathcal{L}_{tc} = \frac{1}{N_{tc}}\sum_i (\hat V(x_i,T) - \Phi(x_i))^2$"
+            r"   (Monte-Carlo)",
+        ))
+    if weak_idx:
+        rows_tc.append((
+            weak_idx,
+            r"Variational terminal-condition loss  "
+            r"$\mathcal{L}_{ic}^{var} = \frac{1}{|\Omega|}\sum_q w_q |\hat u(T,x_q)-h(x_q)|^2$"
+            r"   (Gauss-Legendre quadrature)",
+        ))
+    n_rows_tc = max(len(rows_tc), 1)
+    fig, axes = plt.subplots(n_rows_tc, 1, figsize=(10, 5 * n_rows_tc), squeeze=False)
+    for row, (idx, title) in enumerate(rows_tc):
+        ax = axes[row, 0]
+        for i in idx:
+            res = results[i]
+            ax.semilogy(res["hist"]["iter"], res["hist"]["loss_tc"],
+                        label=labels[i], color=colors[i],
+                        linestyle=linestyles[i], linewidth=linewidths[i])
+        ax.set_xlabel("Iteration"); ax.set_ylabel(r"$\mathcal{L}_{tc}$")
+        ax.set_title(title, fontsize=9)
+        ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
+    fig.suptitle(
+        _SUPTITLE
+        + "\nMC and quadrature estimators of the same L²(Ω) payoff-fit error"
+        + " — split into separate rows to keep the comparison fair within each estimator.",
+        fontsize=9,
+    )
     _savefig(fig, "loss_tc.png", _FORMULA_LTC + "\n" + _FORMULA_IC_QUAD, bottom=0.22)
 
     # Derivative norm comparison — aggregated grid: 2 rows (∂_x, ∂_xx) × N_probes cols
