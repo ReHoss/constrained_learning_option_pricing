@@ -2382,35 +2382,76 @@ def _build_variants(mode: str) -> list[dict]:
 
     if mode == "hard-ic-ansatz-european-call":
         # ──────────────────────────────────────────────────────────────────
-        # Hard-IC ansatz experiment.
-        # V(x, t) = ((T - t)/T) · NN(x, t) + (e^x - K)^+   (see
-        # _build_hard_ic_ansatz_pinn).  IC is exact by construction so the
-        # variants set lam_tc = 0 — only the PDE residual is minimised.
+        # Hard-IC ansatz experiment — mirrors the variant set of
+        # "compare-boundary-singularity-european-call" but with the model
+        # replaced by the hard-IC ansatz:
+        #
+        #     V(x, t) = ((T - t)/T) · NN(x, t) + g_2(x)
+        #
+        # where g_2 is the exact payoff (or its softplus smoothing for the
+        # `smooth` analogue).  Since V(·, T) = g_2(·) bit-for-bit, the
+        # L_ic / quadrature-IC penalty is zero by construction.  All
+        # variants below carry lam_tc=0 to make the intent explicit (and to
+        # short-circuit the IC computation for the L-BFGS variants where
+        # the override is already plumbed through).
         # ──────────────────────────────────────────────────────────────────
+        _hard_ic_common = dict(model_type="hard_ic_ansatz",
+                               sigma_is=None, mix=0.0, lam_tc=0.0)
         return [
-            dict(
-                name="hard_ic_uniform",
-                label=r"Hard-IC ansatz + L-BFGS (uniform $\tau$, fixed batch)",
-                model_type="hard_ic_ansatz",
-                sampler_type="vpinn_lbfgs_full_batch", payoff_type="exact",
-                eps=0.0, beta=None, sigma_is=None, mix=0.0,
-                n_tau=512, K_test=20, n_quad=100,
-                lam_f=200.0, lam_tc=0.0,
-                max_iters=400,
-                color="#2962ff", linestyle="-", linewidth=2.0,
-            ),
-            dict(
-                name="hard_ic_is_tau",
-                label=r"Hard-IC ansatz + L-BFGS (IS $\tau\to0$, fixed batch)",
-                model_type="hard_ic_ansatz",
-                sampler_type="vpinn_lbfgs_is_tau_full_batch", payoff_type="exact",
-                eps=0.001 * T, beta=None, sigma_is=None, mix=0.0,
-                n_tau=512, K_test=20, n_quad=100,
-                lam_f=200.0, lam_tc=0.0,
-                is_tau_alpha=0.3,
-                max_iters=400,
-                color="#aa00ff", linestyle="-", linewidth=2.0,
-            ),
+            # ── Strong-form variants ────────────────────────────────────
+            dict(name="hard_ic_naive",
+                 label="Hard-IC ansatz — Naïve (strong form)",
+                 sampler_type="naive", payoff_type="exact",
+                 eps=0.0, beta=None,
+                 color="#0d47a1", linestyle="-", linewidth=2.0,
+                 **_hard_ic_common),
+            dict(name="hard_ic_truncated",
+                 label=r"Hard-IC ansatz — $\varepsilon$-trunc. ($\varepsilon=1\%T$)",
+                 sampler_type="truncated", payoff_type="exact",
+                 eps=0.01 * T, beta=None,
+                 color="#1976d2", linestyle="-", linewidth=2.0,
+                 **_hard_ic_common),
+            dict(name="hard_ic_smooth",
+                 label=r"Hard-IC ansatz — Smooth $g_2$ ($\beta=100$)",
+                 # The softplus is moved INTO the ansatz (g2) rather than the
+                 # IC loss (which no longer exists): V(x,T) = softplus(e^x-K).
+                 sampler_type="naive", payoff_type="smooth",
+                 eps=0.0, beta=100,
+                 color="#42a5f5", linestyle="-", linewidth=2.0,
+                 **_hard_ic_common),
+            # ── Weak-form (VPINN) variants ──────────────────────────────
+            dict(name="hard_ic_vpinn",
+                 label="Hard-IC ansatz — VPINN (weak form, Adam)",
+                 sampler_type="vpinn", payoff_type="exact",
+                 eps=0.0, beta=None,
+                 n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
+                 color="#b71c1c", linestyle="-", linewidth=2.0,
+                 **_hard_ic_common),
+            dict(name="hard_ic_vpinn_50k",
+                 label="Hard-IC ansatz — VPINN, Adam 50k iters",
+                 sampler_type="vpinn", payoff_type="exact",
+                 eps=0.0, beta=None,
+                 n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
+                 iters_override=50000,
+                 color="#e53935", linestyle="-", linewidth=2.0,
+                 **_hard_ic_common),
+            dict(name="hard_ic_vpinn_lbfgs_full_batch",
+                 label="Hard-IC ansatz — VPINN + L-BFGS (uniform, fixed batch)",
+                 sampler_type="vpinn_lbfgs_full_batch", payoff_type="exact",
+                 eps=0.0, beta=None,
+                 n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
+                 max_iters=3000,
+                 color="#ff7043", linestyle="-", linewidth=2.0,
+                 **_hard_ic_common),
+            dict(name="hard_ic_vpinn_lbfgs_is_tau_full_batch",
+                 label=r"Hard-IC ansatz — VPINN + L-BFGS (IS $\tau\to0$, fixed batch)",
+                 sampler_type="vpinn_lbfgs_is_tau_full_batch", payoff_type="exact",
+                 eps=0.001 * T, beta=None,
+                 n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
+                 is_tau_alpha=0.3,
+                 max_iters=400,
+                 color="#7b1fa2", linestyle="-", linewidth=2.0,
+                 **_hard_ic_common),
         ]
 
     if mode == "ablation-eps":
@@ -2510,15 +2551,27 @@ def _build_pinn() -> PINN:
     return PINN(resnet=ResNet(d_in=2, d_out=1, n=50, M=4, L=2))
 
 
-def _build_hard_ic_ansatz_pinn() -> ETCNN:
-    r"""Hard-IC ansatz: $V(x,t) = \frac{T-t}{T}\,\mathrm{NN}(x,t) + (e^x - K)^+$.
+def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
+                               beta: float | None = None) -> ETCNN:
+    r"""Hard-IC ansatz: $V(x,t) = \frac{T-t}{T}\,\mathrm{NN}(x,t) + g_2(x)$.
 
     The linear ramp $g_1(t) = (T-t)/T$ vanishes at maturity, completely
-    suppressing the network output at $t = T$, while $g_2(x) = (e^x - K)^+$
-    is the exact terminal payoff.  Therefore $V(\cdot, T) = g_2(\cdot)$ holds
-    by construction: the terminal condition is exact (bit-for-bit) and no
-    $\mathcal{L}_{ic}$ soft penalty is required.  Variants using this model
-    should set ``lam_tc=0`` so that only the PDE residual is optimised.
+    suppressing the network output at $t = T$, so $V(\cdot, T) = g_2(\cdot)$
+    holds by construction.  No $\mathcal{L}_{ic}$ soft penalty is required:
+    setting ``lam_tc=0`` on the variant skips the (already-zero) IC loss
+    computation entirely.
+
+    Parameters
+    ----------
+    payoff_type :
+        ``"exact"`` (default) sets $g_2(x) = (e^x - K)^+$ — the exact
+        European-call payoff with a kink at $x = \ln K$.  ``"smooth"`` sets
+        $g_2(x) = \mathrm{softplus}(e^x - K, \beta) - \log 2 / \beta$, the
+        $C^\infty$ approximation used by the ``smooth`` variant; pick its
+        sharpness via ``beta`` (default $\beta = 100$).
+    beta :
+        Sharpness parameter for ``payoff_type="smooth"``.  Ignored for
+        ``"exact"``.  Must be provided when ``payoff_type="smooth"``.
 
     Backbone is identical to :func:`_build_pinn` (ResNet d_in=2, d_out=1,
     n=50, M=4, L=2) to keep the parameter count comparable.
@@ -2527,9 +2580,23 @@ def _build_hard_ic_ansatz_pinn() -> ETCNN:
         # (T - t) / T  — vanishes at t = T (the maturity / initial condition)
         return (T - t_in) / T
 
-    def g2(x_in: torch.Tensor, t_in: torch.Tensor) -> torch.Tensor:
-        # Exact European-call payoff in log-S space: (e^x - K)^+
-        return torch.clamp(x_in.exp() - K, min=0.0)
+    if payoff_type == "exact":
+        def g2(x_in: torch.Tensor, t_in: torch.Tensor) -> torch.Tensor:
+            return torch.clamp(x_in.exp() - K, min=0.0)
+    elif payoff_type == "smooth":
+        if beta is None:
+            raise ValueError(
+                "_build_hard_ic_ansatz_pinn(payoff_type='smooth') requires beta"
+            )
+        log2 = math.log(2.0)
+        beta_val = float(beta)
+
+        def g2(x_in: torch.Tensor, t_in: torch.Tensor) -> torch.Tensor:
+            return F.softplus(x_in.exp() - K, beta=beta_val) - log2 / beta_val
+    else:
+        raise ValueError(
+            f"_build_hard_ic_ansatz_pinn: unknown payoff_type {payoff_type!r}"
+        )
 
     resnet = ResNet(d_in=2, d_out=1, n=50, M=4, L=2)
     return ETCNN(resnet=resnet, g1=g1, g2=g2)
@@ -3384,13 +3451,19 @@ def _build_model_for_variant(v: dict) -> torch.nn.Module:
 
     Dispatch order:
       * ``model_type == "hard_ic_ansatz"``  → :func:`_build_hard_ic_ansatz_pinn`
-        (forces V(·,T) = payoff by construction, used with ``lam_tc=0``)
+        (forces V(·,T) = g2(·) by construction; pass through ``payoff_type``
+        and ``beta`` so the ``smooth`` analogue can use a softplus payoff in
+        $g_2$ — analogous to how the original ``smooth`` variant uses a
+        softplus in the IC loss).
       * ``sampler_type == "engd"``          → :func:`_build_engd_pinn`
         (paper-faithful small MLP for natural-gradient experiments)
       * default                             → :func:`_build_pinn`
     """
     if v.get("model_type") == "hard_ic_ansatz":
-        return _build_hard_ic_ansatz_pinn()
+        return _build_hard_ic_ansatz_pinn(
+            payoff_type=v.get("payoff_type", "exact"),
+            beta=v.get("beta"),
+        )
     if v["sampler_type"] == "engd":
         return _build_engd_pinn(hidden=v.get("hidden", 32))
     return _build_pinn()
@@ -3414,9 +3487,18 @@ def _load_model_for_variant(ablation_dir: Path, variant_name: str,
         candidates = [_build_engd_pinn, _build_pinn]
     # Hard-IC ansatz variants store ETCNN weights with a different key layout
     # than the plain PINN; try the ansatz builder first so load_state_dict
-    # succeeds.
+    # succeeds.  The closures bind any per-variant payoff parameters
+    # (smooth softplus β) so that the architecture instantiated here matches
+    # the one that produced the saved weights.
     if v is not None and v.get("model_type") == "hard_ic_ansatz":
-        candidates = [_build_hard_ic_ansatz_pinn, _build_pinn]
+        payoff_type = v.get("payoff_type", "exact")
+        payoff_beta = v.get("beta")
+
+        def _build_ansatz_for_load() -> torch.nn.Module:
+            return _build_hard_ic_ansatz_pinn(payoff_type=payoff_type,
+                                              beta=payoff_beta)
+
+        candidates = [_build_ansatz_for_load, _build_pinn]
     for build_fn in candidates:
         model = build_fn()
         try:
@@ -3704,7 +3786,52 @@ def main() -> None:
                               "submitted. Prints the absolute directory path "
                               "on stdout (last line) so the launcher can "
                               "capture it."))
+    parser.add_argument("--config-dir", type=str, default=None, metavar="DIR",
+                        help=("Folder containing per-variant YAML configs (one "
+                              "file per array task).  Must be used together "
+                              "with --config-name.  Matches the convention "
+                              "expected by bash_scripts/.../job_array_batch_xp.slurm "
+                              "so that this Python script can be plugged into "
+                              "the existing Jean Zay job-array worker without "
+                              "modification."))
+    parser.add_argument("--config-name", type=str, default=None, metavar="NAME",
+                        help=("Basename (without .yaml) of the config file "
+                              "inside --config-dir to load.  The YAML must "
+                              "contain at least 'mode', 'variant_name' and "
+                              "'ablation_dir'; effect is equivalent to "
+                              "--add-variant <variant_name>:<ablation_dir> for "
+                              "the specified mode."))
     args = parser.parse_args()
+
+    # ── Config-driven entry point (YAML) ─────────────────────────────────────
+    # This mirrors what the Jean Zay worker job_array_batch_xp.slurm passes:
+    #     python script.py --config-dir DIR --config-name NAME
+    # We translate the YAML's fields into the legacy --add-variant invocation
+    # so the rest of the main() body stays untouched.
+    if args.config_dir is not None or args.config_name is not None:
+        if args.config_dir is None or args.config_name is None:
+            raise SystemExit(
+                "--config-dir and --config-name must be provided together."
+            )
+        config_path = Path(args.config_dir) / f"{args.config_name}.yaml"
+        if not config_path.exists():
+            raise SystemExit(f"Config file does not exist: {config_path}")
+        with open(config_path, encoding="utf-8") as f:
+            cfg_yaml = yaml.safe_load(f) or {}
+        required = ("mode", "variant_name", "ablation_dir")
+        missing = [k for k in required if k not in cfg_yaml]
+        if missing:
+            raise SystemExit(
+                f"Config {config_path} is missing required keys: {missing}"
+            )
+        args.mode = cfg_yaml["mode"]
+        args.add_variant = f"{cfg_yaml['variant_name']}:{cfg_yaml['ablation_dir']}"
+        if "iters" in cfg_yaml:
+            args.iters = int(cfg_yaml["iters"])
+        if "device" in cfg_yaml and args.device == "auto":
+            args.device = cfg_yaml["device"]
+        if cfg_yaml.get("resume", False):
+            args.resume = True
 
     # ── Replot only ───────────────────────────────────────────────────────────
     if args.replot is not None:
