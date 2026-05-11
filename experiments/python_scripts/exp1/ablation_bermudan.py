@@ -204,6 +204,31 @@ def _add_formula_box(fig: plt.Figure, text: str, bottom_margin: float = 0.18) ->
     fig.subplots_adjust(bottom=bottom_margin)
 
 
+def _add_s_star_line(ax, s_star) -> None:
+    """Draw the exercise-boundary vertical line at ``S = s*`` on an S-axis plot.
+
+    s* is the corner of the intermediate terminal payoff at ``t1``:
+
+        V(s, t1) = max(Phi(s), V^e(s, t1))
+
+    where the two branches of the max meet — the only kink of the Bermudan
+    value function on the Stage-B time interval, and a useful visual cue when
+    comparing prices / errors / Greeks at ``t=0``.  No-op when ``s_star`` is
+    missing, NaN, or the literal string ``"nan"`` (which is how
+    ``summary.yaml`` records a Stage A that failed to locate a boundary).
+    """
+    if s_star is None or s_star == "nan":
+        return
+    try:
+        s_star_f = float(s_star)
+    except (TypeError, ValueError):
+        return
+    if not np.isfinite(s_star_f):
+        return
+    ax.axvline(s_star_f, color="tab:green", linestyle="-.", linewidth=1.0,
+               label=rf"$s^\star \approx {s_star_f:.2f}$ (exercise boundary at $t_1$)")
+
+
 # ---------------------------------------------------------------------------
 # Rich metric computation (requires the trained model)
 # ---------------------------------------------------------------------------
@@ -527,6 +552,7 @@ def _plot_variant(res: dict, vdir: Path) -> None:
         axes[0].set_ylabel(r"$\Delta$")
         axes[0].axvline(p3.K, color="grey", linestyle=":", linewidth=0.8,
                         label=rf"$S=K={p3.K:g}$")
+        _add_s_star_line(axes[0], res.get("s_star"))
         axes[0].grid(True, alpha=0.3)
         axes[0].legend(fontsize=9)
 
@@ -541,6 +567,7 @@ def _plot_variant(res: dict, vdir: Path) -> None:
         axes[1].set_ylabel(r"$\Gamma$")
         axes[1].axvline(p3.K, color="grey", linestyle=":", linewidth=0.8,
                         label=rf"$S=K={p3.K:g}$")
+        _add_s_star_line(axes[1], res.get("s_star"))
         axes[1].grid(True, alpha=0.3)
         axes[1].legend(fontsize=9)
 
@@ -565,6 +592,17 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int) -> N
     linewidths = [r.get("linewidth", 2.0)          for r in results]
     labels     = [r.get("label",     r.get("name", f"v{i}")) for i, r in enumerate(results)]
     has_metrics = [r.get("metrics") is not None    for r in results]
+
+    # All variants share the same Stage A, hence the same exercise boundary
+    # ``s_star`` at ``t1``.  Pick the first non-NaN entry as the canonical
+    # reference to mark on cross-variant S-axis plots.
+    s_star_ref = next(
+        (r.get("s_star") for r in results
+         if r.get("s_star") not in (None, "nan")
+         and not (isinstance(r.get("s_star"), float)
+                  and not np.isfinite(r["s_star"]))),
+        None,
+    )
 
     # ------------------------------------------------------------------
     # Plot 1 — Stage B PDE residual loss
@@ -659,6 +697,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int) -> N
         ax.plot(s_arr, prices,
                 label=r"$\tilde{u}^{(B)}_\theta(S,0)$ — " + labels[i],
                 color=colors[i], linestyle=linestyles[i], linewidth=linewidths[i])
+    _add_s_star_line(ax, s_star_ref)
     ax.set_xlabel("Asset price $S$")
     ax.set_ylabel(r"Price at $t=0$")
     ax.set_title(
@@ -688,6 +727,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int) -> N
         ax.plot(s_arr, err,
                 label=rf"{labels[i]}  ($\mathrm{{MAE}}={mae:.2e}$)",
                 color=colors[i], linestyle=linestyles[i], linewidth=linewidths[i])
+    _add_s_star_line(ax, s_star_ref)
     ax.set_xlabel("Asset price $S$")
     ax.set_ylabel(r"$|\tilde{u}^{(B)}_\theta(S,0) - V^{\mathrm{BT}}(S,0)|$")
     ax.set_title(
@@ -774,6 +814,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int) -> N
             ax.set_title(name)
             ax.axvline(p3.K, color="grey", linestyle=":", linewidth=0.8,
                        label=rf"$S=K={p3.K:g}$")
+            _add_s_star_line(ax, s_star_ref)
             ax.grid(True, alpha=0.3)
             ax.legend(fontsize=8, loc="best")
         fig.suptitle(
