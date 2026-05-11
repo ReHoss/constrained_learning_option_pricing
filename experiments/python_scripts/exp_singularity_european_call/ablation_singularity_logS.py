@@ -36,8 +36,11 @@ Usage (from repo root):
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import logging
 import math
+import os
 import sys
 import time
 from datetime import datetime
@@ -3630,6 +3633,32 @@ def _ls_to_yaml(ls):
     return ls
 
 
+@contextlib.contextmanager
+def _summary_yaml_lock(ablation_dir: Path):
+    """Exclusive file-lock for the summary.yaml read-modify-write section.
+
+    When several ``--add-variant`` jobs run in parallel (e.g. SLURM array on a
+    cluster), they each call this block to append their entry to
+    ``summary.yaml``.  Without a lock, two concurrent processes would race
+    on the read-then-write sequence and the last writer would silently clobber
+    the previous one's entry.
+
+    The lock lives at ``<ablation_dir>/summary.yaml.lock`` and is held for the
+    full duration of the wrapped block.  ``fcntl.flock`` is advisory and
+    POSIX-only — fine on Linux/Jean Zay, would need a different primitive on
+    Windows but the cluster setup is Linux-only.
+    """
+    lock_path = ablation_dir / "summary.yaml.lock"
+    lock_path.touch(exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def _summary_entry(v: dict, metrics: dict) -> dict:
     """Build the summary.yaml entry for one variant."""
     return {
@@ -3666,6 +3695,15 @@ def main() -> None:
                               "plots). Useful for smoke tests."))
     parser.add_argument("--resume", action="store_true",
                         help="Resume from checkpoint.pt in the variant dir (for ENGD/LBFGS)")
+    parser.add_argument("--init-only", action="store_true",
+                        help=("Create the timestamped ablation directory + "
+                              "metadata.yaml + empty summary.yaml and exit, "
+                              "without training any variant. Designed for "
+                              "SLURM-array workflows where the directory must "
+                              "be ready before parallel --add-variant jobs are "
+                              "submitted. Prints the absolute directory path "
+                              "on stdout (last line) so the launcher can "
+                              "capture it."))
     args = parser.parse_args()
 
     # ── Replot only ───────────────────────────────────────────────────────────
@@ -3727,22 +3765,27 @@ def main() -> None:
             f"GEI={m['gei']:.2f}"
         )
 
-        # Append to summary.yaml (replace if same name, append otherwise)
-        with open(ablation_dir / "summary.yaml", encoding="utf-8") as f:
-            summary = yaml.safe_load(f)
-        existing_names = {e["name"] for e in summary["variants"]}
+        # Append to summary.yaml (replace if same name, append otherwise).
+        # Wrapped in an advisory file-lock so concurrent SLURM-array jobs do
+        # not clobber each other's entry on the read-modify-write sequence.
         new_entry = _summary_entry(v, m)
-        if variant_name in existing_names:
-            summary["variants"] = [
-                new_entry if e["name"] == variant_name else e
-                for e in summary["variants"]
-            ]
-            logger.info(f"Updated existing entry for variant {variant_name!r} in summary.yaml")
-        else:
-            summary["variants"].append(new_entry)
-            logger.info(f"Appended variant {variant_name!r} to summary.yaml")
-        with open(ablation_dir / "summary.yaml", "w", encoding="utf-8") as f:
-            yaml.safe_dump(summary, f, allow_unicode=True)
+        with _summary_yaml_lock(ablation_dir):
+            with open(ablation_dir / "summary.yaml", encoding="utf-8") as f:
+                summary = yaml.safe_load(f)
+            existing_names = {e["name"] for e in summary["variants"]}
+            if variant_name in existing_names:
+                summary["variants"] = [
+                    new_entry if e["name"] == variant_name else e
+                    for e in summary["variants"]
+                ]
+                logger.info(
+                    f"Updated existing entry for variant {variant_name!r} in summary.yaml"
+                )
+            else:
+                summary["variants"].append(new_entry)
+                logger.info(f"Appended variant {variant_name!r} to summary.yaml")
+            with open(ablation_dir / "summary.yaml", "w", encoding="utf-8") as f:
+                yaml.safe_dump(summary, f, allow_unicode=True)
 
         # Regenerate all comparison plots with the complete variant set
         _replot(ablation_dir)
@@ -3810,6 +3853,25 @@ def main() -> None:
             "x_lo":        X_LO,      "x_hi":      X_HI,      "x_atm":      X_ATM,
             "x_eval_lo":   X_EVAL_LO, "x_eval_hi": X_EVAL_HI,
         }, f)
+
+    # ── Init-only short-circuit ──────────────────────────────────────────────
+    # When parallel SLURM-array jobs need a shared ablation directory, this
+    # mode creates the directory + metadata.yaml + empty summary.yaml, prints
+    # the absolute path on stdout (last line), and exits *without training*.
+    # The launcher can then capture the path and submit one --add-variant job
+    # per variant against it.
+    if args.init_only:
+        empty_summary: dict = {"variants": []}
+        with open(ablation_dir / "summary.yaml", "w", encoding="utf-8") as f:
+            yaml.safe_dump(empty_summary, f, allow_unicode=True)
+        logger.info(
+            f"--init-only: created ablation dir, metadata.yaml, and empty "
+            f"summary.yaml. No variant trained."
+        )
+        # Print absolute path on the *last* stdout line so a bash launcher can
+        # do  EXPDIR=$(python ... --init-only | tail -n1)
+        print(str(ablation_dir.resolve()))
+        return
 
     results, summary_variants = [], []
 
