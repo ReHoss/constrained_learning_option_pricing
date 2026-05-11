@@ -23,6 +23,7 @@ import torch
 # Ensure the package is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from learning_option_pricing.utils.run_context import script_data_dir
 from learning_option_pricing.pricing.terminal import (
     _d_tilde_0,
     _d_tilde_1,
@@ -52,7 +53,7 @@ SQRT_2PI = math.sqrt(2.0 * math.pi)
 # Output directory
 # ---------------------------------------------------------------------------
 timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-OUT_DIR = Path("data/phase1_bsm_validation") / f"{timestamp}_K{K:.0f}_r{r}_sig{sigma}_T{T:.0f}"
+OUT_DIR = script_data_dir(__file__) / f"{timestamp}_K{K:.0f}_r{r}_sig{sigma}_T{T:.0f}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Save metadata

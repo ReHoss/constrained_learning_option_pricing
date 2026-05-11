@@ -22,6 +22,7 @@ import torch
 # Ensure the package is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from learning_option_pricing.utils.run_context import script_data_dir
 from learning_option_pricing.models.etcnn import (
     AmericanPutETCNN,
     InputNormalization,
@@ -55,7 +56,7 @@ d_out = 1
 # ---------------------------------------------------------------------------
 timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 OUT_DIR = (
-    Path("data/phase2_etcnn_architecture")
+    script_data_dir(__file__)
     / f"{timestamp}_M{M}_L{L}_n{n}_K{K:.0f}"
 )
 OUT_DIR.mkdir(parents=True, exist_ok=True)

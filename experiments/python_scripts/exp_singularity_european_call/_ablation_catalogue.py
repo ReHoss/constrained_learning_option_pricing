@@ -73,16 +73,32 @@ _PLOT_EXCLUDED_VARIANTS: set[str] = {
 
 # ── Mode → data folder routing ──────────────────────────────────────────────
 
-def data_root_for_mode(mode: str) -> str:
-    """Top-level data directory for a given mode.
+# Name of the runner script that owns the modes below.  Hard-coded as a string
+# (rather than imported from ``learning_option_pricing.utils.run_context``) so
+# that this module remains torch-free — see the module docstring at the top of
+# the file for why that matters.  The runtime assertion in
+# ``ablation_singularity_logS.main`` checks the runner's ``__file__`` against
+# this constant so the two cannot silently drift apart.
+RUNNER_SCRIPT_STEM = "ablation_singularity_logS"
 
-    Hard-IC experiments land in a separate root so that ``--replot`` and
-    ``--add-variant`` from the standard ablations cannot mix the two model
-    architectures by accident.
+
+def data_root_for_mode(mode: str) -> str:
+    """Top-level data directory for a given ``mode`` of the
+    ``ablation_singularity_logS`` runner.
+
+    Per the per-script data-folder convention in ``CLAUDE.md``, every run lands
+    under ``data/<runner_stem>/``.  The ``mode`` then becomes a sub-folder so
+    Hard-IC experiments and the boundary-singularity comparison cannot mix
+    their ``--replot`` / ``--add-variant`` targets by accident:
+
+        data/ablation_singularity_logS/hard-ic-ansatz-european-call/<ts>_..._
+        data/ablation_singularity_logS/compare-boundary-singularity-european-call/<ts>_..._
+
+    Returns:
+        Path string (kept as ``str`` for byte-for-byte compatibility with
+        callers that build paths via ``Path(...) / ts_tag``).
     """
-    if mode == "hard-ic-ansatz-european-call":
-        return "data/exp_hard_ic_ansatz_european_call"
-    return "data/exp_singularity_european_call"
+    return f"data/{RUNNER_SCRIPT_STEM}/{mode}"
 
 
 # ── Variant catalogue ───────────────────────────────────────────────────────

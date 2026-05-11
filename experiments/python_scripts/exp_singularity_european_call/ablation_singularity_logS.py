@@ -27,10 +27,10 @@ Usage (from repo root):
     python3 ... --iters 30000 --device cuda --mode ablation-is
 
     # Regenerate plots without retraining:
-    python3 ... --replot data/exp_singularity_european_call/<run_dir>_logS_iters<N>
+    python3 ... --replot data/ablation_singularity_logS/<mode>/<run_dir>_logS_iters<N>
 
     # Add a single new variant (e.g. VPINN) to an existing ablation folder:
-    python3 ... --add-variant vpinn:data/exp_singularity_european_call/<run_dir>_logS_iters<N> \\
+    python3 ... --add-variant vpinn:data/ablation_singularity_logS/<mode>/<run_dir>_logS_iters<N> \\
         --device cuda
 """
 from __future__ import annotations
@@ -102,6 +102,17 @@ assert (_cat.K, _cat.r, _cat.sigma, _cat.T, _cat.q) == (K, r, sigma, T, q), (
     f"  catalogue=(K={_cat.K}, r={_cat.r}, sigma={_cat.sigma}, T={_cat.T}, q={_cat.q})"
     f"  phase3_training=(K={K}, r={r}, sigma={sigma}, T={T}, q={q}). "
     "Update _ablation_catalogue.py to match."
+)
+
+# Per-script data-folder convention (CLAUDE.md): every run lands under
+# data/<script_stem>/.  ``_ablation_catalogue.data_root_for_mode`` hard-codes
+# the runner stem (kept torch-free), so this assertion fires loudly if the two
+# files are ever moved / renamed independently.
+assert _cat.RUNNER_SCRIPT_STEM == Path(__file__).stem, (
+    f"_ablation_catalogue.RUNNER_SCRIPT_STEM={_cat.RUNNER_SCRIPT_STEM!r} but "
+    f"this runner is {Path(__file__).stem!r}.  Update _ablation_catalogue.py "
+    f"or this file so the per-script data folder ('data/<runner>/') stays "
+    f"in sync between the two."
 )
 
 # Domain in x = ln(S) space
@@ -3753,7 +3764,7 @@ def main() -> None:
     )
     logging.getLogger("matplotlib.mathtext").setLevel(logging.WARNING)
 
-    logger.info(f"exp_singularity_european_call  coords=logS  mode={args.mode}  iters={args.iters}")
+    logger.info(f"{Path(__file__).stem}  coords=logS  mode={args.mode}  iters={args.iters}")
     logger.info(f"cmdline: {' '.join(sys.argv)}")
     _log_environment()
     logger.info(f"device={p3.DEVICE}  N_TC={n_tc}  N_F={n_f}")

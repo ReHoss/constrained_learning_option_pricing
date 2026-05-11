@@ -37,7 +37,7 @@ Usage (from repo root):
 
     # Regenerate plots from a saved run (no retraining):
     python3 experiments/python_scripts/exp_singularity_european_call/ablation_singularity.py \\
-        --replot data/exp_singularity_european_call/20260509_120000_compare-boundary-singularity-european-call_iters200
+        --replot data/ablation_singularity/20260509_120000_compare-boundary-singularity-european-call_iters200
 """
 from __future__ import annotations
 
@@ -62,6 +62,7 @@ import phase3_training as p3
 from learning_option_pricing.models.etcnn import PINN, InputNormalization
 from learning_option_pricing.models.resnet import ResNet
 from learning_option_pricing.pricing.terminal import bsm_operator, black_scholes_put
+from learning_option_pricing.utils.run_context import script_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -735,7 +736,7 @@ def main() -> None:
 
     timestamp    = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
     ablation_dir = (
-        Path("data/exp_singularity_european_call")
+        script_data_dir(__file__)
         / f"{timestamp}_{args.mode}_iters{args.iters}"
     )
     ablation_dir.mkdir(parents=True, exist_ok=True)
@@ -757,7 +758,7 @@ def main() -> None:
     )
     logging.getLogger("matplotlib.mathtext").setLevel(logging.WARNING)
 
-    logger.info(f"exp_singularity_european_call  mode={args.mode}  iters={args.iters}")
+    logger.info(f"{Path(__file__).stem}  mode={args.mode}  iters={args.iters}")
     logger.info(f"device={p3.DEVICE}  N_TC={n_tc}  N_F={n_f}")
     logger.info(f"output: {ablation_dir}")
     logger.info(f"variants: {[v['name'] for v in variants]}")

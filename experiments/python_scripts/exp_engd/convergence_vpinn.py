@@ -38,6 +38,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from learning_option_pricing.optimizers import VPINNENGDOptimizer, flat_grad
+from learning_option_pricing.utils.run_context import script_data_dir
 from learning_option_pricing.vpinn import VPINNLoss
 
 
@@ -166,7 +167,7 @@ def main():
 
     if args.out is None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_dir = Path(__file__).resolve().parents[3] / "data" / "exp_engd" / f"{ts}_vpinn"
+        out_dir = script_data_dir(__file__) / f"{ts}_vpinn"
     else:
         out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)

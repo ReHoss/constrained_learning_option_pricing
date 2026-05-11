@@ -58,6 +58,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from learning_option_pricing.utils.run_context import script_data_dir
 from learning_option_pricing.optimizers.natural_gradient import (
     flat_grad, flat_params, set_flat_params, measurement_jacobian,
 )
@@ -386,7 +387,7 @@ def main():
 
     if args.out_dir is None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        args.out_dir = Path(__file__).resolve().parents[3] / "data" / "repro_poisson_2d" / f"{ts}_iters{args.iters}"
+        args.out_dir = script_data_dir(__file__) / f"{ts}_iters{args.iters}"
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     log_file = args.out_dir / "run.log"

@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from learning_option_pricing.models.etcnn import InputNormalization
 from learning_option_pricing.models.resnet import ResNet
 from learning_option_pricing.optimizers import ENGDOptimizer, flat_grad
+from learning_option_pricing.utils.run_context import script_data_dir
 from learning_option_pricing.pricing.terminal import (
     black_scholes_put,
     bsm_operator,
@@ -352,7 +353,7 @@ def main():
     # Output directory
     if args.out is None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_dir = Path(__file__).resolve().parents[3] / "data" / "exp_engd" / f"{ts}_european_put"
+        out_dir = script_data_dir(__file__) / f"{ts}_european_put"
     else:
         out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -43,6 +43,7 @@ from learning_option_pricing.models.etcnn import (
 )
 from learning_option_pricing.models.resnet import ResNet
 from learning_option_pricing.optimizers import ENGDOptimizer, flat_grad as _flat_grad
+from learning_option_pricing.utils.run_context import script_data_dir
 from learning_option_pricing.pricing.interpolation import (
     CubicSplineInterpolator,
     PchipInterpolator,
@@ -2340,7 +2341,7 @@ def main():
     iters_str = "_".join(map(str, args.iters))
     mode_tag = "put-ansatz" if args.put_ansatz else f"interp-{args.interp}"
     gamma_tag = f"_h{args.g2_gamma}" if args.g2_gamma is not None else ""
-    out_dir = Path("data/phase3_training") / (
+    out_dir = script_data_dir(__file__) / (
         f"{timestamp}_iters{iters_str}_K{K:.0f}_{mode_tag}_g2-{args.g2}{gamma_tag}"
     )
     out_dir.mkdir(parents=True, exist_ok=True)

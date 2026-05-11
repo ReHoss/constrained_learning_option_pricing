@@ -67,6 +67,7 @@ import phase3_training as p3
 from phase3_training import bermudan_problem
 from learning_option_pricing.models.etcnn import PINN, InputNormalization
 from learning_option_pricing.models.resnet import ResNet
+from learning_option_pricing.utils.run_context import script_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -971,7 +972,7 @@ def main() -> None:
 
     timestamp    = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
     ablation_dir = (
-        Path("data/ablation_bermudan_formulation")
+        script_data_dir(__file__)
         / f"{timestamp}_itersA{args.iters_a}_itersB{args.iters_b}"
     )
     ablation_dir.mkdir(parents=True, exist_ok=True)
