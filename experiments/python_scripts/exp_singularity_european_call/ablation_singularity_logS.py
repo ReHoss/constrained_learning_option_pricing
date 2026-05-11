@@ -55,7 +55,7 @@ from learning_option_pricing.pricing.terminal import black_scholes_put
 from learning_option_pricing.vpinn import GaussLegendreQuadrature
 from learning_option_pricing.optimizers import (
     flat_grad, flat_params, set_flat_params,
-    grid_line_search, measurement_jacobian, solve_cg,
+    grid_line_search, measurement_jacobian, measurement_jacobian_fwd, solve_cg,
 )
 
 logger = logging.getLogger(__name__)
@@ -323,6 +323,52 @@ def make_sampler_vpinn_logS(n_tau: int, eps: float = 0.01 * T):
     return _sample
 
 
+def make_sampler_vpinn_logS_is_tau(
+    n_tau: int,
+    alpha: float = 0.3,
+    eps: float = 0.001 * T,
+):
+    """VPINN sampler biaisé vers τ → 0 (proche de la maturité).
+
+    Tirage : τ = T · U^(1/α)  avec  U ~ Uniform(0, 1)
+    puis t = T − τ.
+
+    Choix de α (où "biais" signifie "concentration des points près de τ=0") :
+        α = 1   → uniforme classique (aucun biais)
+        α = 0.5 → biais modéré (la moitié des points dans [0, T/4])
+        α = 0.3 → biais fort     (la moitié des points dans [0, T·0.099])
+        α = 0.2 → biais très fort (la moitié des points dans [0, T·0.031])
+
+    Effet attendu sur le γ près de τ=0
+    ----------------------------------
+    Le résidu PDE est plus difficile à satisfaire près de la maturité (γ y est
+    quasi-singulier).  En tirant plus de points dans cette zone, on force
+    l'optimiseur à y consacrer plus de capacité réseau — au prix d'une légère
+    dégradation potentielle ailleurs.
+
+    Pas de correction d'importance sampling
+    ---------------------------------------
+    Volontairement BIAISÉ : on minimise  E_{τ~q}[ℒ_f(T − τ)]  au lieu de
+    E_{τ~U(0,T)}[ℒ_f(T − τ)].  C'est exactement ce qu'on veut pour donner
+    plus de poids à la zone difficile.  Si on veut un estimateur non-biaisé
+    de l'intégrale uniforme, il faudrait pondérer chaque résidu par
+    p_uniform(τ) / q(τ) — mais alors le bénéfice se réduit à de la
+    réduction de variance, pas à un meilleur fit ciblé.
+
+    Args:
+        n_tau: nombre de points temporels par batch.
+        alpha: exposant de la loi de puissance.  α < 1 ⟹ concentration en τ=0.
+        eps: clamp inférieur sur τ pour éviter de tirer τ=0 exactement
+             (le résidu y est mal défini, le réseau pure-payoff IC suffit).
+    """
+    def _sample():
+        u = torch.rand(n_tau, device=p3.DEVICE).clamp(min=1e-6)
+        tau = T * u.pow(1.0 / alpha)         # densité ∝ τ^(α-1)/T^α
+        tau = tau.clamp(min=eps)              # garde-fou contre τ=0
+        return T - tau                         # back to t coordinates
+    return _sample
+
+
 # ---------------------------------------------------------------------------
 # Derivative norm monitoring
 # ---------------------------------------------------------------------------
@@ -381,6 +427,142 @@ def compute_losses_vpinn_logS(
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint helpers — reproducibility on resume
+# ---------------------------------------------------------------------------
+
+def _capture_rng_state() -> dict:
+    """Capture l'état des générateurs aléatoires CPU + CUDA pour le checkpoint.
+
+    Sans ça, un resume échantillonne dans un état RNG différent de ce que le
+    run continu aurait vu : le t_batch tiré au step de reprise sera distinct
+    de celui d'un run continu équivalent.  En sauvegardant l'état RNG, on
+    garantit que les tirages stochastiques reprennent exactement où ils
+    s'étaient arrêtés — la trajectoire post-resume est bit-à-bit identique
+    à celle d'un run continu.
+    """
+    state = {"torch_rng": torch.get_rng_state()}
+    if torch.cuda.is_available():
+        state["torch_cuda_rng"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_rng_state(ckpt: dict, label: str) -> bool:
+    """Restaure l'état RNG depuis le checkpoint si présent.
+
+    Retourne True si l'état a pu être restauré, False sinon (checkpoint legacy
+    sans état RNG).  Émet un avertissement explicite dans les deux cas pour
+    que l'utilisateur soit informé du niveau de reproductibilité du resume.
+    """
+    if "torch_rng" in ckpt:
+        torch.set_rng_state(ckpt["torch_rng"])
+        if "torch_cuda_rng" in ckpt and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(ckpt["torch_cuda_rng"])
+        logger.info(
+            f"[{label}] État RNG restauré (CPU{' + CUDA' if 'torch_cuda_rng' in ckpt else ''}) "
+            f"— le resume est bit-à-bit reproductible vis-à-vis d'un run continu équivalent"
+        )
+        return True
+    logger.warning(
+        f"[{label}] ⚠ Checkpoint sans état RNG (format ancien) — "
+        f"le resume utilisera un état aléatoire frais.  La trajectoire post-resume "
+        f"divergera d'un run continu (statistiquement équivalente, mais pas bit-à-bit "
+        f"identique).  Les futurs checkpoints sauveront le RNG pour pleine reproductibilité."
+    )
+    return False
+
+
+class BestModelTracker:
+    """Keep the model parameters that achieved the lowest loss during training.
+
+    Why: stochastic optimizers (Adam, stochastic L-BFGS) do NOT monotonically
+    improve the loss — they can spike up by an order of magnitude near the end
+    of training due to a bad mini-batch or a momentum-driven overshoot.
+    The last iterate is therefore not always the best one.  We track the best
+    state seen so far and restore it at the end of training, which makes the
+    saved model independent of the stopping point.
+
+    Usage
+    -----
+    ```python
+    best = BestModelTracker()
+    for it in range(start_iter, total_iters + 1):
+        loss_val = ...  # current scalar loss
+        best.update(model, loss_val, it)
+        if checkpoint_path is not None and it % save_every == 0:
+            torch.save({..., "best_tracker": best.state_dict()}, checkpoint_path)
+    best.restore(model)
+    logger.info(f"[label] restored best model from iter {best.best_iter}")
+    ```
+
+    Resume support
+    --------------
+    Serialise via ``state_dict()`` and reload via ``load_state_dict()``.  The
+    best state survives interruptions: if you stop mid-training and resume,
+    the tracker still knows the best iter from the previous session.
+
+    Cost
+    ----
+    Each ``update()`` only clones tensors when a strict improvement is observed.
+    Memory overhead: one extra copy of the model parameters (~88 KB for our
+    PINN ResNet), negligible.
+    """
+
+    def __init__(self) -> None:
+        self.best_loss: float = float("inf")
+        self.best_iter: int = -1
+        self._best_state: dict[str, torch.Tensor] | None = None
+
+    def update(self, model: torch.nn.Module, loss: float, it: int) -> bool:
+        """Snapshot the model if its current loss strictly improves the best.
+
+        Skips NaN / inf losses defensively — those can appear in stochastic
+        L-BFGS during line-search failures and would otherwise corrupt the
+        ``best_loss`` comparison (NaN < anything returns False but we want
+        an explicit guard).
+
+        Returns True if a new best was recorded.
+        """
+        if not math.isfinite(loss):
+            return False
+        if loss < self.best_loss:
+            self.best_loss = float(loss)
+            self.best_iter = int(it)
+            # Detach + clone + move to CPU so the saved state survives device
+            # changes and does not pin GPU memory.
+            self._best_state = {
+                k: v.detach().clone().cpu() for k, v in model.state_dict().items()
+            }
+            return True
+        return False
+
+    def restore(self, model: torch.nn.Module) -> bool:
+        """Load the best model parameters into ``model`` (in place).
+
+        Returns True if a state was available to restore (i.e. at least one
+        successful ``update`` happened), False otherwise.
+        """
+        if self._best_state is None:
+            return False
+        device = next(model.parameters()).device
+        model.load_state_dict({k: v.to(device) for k, v in self._best_state.items()})
+        return True
+
+    def state_dict(self) -> dict:
+        """Serialise the tracker into a checkpoint-friendly dict."""
+        return {
+            "best_loss":  self.best_loss,
+            "best_iter":  self.best_iter,
+            "best_state": self._best_state,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore tracker fields from a previously saved ``state_dict()``."""
+        self.best_loss   = state.get("best_loss",  float("inf"))
+        self.best_iter   = state.get("best_iter",  -1)
+        self._best_state = state.get("best_state", None)
+
+
+# ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
 
@@ -399,6 +581,8 @@ def train_variant(
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, p3.build_lr_lambda(total_iters))
     history: dict = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [], "grad_norm": [], "lr": [],
                      "dx_rms": [], "d2x_rms": []}
+    best_tracker = BestModelTracker()
+    last_loss = float("nan")
     model.train()
     t0 = time.time()
 
@@ -416,10 +600,15 @@ def train_variant(
         optimizer.step()
         scheduler.step()
 
+        last_loss = loss.item()
+        # Track the best (lowest-loss) model state so the saved model does not
+        # depend on whether the last iter happened to be a good or bad one.
+        best_tracker.update(model, last_loss, it)
+
         if it % log_every == 0 or it == 1:
             lr_now = optimizer.param_groups[0]["lr"]
             dx_rms, d2x_rms = _compute_deriv_norms(model)
-            history["loss"].append(loss.item())
+            history["loss"].append(last_loss)
             history["loss_f"].append(lf)
             history["loss_tc"].append(ltc)
             history["grad_norm"].append(total_norm)
@@ -429,12 +618,17 @@ def train_variant(
             history["d2x_rms"].append(d2x_rms)
             logger.info(
                 f"[{label}] iter {it:>6d}/{total_iters}  "
-                f"loss={loss.item():.4e}  Lf={lf:.4e}  Ltc={ltc:.4e}  "
+                f"loss={last_loss:.4e}  Lf={lf:.4e}  Ltc={ltc:.4e}  "
                 f"|g|={total_norm:.2e}  lr={lr_now:.5f}  "
                 f"dx_rms(τ={_DERIV_TAU_PROBES[0]:.2f})={dx_rms[0]:.2e}  "
                 f"({time.time()-t0:.1f}s)"
             )
 
+    if best_tracker.restore(model):
+        logger.info(
+            f"[{label}] Restored best model from iter {best_tracker.best_iter} "
+            f"(loss={best_tracker.best_loss:.4e}; last iter loss was {last_loss:.4e})"
+        )
     model.eval()
     logger.info(f"[{label}] Training done in {time.time()-t0:.1f}s")
     return history
@@ -461,6 +655,8 @@ def train_variant_vpinn(
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, p3.build_lr_lambda(total_iters))
     history: dict = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [], "grad_norm": [], "lr": [],
                      "dx_rms": [], "d2x_rms": []}
+    best_tracker = BestModelTracker()
+    last_loss = float("nan")
     model.train()
     t0 = time.time()
     logger.info(
@@ -483,11 +679,13 @@ def train_variant_vpinn(
 
         optimizer.step()
         scheduler.step()
+        last_loss = loss.item()
+        best_tracker.update(model, last_loss, it)
 
         if it % log_every == 0 or it == 1:
             lr_now = optimizer.param_groups[0]["lr"]
             dx_rms, d2x_rms = _compute_deriv_norms(model)
-            history["loss"].append(loss.item())
+            history["loss"].append(last_loss)
             history["loss_f"].append(lf)
             history["loss_tc"].append(ltc)
             history["grad_norm"].append(total_norm)
@@ -497,7 +695,7 @@ def train_variant_vpinn(
             history["d2x_rms"].append(d2x_rms)
             logger.info(
                 f"[{label}] iter {it:>6d}/{total_iters}  "
-                f"loss={loss.item():.4e}  "
+                f"loss={last_loss:.4e}  "
                 f"(λ_f·Lf={lambda_f * lf:.4e}  λ_tc·L_ic={lambda_tc * ltc:.4e})  "
                 f"Lf={lf:.4e}  L_ic={ltc:.4e}  "
                 f"|g|={total_norm:.2e}  lr={lr_now:.5f}  "
@@ -505,6 +703,11 @@ def train_variant_vpinn(
                 f"({time.time()-t0:.1f}s)"
             )
 
+    if best_tracker.restore(model):
+        logger.info(
+            f"[{label}] Restored best model from iter {best_tracker.best_iter} "
+            f"(loss={best_tracker.best_loss:.4e}; last iter loss was {last_loss:.4e})"
+        )
     model.eval()
     logger.info(f"[{label}] Training done in {time.time()-t0:.1f}s")
     return history
@@ -573,6 +776,9 @@ def train_variant_vpinn_engd(
     engd_K_test_gram: int = 8,
     engd_n_quad_gram: int = 32,
     engd_n_tau_ls: int = 32,
+    checkpoint_path: Path | None = None,
+    resume: bool = False,
+    save_every: int = 50,
 ) -> dict:
     """VPINN training with ENGD (natural gradient).
 
@@ -610,6 +816,19 @@ def train_variant_vpinn_engd(
 
     history: dict = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [],
                      "grad_norm": [], "lr": [], "dx_rms": [], "d2x_rms": []}
+    best_tracker = BestModelTracker()
+    last_loss = float("nan")
+    start_iter = 1
+    if resume and checkpoint_path is not None and Path(checkpoint_path).exists():
+        ckpt = torch.load(checkpoint_path, map_location=p3.DEVICE, weights_only=False)
+        model.load_state_dict(ckpt["model_state"])
+        start_iter = ckpt["iter"] + 1
+        history    = ckpt["history"]
+        if "best_tracker" in ckpt:
+            best_tracker.load_state_dict(ckpt["best_tracker"])
+        logger.info(f"[{label}] ── Resumed from checkpoint at iter {ckpt['iter']}/{total_iters}")
+        _restore_rng_state(ckpt, label)
+
     model.train()
     t0 = time.time()
     logger.info(
@@ -619,7 +838,7 @@ def train_variant_vpinn_engd(
         f"λ_f={lambda_f}  λ_tc={lambda_tc}"
     )
 
-    for it in range(1, total_iters + 1):
+    for it in range(start_iter, total_iters + 1):
         t_batch = sampler_fn()
 
         # ── 1. Compute combined gradient g = λ_f ∇L_f + λ_tc ∇L_ic ──────
@@ -660,10 +879,13 @@ def train_variant_vpinn_engd(
         flat0 = flat_params(model)
         set_flat_params(model, flat0 - step_size * delta)
 
+        last_loss = loss.item()
+        best_tracker.update(model, last_loss, it)
+
         if it % log_every == 0 or it == 1:
             total_norm = g_total.norm().item()
             dx_rms, d2x_rms = _compute_deriv_norms(model)
-            history["loss"].append(loss.item())
+            history["loss"].append(last_loss)
             history["loss_f"].append(lf_val.item())
             history["loss_tc"].append(ltc_val.item())
             history["grad_norm"].append(total_norm)
@@ -673,14 +895,696 @@ def train_variant_vpinn_engd(
             history["d2x_rms"].append(d2x_rms)
             logger.info(
                 f"[{label}] iter {it:>5d}/{total_iters}  "
-                f"loss={loss.item():.4e}  Lf={lf_val.item():.4e}  L_ic={ltc_val.item():.4e}  "
+                f"loss={last_loss:.4e}  Lf={lf_val.item():.4e}  L_ic={ltc_val.item():.4e}  "
                 f"alpha={step_size:.2e}  |g|={total_norm:.2e}  "
                 f"dx_rms(τ={_DERIV_TAU_PROBES[0]:.2f})={dx_rms[0]:.2e}  "
                 f"({time.time()-t0:.1f}s)"
             )
 
+        if checkpoint_path is not None and it % save_every == 0:
+            torch.save({"iter": it, "model_state": model.state_dict(),
+                        "history": history,
+                        "best_tracker": best_tracker.state_dict(),
+                        **_capture_rng_state()}, checkpoint_path)
+
+    if best_tracker.restore(model):
+        logger.info(
+            f"[{label}] Restored best model from iter {best_tracker.best_iter} "
+            f"(loss={best_tracker.best_loss:.4e}; last iter loss was {last_loss:.4e})"
+        )
     model.eval()
     logger.info(f"[{label}] Training done in {time.time()-t0:.1f}s")
+    return history
+
+
+def _strong_residuals_logS(
+    params_dict: dict,
+    model: torch.nn.Module,
+    x_batch: torch.Tensor,
+    t_batch: torch.Tensor,
+) -> torch.Tensor:
+    """Strong-form BSM PDE residuals F[V](x_i, t_i) for the Gram-matrix Jacobian.
+
+    F[V] = dV/dt + σ²/2 d²V/dx² + μ dV/dx - r V   (constant-coefficient BSM in log-S)
+
+    Uses ``torch.func`` primitives so that ``measurement_jacobian`` (which calls
+    ``jacrev`` over params_dict) can differentiate through this function.
+    Second derivatives in x are computed via nested ``func_grad`` (reverse-over-reverse).
+    """
+    from torch.func import vmap, grad as func_grad, functional_call as fc
+
+    sigma_, mu_, r_ = sigma, r - 0.5 * sigma**2, r
+
+    def V_fn(x_val: torch.Tensor, t_val: torch.Tensor) -> torch.Tensor:
+        inp = torch.stack([x_val, t_val]).unsqueeze(0)  # [x, t] convention
+        return fc(model, params_dict, inp).squeeze()
+
+    def residual_at(x_val: torch.Tensor, t_val: torch.Tensor) -> torch.Tensor:
+        V       = V_fn(x_val, t_val)
+        dV_dt   = func_grad(lambda tv: V_fn(x_val, tv))(t_val)
+        dV_dx_fn = func_grad(lambda xv: V_fn(xv, t_val))
+        dV_dx   = dV_dx_fn(x_val)
+        d2V_dx2 = func_grad(dV_dx_fn)(x_val)
+        return dV_dt + 0.5 * sigma_**2 * d2V_dx2 + mu_ * dV_dx - r_ * V
+
+    return vmap(residual_at)(x_batch, t_batch)  # (N,)
+
+
+def _terminal_values_logS(
+    params_dict: dict,
+    model: torch.nn.Module,
+    x_tc: torch.Tensor,
+    t_tc: torch.Tensor,
+) -> torch.Tensor:
+    """Network output at terminal-condition points V_θ(x_i, T). Shape: (N_tc,).
+
+    Used to build the terminal-condition Jacobian J_TC for the ENGD Gram matrix.
+    Model input convention: [x, t] (spatial first, time second).
+    """
+    from torch.func import functional_call as fc
+    inp = torch.stack([x_tc, t_tc], dim=1)  # (N_tc, 2)
+    return fc(model, params_dict, inp).squeeze(1)  # (N_tc,)
+
+
+def train_variant_engd(
+    model: torch.nn.Module,
+    total_iters: int,
+    sampler_fn,   # kept for API compatibility; not used (fixed deterministic grid)
+    payoff_fn,
+    label: str = "engd",
+    log_every: int | None = None,
+    n_grid: int = 30,       # N for (N-2)^2 interior × (N-1) terminal grid
+    n_tc_grid: int | None = None,  # override # of terminal pts (default: n_grid-1)
+    n_ls_steps: int = 30,   # halving steps in line search
+    tikhonov_rel: float = 1e-6,  # Tikhonov reg as fraction of ||G||_op (0 disables)
+    lam_f_override: float | None = None,
+    lam_tc_override: float | None = None,
+    preconditioner_mode: str = "joint",   # "joint" | "alt" — G uses both Jacobians or alternates
+    checkpoint_path: Path | None = None,
+    resume: bool = False,
+    save_every: int = 50,
+) -> dict:
+    """Strong-form PINN training with paper-faithful ENGD (lstsq + fixed grid).
+
+    Follows Zeinhofer et al. (ICML 2023) closely:
+    - Fixed deterministic grid: (n_grid-2)^2 interior + (n_grid-1) terminal points
+    - jacfwd Jacobian for interior (M >> n_params regime)
+    - jacrev Jacobian for terminal condition (N_tc < n_params)
+    - Gram G = (λ_f/N_int) J_F^T J_F + (λ_tc/N_tc) J_TC^T J_TC
+    - Tikhonov regularisation ε‖G‖₂ I (default 1e-6, paper uses 0)
+    - Natural gradient direction δ = lstsq(G + ε‖G‖₂ I, g) via SVD pseudoinverse
+    - Grid line search with halving step sizes on the same fixed grid
+
+    Requires a small network so that N_int >> n_params (paper regime).
+    Use ``_build_engd_pinn()`` (129 params) with n_grid=30 (784 interior).
+
+    Diagnostics (logged at every ``log_every`` step):
+    - ``cond(G)`` — Gram condition number (largest / smallest positive eigenvalue)
+    - ``|δ|``      — natural-gradient direction norm
+    - ``cos(g,δ)`` — cosine angle between ordinary and natural gradient
+    """
+    if log_every is None:
+        log_every = p3._adaptive_log_every(total_iters)
+    device = p3.DEVICE
+    model.to(device)
+
+    # ── Fixed deterministic grids ────────────────────────────────────────────
+    x_all     = torch.linspace(X_LO, X_HI, n_grid, device=device)
+    t_all     = torch.linspace(0.0,  T,     n_grid, device=device)
+    x_int_1d  = x_all[1:-1]                            # (n_grid-2,)
+    t_int_1d  = t_all[1:-1]                            # (n_grid-2,)
+    grid_int  = torch.cartesian_prod(x_int_1d, t_int_1d)   # ((n_grid-2)^2, 2)
+    x_int     = grid_int[:, 0].contiguous()            # (N_int,)
+    t_int     = grid_int[:, 1].contiguous()            # (N_int,)
+    if n_tc_grid is not None:
+        x_tc  = torch.linspace(X_LO, X_HI, n_tc_grid, device=device)
+    else:
+        x_tc  = x_all[:-1]                             # (n_grid-1,)
+    t_tc      = torch.full((x_tc.shape[0],), T, device=device)
+    N_int     = x_int.shape[0]
+    N_tc      = x_tc.shape[0]
+    lam_f     = p3.LAMBDA_F  if lam_f_override  is None else float(lam_f_override)
+    lam_tc    = p3.LAMBDA_TC if lam_tc_override is None else float(lam_tc_override)
+
+    history: dict = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [],
+                     "grad_norm": [], "lr": [], "dx_rms": [], "d2x_rms": [],
+                     "cond_G": [], "delta_norm": [], "cos_g_delta": [],
+                     "lam_max_G": [], "lam_min_G": [], "J_F_norm": [], "J_TC_norm": []}
+    best_tracker = BestModelTracker()
+    last_loss = float("nan")
+    start_iter = 1
+    if resume and checkpoint_path is not None and Path(checkpoint_path).exists():
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_state"])
+        start_iter = ckpt["iter"] + 1
+        history    = ckpt["history"]
+        if "best_tracker" in ckpt:
+            best_tracker.load_state_dict(ckpt["best_tracker"])
+        logger.info(f"[{label}] ── Resumed from checkpoint at iter {ckpt['iter']}/{total_iters}")
+        _restore_rng_state(ckpt, label)
+
+    model.train()
+    t0 = time.time()
+    n_params = sum(p.numel() for p in model.parameters())
+    logger.info(
+        f"[{label}] Strong-form ENGD (lstsq, fixed grid)  "
+        f"n_grid={n_grid}  N_int={N_int}  N_tc={N_tc}  n_params={n_params}  "
+        f"M/n_params={N_int/n_params:.1f}  λ_f={lam_f}  λ_tc={lam_tc}  "
+        f"tikhonov_rel={tikhonov_rel:.0e}"
+    )
+
+    for it in range(start_iter, total_iters + 1):
+        # ── 1. Full gradient on fixed grid ───────────────────────────────────
+        model.zero_grad()
+        x_f_in = x_int.detach().requires_grad_(True)
+        t_f_in = t_int.detach().requires_grad_(True)
+        V_int_ = model(torch.stack([x_f_in, t_f_in], dim=1)).squeeze()
+        F_int  = bsm_operator_logS(V_int_, x_f_in, t_f_in, r, sigma)
+        loss_f = F_int.pow(2).mean()
+
+        V_tc_  = model(torch.stack([x_tc, t_tc], dim=1)).squeeze()
+        phi_tc = payoff_fn(x_tc).detach()
+        loss_tc = (V_tc_ - phi_tc).pow(2).mean()
+
+        loss = lam_f * loss_f + lam_tc * loss_tc
+        loss.backward()
+        g_total = flat_grad(model)
+
+        # ── 2. Interior Jacobian via jacfwd (N_int >> n_params) ──────────────
+        params_snap = {k: v.detach().clone() for k, v in model.named_parameters()}
+        J_F = measurement_jacobian_fwd(
+            _strong_residuals_logS,
+            params_snap, model,
+            x_int.detach(), t_int.detach(),
+        )  # (N_int, n_params)
+
+        # ── 3. Terminal Jacobian via jacrev (N_tc < n_params) ────────────────
+        J_TC = measurement_jacobian(
+            _terminal_values_logS,
+            params_snap, model,
+            x_tc.detach(), t_tc.detach(),
+        )  # (N_tc, n_params)
+
+        # ── 4. Gram: joint (default) or alternating preconditioner ──────────
+        G_F  = (lam_f  / N_int) * (J_F.T  @ J_F)
+        G_TC = (lam_tc / N_tc ) * (J_TC.T @ J_TC)
+        if preconditioner_mode == "joint":
+            G = G_F + G_TC
+            precond_tag = "J"
+        elif preconditioner_mode == "alt":
+            # Even (1-indexed) → use J_F only; odd → use J_TC only.
+            if (it - 1) % 2 == 0:
+                G = G_F
+                precond_tag = "F"
+            else:
+                G = G_TC
+                precond_tag = "T"
+        else:
+            raise ValueError(f"Unknown preconditioner_mode: {preconditioner_mode!r}")
+
+        # ── 5. Natural gradient via lstsq with Tikhonov ε‖G‖₂ I ──────────────
+        # gelsd (SVD) is CPU-only; Gram is small (n_params × n_params) so the
+        # host round-trip is negligible.  Tikhonov bounds the amplification of
+        # gradient components along small-eigenvalue directions of G —
+        # essential when the gradient is dominated by terms that the Gram
+        # cannot resolve well (e.g. terminal-condition residuals here).
+        G_cpu = G.cpu()
+        if tikhonov_rel > 0:
+            G_op_norm = torch.linalg.matrix_norm(G_cpu, ord=2)
+            G_solve = G_cpu + (tikhonov_rel * G_op_norm) * torch.eye(
+                G_cpu.shape[0], dtype=G_cpu.dtype
+            )
+        else:
+            G_solve = G_cpu
+        delta = torch.linalg.lstsq(
+            G_solve, g_total.cpu().unsqueeze(1), driver="gelsd"
+        ).solution.squeeze(1).to(device)
+
+        # ── 6. Grid line search on fixed grid ────────────────────────────────
+        def _loss_fn():
+            xf_ = x_int.detach().requires_grad_(True)
+            tf_ = t_int.detach().requires_grad_(True)
+            V_ = model(torch.stack([xf_, tf_], dim=1)).squeeze()
+            F_ = bsm_operator_logS(V_, xf_, tf_, r, sigma)
+            lf_ = F_.pow(2).mean()
+            V_tc__ = model(torch.stack([x_tc, t_tc], dim=1)).squeeze()
+            ltc_   = (V_tc__ - phi_tc).pow(2).mean()
+            return lam_f * lf_ + lam_tc * ltc_
+
+        step_size = grid_line_search(model, _loss_fn, delta, n_steps=n_ls_steps, step_max=1.0)
+        flat0 = flat_params(model)
+        set_flat_params(model, flat0 - step_size * delta)
+
+        last_loss = loss.item()
+        best_tracker.update(model, last_loss, it)
+
+        if it % log_every == 0 or it == 1:
+            total_norm = g_total.norm().item()
+            dx_rms, d2x_rms = _compute_deriv_norms(model)
+            # Diagnostics: spectrum of G (pre-Tikhonov), |δ|, angle(g, δ),
+            # and the *residual recovery ratio* ρ — fraction of the stacked
+            # residual ‖r_full‖² that lies in col(J_full).  ρ → 1 means a single
+            # Gauss-Newton step can zero out the residual (good representability);
+            # ρ ≪ 1 means the residual has an irreducible component perpendicular
+            # to col(J_full) — no parameter update can fix it.
+            with torch.no_grad():
+                eigs = torch.linalg.eigvalsh(G_cpu)
+                lam_max = float(eigs[-1].item())
+                pos = eigs[eigs > 0]
+                lam_min_pos = float(pos.min().item()) if pos.numel() > 0 else 0.0
+                cond_G = lam_max / lam_min_pos if lam_min_pos > 0 else float("inf")
+                delta_norm = float(delta.norm().item())
+                g_norm = total_norm
+                denom = g_norm * delta_norm + 1e-30
+                cos_g_delta = float((g_total @ delta).item() / denom)
+                JF_norm  = float(J_F.norm().item())
+                JTC_norm = float(J_TC.norm().item())
+
+                # Residual recovery ratio ρ — solves an independent GN system
+                # using the *joint* J_full irrespective of preconditioner_mode.
+                a_sq = lam_f  / N_int
+                b_sq = lam_tc / N_tc
+                F_det     = F_int.detach()
+                r_tc_det  = V_tc_.detach() - phi_tc
+                r_sq      = float(a_sq * (F_det @ F_det).item()
+                                  + b_sq * (r_tc_det @ r_tc_det).item())
+                JTr       = a_sq * (J_F.T @ F_det) + b_sq * (J_TC.T @ r_tc_det)
+                G_joint   = G_F + G_TC
+                G_joint_c = G_joint.cpu()
+                G_joint_r = G_joint_c + (
+                    max(tikhonov_rel, 1e-10)
+                    * torch.linalg.matrix_norm(G_joint_c, ord=2)
+                ) * torch.eye(G_joint_c.shape[0], dtype=G_joint_c.dtype)
+                proj_coef = torch.linalg.lstsq(
+                    G_joint_r, JTr.cpu().unsqueeze(1), driver="gelsd"
+                ).solution.squeeze(1)
+                proj_sq   = float((JTr.cpu() @ proj_coef).item())
+                rho       = proj_sq / r_sq if r_sq > 1e-30 else float("nan")
+            history["loss"].append(loss.item())
+            history["loss_f"].append(loss_f.item())
+            history["loss_tc"].append(loss_tc.item())
+            history["grad_norm"].append(total_norm)
+            history["lr"].append(float(step_size))
+            history["iter"].append(it)
+            history["dx_rms"].append(dx_rms)
+            history["d2x_rms"].append(d2x_rms)
+            history["cond_G"].append(cond_G)
+            history["delta_norm"].append(delta_norm)
+            history["cos_g_delta"].append(cos_g_delta)
+            history["lam_max_G"].append(lam_max)
+            history["lam_min_G"].append(lam_min_pos)
+            history["J_F_norm"].append(JF_norm)
+            history["J_TC_norm"].append(JTC_norm)
+            history.setdefault("rho_recovery", []).append(rho)
+            logger.info(
+                f"[{label}] iter {it:>5d}/{total_iters}  G={precond_tag}  "
+                f"loss={loss.item():.4e}  Lf={loss_f.item():.4e}  "
+                f"Ltc={loss_tc.item():.4e}  "
+                f"alpha={step_size:.2e}  |g|={g_norm:.2e}  |δ|={delta_norm:.2e}  "
+                f"cos(g,δ)={cos_g_delta:+.3f}  ρ={rho:.4f}  "
+                f"cond(G)={cond_G:.2e}  "
+                f"|J_F|={JF_norm:.2e}  |J_TC|={JTC_norm:.2e}  "
+                f"({time.time()-t0:.1f}s)"
+            )
+
+        if checkpoint_path is not None and it % save_every == 0:
+            torch.save({"iter": it, "model_state": model.state_dict(),
+                        "history": history,
+                        "best_tracker": best_tracker.state_dict(),
+                        **_capture_rng_state()}, checkpoint_path)
+
+    if best_tracker.restore(model):
+        logger.info(
+            f"[{label}] Restored best model from iter {best_tracker.best_iter} "
+            f"(loss={best_tracker.best_loss:.4e}; last iter loss was {last_loss:.4e})"
+        )
+    model.eval()
+    logger.info(f"[{label}] Training done in {time.time()-t0:.1f}s")
+    return history
+
+
+def train_variant_vpinn_lbfgs(
+    model: torch.nn.Module,
+    vpinn_module: _VPINNLossForwardLogS,
+    total_iters: int,
+    sampler_fn,
+    payoff_fn,
+    label: str = "vpinn_lbfgs",
+    lam_f: float | None = None,
+    log_every: int | None = None,
+    checkpoint_path: Path | None = None,
+    resume: bool = False,
+    save_every: int = 50,
+    stochastic_batch: bool = True,
+) -> dict:
+    """VPINN training with L-BFGS (quasi-Newton, limited-memory Hessian approx.).
+
+    Each outer L-BFGS step may call the closure multiple times for the
+    strong-Wolfe line search.  One 'iteration' here corresponds to one outer
+    L-BFGS step (not one function evaluation).
+
+    Parameters
+    ----------
+    total_iters : int
+        Number of outer L-BFGS steps (each step ≈ 5–20 function evaluations).
+    stochastic_batch : bool
+        If True (default), resample t_batch at every outer step — the objective
+        changes between steps, violating the L-BFGS secant condition and causing
+        curvature history to accumulate stochastic noise.
+        If False, sample t_batch *once* before the loop and reuse it for all
+        outer steps, making the objective deterministic and the curvature
+        estimates consistent.
+    """
+    if log_every is None:
+        log_every = p3._adaptive_log_every(total_iters)
+    model.to(p3.DEVICE)
+    vpinn_module.to(p3.DEVICE)
+    lambda_f  = lam_f if lam_f is not None else p3.LAMBDA_F
+    lambda_tc = p3.LAMBDA_TC
+
+    optimizer = torch.optim.LBFGS(
+        model.parameters(),
+        lr=1.0,
+        max_iter=20,
+        history_size=100,
+        line_search_fn="strong_wolfe",
+        tolerance_grad=1e-7,
+        tolerance_change=1e-9,
+    )
+
+    history: dict = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [],
+                     "grad_norm": [], "lr": [], "dx_rms": [], "d2x_rms": []}
+    best_tracker = BestModelTracker()
+    last_loss = float("nan")
+    start_iter = 1
+    t_batch_fixed: torch.Tensor | None = None
+    if resume and checkpoint_path is not None and Path(checkpoint_path).exists():
+        ckpt = torch.load(checkpoint_path, map_location=p3.DEVICE, weights_only=False)
+        model.load_state_dict(ckpt["model_state"])
+        optimizer.load_state_dict(ckpt["optimizer_state"])
+        start_iter = ckpt["iter"] + 1
+        history    = ckpt["history"]
+        if "best_tracker" in ckpt:
+            best_tracker.load_state_dict(ckpt["best_tracker"])
+        if not stochastic_batch and "t_batch_fixed" in ckpt:
+            # Restore the exact same time points so the objective is identical
+            # to what built the curvature history — secant condition stays valid.
+            t_batch_fixed = ckpt["t_batch_fixed"].to(p3.DEVICE)
+            logger.info(
+                f"[{label}] ── Resumed from checkpoint at iter {ckpt['iter']}/{total_iters} "
+                f"— curvature history + fixed t_batch restored"
+            )
+        else:
+            logger.info(f"[{label}] ── Resumed from checkpoint at iter {ckpt['iter']}/{total_iters}"
+                        " (L-BFGS curvature history restored)")
+        _restore_rng_state(ckpt, label)
+
+    model.train()
+    t0 = time.time()
+    logger.info(
+        f"[{label}] VPINN+LBFGS — lr=1.0  max_iter=20  history=100  "
+        f"line_search=strong_wolfe  λ_f={lambda_f}  λ_tc={lambda_tc}  "
+        f"stochastic_batch={stochastic_batch}"
+    )
+
+    # Fixed batch: sample once (or restore from checkpoint), reuse for all outer
+    # steps so the objective is deterministic → valid L-BFGS secant condition.
+    if not stochastic_batch and t_batch_fixed is None:
+        t_batch_fixed = sampler_fn()
+    if not stochastic_batch:
+        logger.info(
+            f"[{label}] Fixed t_batch: {len(t_batch_fixed)} time points reused for all steps"  # type: ignore[arg-type]
+        )
+
+    _lf_last, _ltc_last = [0.0], [0.0]
+
+    for it in range(start_iter, total_iters + 1):
+        t_batch = sampler_fn() if stochastic_batch else t_batch_fixed  # type: ignore[assignment]
+
+        # Snapshot params before the step so we can roll back on NaN
+        params_before = flat_params(model).clone()
+
+        def closure():
+            optimizer.zero_grad()
+            loss, lf, ltc = compute_losses_vpinn_logS(
+                model, t_batch, vpinn_module, payoff_fn, lam_f=lam_f
+            )
+            loss.backward()
+            _lf_last[0]  = lf
+            _ltc_last[0] = ltc
+            return loss
+
+        loss = optimizer.step(closure)
+
+        # NaN guard: roll back params AND reset optimizer state (corrupted curvature)
+        if loss is None or not torch.isfinite(torch.tensor(loss.item())):
+            set_flat_params(model, params_before)
+            old_lr = optimizer.param_groups[0]["lr"]
+            new_lr = old_lr * 0.5
+            optimizer.__init__(model.parameters(), lr=new_lr, max_iter=20,
+                               history_size=100, line_search_fn="strong_wolfe",
+                               tolerance_grad=1e-7, tolerance_change=1e-9)
+            logger.warning(f"[{label}] iter {it}: NaN — rolled back + reset optimizer, lr {old_lr:.2e}→{new_lr:.2e}")
+            continue
+
+        last_loss = loss.item() if loss is not None else float("nan")
+        best_tracker.update(model, last_loss, it)
+
+        if it % log_every == 0 or it == 1:
+            total_norm = sum(
+                p.grad.detach().norm(2).item() ** 2
+                for p in model.parameters() if p.grad is not None
+            ) ** 0.5
+            dx_rms, d2x_rms = _compute_deriv_norms(model)
+            loss_val = last_loss
+            history["loss"].append(loss_val)
+            history["loss_f"].append(_lf_last[0])
+            history["loss_tc"].append(_ltc_last[0])
+            history["grad_norm"].append(total_norm)
+            history["lr"].append(1.0)
+            history["iter"].append(it)
+            history["dx_rms"].append(dx_rms)
+            history["d2x_rms"].append(d2x_rms)
+            logger.info(
+                f"[{label}] iter {it:>5d}/{total_iters}  "
+                f"loss={loss_val:.4e}  "
+                f"(λ_f·Lf={lambda_f * _lf_last[0]:.4e}  "
+                f"λ_tc·L_ic={lambda_tc * _ltc_last[0]:.4e})  "
+                f"Lf={_lf_last[0]:.4e}  L_ic={_ltc_last[0]:.4e}  "
+                f"|g|={total_norm:.2e}  "
+                f"dx_rms(τ={_DERIV_TAU_PROBES[0]:.2f})={dx_rms[0]:.2e}  "
+                f"({time.time()-t0:.1f}s)"
+            )
+
+        if checkpoint_path is not None and it % save_every == 0:
+            ckpt_data: dict = {"iter": it, "model_state": model.state_dict(),
+                               "optimizer_state": optimizer.state_dict(),
+                               "history": history,
+                               "best_tracker": best_tracker.state_dict(),
+                               **_capture_rng_state()}
+            if t_batch_fixed is not None:
+                ckpt_data["t_batch_fixed"] = t_batch_fixed.cpu()
+            torch.save(ckpt_data, checkpoint_path)
+
+    if best_tracker.restore(model):
+        logger.info(
+            f"[{label}] Restored best model from iter {best_tracker.best_iter} "
+            f"(loss={best_tracker.best_loss:.4e}; last iter loss was {last_loss:.4e})"
+        )
+    model.eval()
+    logger.info(f"[{label}] Training done in {time.time()-t0:.1f}s")
+    return history
+
+
+def train_variant_vpinn_lbfgs_epoch(
+    model: torch.nn.Module,
+    vpinn_module: _VPINNLossForwardLogS,
+    total_iters: int,
+    sampler_fn,
+    payoff_fn,
+    label: str = "vpinn_lbfgs_epoch",
+    lam_f: float | None = None,
+    log_every: int | None = None,
+    checkpoint_path: Path | None = None,
+    resume: bool = False,
+    save_every: int = 50,
+    epoch_size: int = 20,
+) -> dict:
+    """VPINN training with L-BFGS par époques à batch fixe.
+
+    Principe : on découpe l'entraînement en époques de ``epoch_size`` steps.
+    Dans chaque époque, ``t_batch`` est tiré une seule fois et gardé fixe.
+    L'historique de courbure de L-BFGS est vidé au début de chaque époque.
+
+    Pourquoi ça résout le problème de la courbure corrompue
+    --------------------------------------------------------
+    L-BFGS estime la courbure via la condition sécante :
+
+        y_k = ∇f(x_{k+1}) − ∇f(x_k)  ≈  H · s_k
+
+    Cette approximation n'est valide que si les deux gradients sont calculés
+    sur le **même objectif** f.  Avec un tirage aléatoire à chaque step, on
+    calcule ∇f_{B_{k+1}}(x_{k+1}) − ∇f_{B_k}(x_k) : ce n'est pas de la
+    courbure, c'est du bruit.  En fixant le batch pendant une époque entière,
+    tous les pairs (s_k, y_k) de l'historique sont cohérents.
+
+    On recharge un nouveau batch à chaque époque pour couvrir l'ensemble
+    du domaine temporel [0, T] — l'intégrale en temps est bien estimée sur
+    la durée totale de l'entraînement.
+
+    Parameters
+    ----------
+    epoch_size : int
+        Nombre de steps L-BFGS par époque.  Doit être ≤ history_size
+        (fixé à epoch_size ici) pour que le buffer se remplisse exactement
+        une fois par époque.  Valeur recommandée : 20.
+    """
+    if log_every is None:
+        log_every = p3._adaptive_log_every(total_iters)
+    model.to(p3.DEVICE)
+    vpinn_module.to(p3.DEVICE)
+    lambda_f  = lam_f if lam_f is not None else p3.LAMBDA_F
+    lambda_tc = p3.LAMBDA_TC
+
+    def _make_optimizer():
+        """Crée un optimizer L-BFGS neuf avec historique vide."""
+        return torch.optim.LBFGS(
+            model.parameters(),
+            lr=1.0,
+            max_iter=20,
+            history_size=epoch_size,   # buffer exactement de la taille d'une époque
+            line_search_fn="strong_wolfe",
+            tolerance_grad=1e-7,
+            tolerance_change=1e-9,
+        )
+
+    optimizer = _make_optimizer()
+
+    history: dict = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [],
+                     "grad_norm": [], "lr": [], "dx_rms": [], "d2x_rms": []}
+    best_tracker = BestModelTracker()
+    last_loss = float("nan")
+    start_iter = 1
+    t_batch: torch.Tensor = sampler_fn()   # current epoch's batch
+    if resume and checkpoint_path is not None and Path(checkpoint_path).exists():
+        ckpt = torch.load(checkpoint_path, map_location=p3.DEVICE, weights_only=False)
+        model.load_state_dict(ckpt["model_state"])
+        optimizer.load_state_dict(ckpt["optimizer_state"])
+        start_iter = ckpt["iter"] + 1
+        history    = ckpt["history"]
+        if "best_tracker" in ckpt:
+            best_tracker.load_state_dict(ckpt["best_tracker"])
+        if "t_batch_epoch" in ckpt:
+            t_batch = ckpt["t_batch_epoch"].to(p3.DEVICE)
+        logger.info(
+            f"[{label}] ── Resumed from checkpoint at iter {ckpt['iter']}/{total_iters} "
+            f"(L-BFGS curvature history + epoch t_batch restored)"
+        )
+        _restore_rng_state(ckpt, label)
+
+    model.train()
+    t0 = time.time()
+    n_epochs_total = math.ceil(total_iters / epoch_size)
+    logger.info(
+        f"[{label}] VPINN + L-BFGS par époques — "
+        f"epoch_size={epoch_size}  history_size={epoch_size}  "
+        f"total_iters={total_iters}  n_époques≈{n_epochs_total}  "
+        f"lr=1.0  line_search=strong_wolfe  λ_f={lambda_f}  λ_tc={lambda_tc}"
+    )
+
+    _lf_last, _ltc_last = [0.0], [0.0]
+    current_epoch = (start_iter - 1) // epoch_size
+
+    for it in range(start_iter, total_iters + 1):
+        # ── Début d'une nouvelle époque ────────────────────────────────────
+        new_epoch = (it - 1) // epoch_size
+        if new_epoch != current_epoch:
+            current_epoch = new_epoch
+            # Nouveau tirage : on voit une nouvelle portion de [0,T]
+            t_batch = sampler_fn()
+            # On vide l'historique de courbure : les pairs (s,y) de l'époque
+            # précédente ne sont plus valides pour le nouvel objectif f_{t_batch}
+            optimizer = _make_optimizer()
+            logger.info(
+                f"[{label}] ── Époque {current_epoch + 1}/{n_epochs_total} "
+                f"(iter {it}) : nouveau t_batch, historique L-BFGS réinitialisé"
+            )
+
+        # Snapshot des paramètres pour pouvoir revenir arrière en cas de NaN
+        params_before = flat_params(model).clone()
+
+        def closure():
+            optimizer.zero_grad()
+            loss, lf, ltc = compute_losses_vpinn_logS(
+                model, t_batch, vpinn_module, payoff_fn, lam_f=lam_f
+            )
+            loss.backward()
+            _lf_last[0]  = lf
+            _ltc_last[0] = ltc
+            return loss
+
+        loss = optimizer.step(closure)
+
+        # NaN guard: roll back parameters and force a new epoch
+        if loss is None or not torch.isfinite(torch.tensor(loss.item())):
+            set_flat_params(model, params_before)
+            logger.warning(
+                f"[{label}] iter {it}: NaN detected — rolling back + "
+                f"forcing a new epoch at next step"
+            )
+            current_epoch = -1
+            continue
+
+        last_loss = loss.item()
+        best_tracker.update(model, last_loss, it)
+
+        if it % log_every == 0 or it == 1:
+            total_norm = sum(
+                p.grad.detach().norm(2).item() ** 2
+                for p in model.parameters() if p.grad is not None
+            ) ** 0.5
+            dx_rms, d2x_rms = _compute_deriv_norms(model)
+            loss_val = last_loss
+            history["loss"].append(loss_val)
+            history["loss_f"].append(_lf_last[0])
+            history["loss_tc"].append(_ltc_last[0])
+            history["grad_norm"].append(total_norm)
+            history["lr"].append(1.0)
+            history["iter"].append(it)
+            history["dx_rms"].append(dx_rms)
+            history["d2x_rms"].append(d2x_rms)
+            logger.info(
+                f"[{label}] iter {it:>5d}/{total_iters}  époque {current_epoch + 1}/{n_epochs_total}  "
+                f"loss={loss_val:.4e}  "
+                f"(λ_f·Lf={lambda_f * _lf_last[0]:.4e}  "
+                f"λ_tc·L_ic={lambda_tc * _ltc_last[0]:.4e})  "
+                f"Lf={_lf_last[0]:.4e}  L_ic={_ltc_last[0]:.4e}  "
+                f"|g|={total_norm:.2e}  "
+                f"dx_rms(τ={_DERIV_TAU_PROBES[0]:.2f})={dx_rms[0]:.2e}  "
+                f"({time.time()-t0:.1f}s)"
+            )
+
+        if checkpoint_path is not None and it % save_every == 0:
+            torch.save({
+                "iter": it,
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "t_batch_epoch": t_batch.cpu(),
+                "history": history,
+                "best_tracker": best_tracker.state_dict(),
+                **_capture_rng_state(),
+            }, checkpoint_path)
+
+    if best_tracker.restore(model):
+        logger.info(
+            f"[{label}] Restored best model from iter {best_tracker.best_iter} "
+            f"(loss={best_tracker.best_loss:.4e}; last iter loss was {last_loss:.4e})"
+        )
+    model.eval()
+    logger.info(
+        f"[{label}] Training done in {time.time()-t0:.1f}s  "
+        f"({n_epochs_total} epochs of {epoch_size} steps)"
+    )
     return history
 
 
@@ -905,6 +1809,17 @@ def _compute_gt_slices(model: torch.nn.Module) -> dict:
 # Persistence  (identical structure to ablation_singularity.py)
 # ---------------------------------------------------------------------------
 
+def _to_mpl_ls(ls):
+    """Convert nested list linestyle to matplotlib tuple (recursive).
+
+    matplotlib requires ``(offset, (on, off, ...))`` tuples for complex dash
+    patterns.  YAML ``safe_load`` and Python list literals both produce lists,
+    so we normalise to tuples here before passing to any plotting call.
+    """
+    if isinstance(ls, list):
+        return tuple(_to_mpl_ls(x) if isinstance(x, list) else x for x in ls)
+    return ls
+
 def _save_variant(res: dict, vdir: Path) -> None:
     hist = res["hist"]
     np.savez_compressed(vdir / "hist.npz", **{k: np.array(v) for k, v in hist.items()})
@@ -943,12 +1858,6 @@ def _load_variant(vdir: Path, summary_entry: dict) -> dict:
     if gt_path.exists():
         g = np.load(gt_path)
         gt_slices = {k: g[k] for k in g.files}
-    # Matplotlib needs tuples for complex linestyles; YAML safe_load produces lists.
-    def _to_mpl_ls(ls):
-        if isinstance(ls, list):
-            return tuple(_to_mpl_ls(x) if isinstance(x, list) else x for x in ls)
-        return ls
-
     return {
         **summary_entry,
         "linestyle": _to_mpl_ls(summary_entry.get("linestyle", "-")),
@@ -1097,6 +2006,17 @@ def _build_variants(mode: str) -> list[dict]:
                  # eps=0.0: no temporal truncation — train on full [0,T] including singularity
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
                  color="tab:red", linestyle=":", linewidth=2.0),
+            dict(name="vpinn_50k", label="VPINN — Adam 50k iters (long run)",
+                 sampler_type="vpinn", payoff_type="exact",
+                 eps=0.0, beta=None, sigma_is=None, mix=0.0,
+                 n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
+                 # iters_override : force 50 000 iters Adam, ignore --iters et max_iters.
+                 # À 20k iters la pente log-log de la loss est ~-2.8 → encore en
+                 # descente rapide.  Adam préserve mieux la singularité du γ près de
+                 # τ=0 que L-BFGS (effet de moyennage stochastique + pas de
+                 # lissage par optimisation précise).
+                 iters_override=50000,
+                 color="darkred", linestyle=(0, (5, 1, 1, 1, 1, 1)), linewidth=2.5),
             dict(name="vpinn_engd", label="VPINN + ENGD (nat. grad.)",
                  sampler_type="vpinn_engd", payoff_type="exact",
                  eps=0.0, beta=None, sigma_is=None, mix=0.0,
@@ -1105,6 +2025,41 @@ def _build_variants(mode: str) -> list[dict]:
                  #   1000 natural-gradient steps ≈ 20k Adam steps wall-clock.
                  max_iters=1000,
                  color="tab:purple", linestyle=[0, [3, 2, 1, 2]], linewidth=2.0),
+            dict(name="engd", label="Strong-form + ENGD (paper-faithful, lstsq)",
+                 sampler_type="engd", payoff_type="exact",
+                 eps=0.0, beta=None, sigma_is=None, mix=0.0,
+                 # Paper-faithful: small network (129 params), fixed (N-2)^2=784
+                 # interior + N-1=29 terminal points, lstsq solve (no Tikhonov).
+                 # M/n_params ≈ 6 — same regime as Zeinhofer et al. ICML 2023.
+                 n_grid=30,
+                 tikhonov_rel=1e-6,
+                 max_iters=1000,
+                 color="tab:brown", linestyle=[0, [5, 2]], linewidth=2.0),
+            # Note: two failed variants explored during diagnostics —
+            #   `engd_tc_dense` (N_tc=200 vs 29)        : marginal, same trap
+            #   `engd_alt` (alternating G_F / G_TC)     : never reaches J^T r=0
+            # Documented in documents/methodology/engd_singularity_diagnostic.md
+            # and removed from the catalog.
+            dict(name="vpinn_lbfgs", label="VPINN + L-BFGS (stoch. batch)",
+                 sampler_type="vpinn_lbfgs", payoff_type="exact",
+                 eps=0.0, beta=None, sigma_is=None, mix=0.0,
+                 n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
+                 # One outer L-BFGS step ≈ 2–3s on GPU → cap at 1000 steps ≈ 15 min on GPU.
+                 # Loss à iter 500 = 0.040 et descend encore (|g|=1.7) → 1000 steps offre
+                 # ~30% de gain supplémentaire sans plateau visible.
+                 max_iters=1000,
+                 color="tab:pink", linestyle=[0, [1, 1]], linewidth=2.0),
+            dict(name="vpinn_lbfgs_is_tau",
+                 label=r"VPINN + L-BFGS (échant. biaisé $\tau\to 0$, $\alpha=0.3$)",
+                 sampler_type="vpinn_lbfgs_is_tau", payoff_type="exact",
+                 eps=0.001 * T, beta=None, sigma_is=None, mix=0.0,
+                 n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
+                 # τ = T·U^(1/0.3) avec U~U(0,1) — concentre les points près de
+                 # la singularité en maturité. Estimateur biaisé volontairement
+                 # (pas de correction IS) pour donner plus de poids au γ près de τ=0.
+                 is_tau_alpha=0.3,
+                 max_iters=1000,
+                 color="tab:cyan", linestyle=[0, [3, 1, 1, 1]], linewidth=2.0),
         ]
 
     if mode == "ablation-eps":
@@ -1153,7 +2108,7 @@ def _build_variants(mode: str) -> list[dict]:
 
 def _build_sampler(cfg: dict, n_f: int, n_tc: int):
     t = cfg["sampler_type"]
-    if t == "naive":
+    if t in ("naive", "engd"):
         return make_sampler_naive_logS(n_f, n_tc)
     if t == "truncated":
         return make_sampler_truncated_logS(n_f, n_tc, eps=cfg["eps"])
@@ -1161,9 +2116,16 @@ def _build_sampler(cfg: dict, n_f: int, n_tc: int):
         return make_sampler_importance_logS(n_f, n_tc,
                                             sigma_is=cfg["sigma_is"],
                                             mix=cfg["mix"], eps=cfg["eps"])
-    if t in ("vpinn", "vpinn_engd"):
+    if t in ("vpinn", "vpinn_engd", "vpinn_lbfgs", "vpinn_lbfgs_epoch"):
         return make_sampler_vpinn_logS(cfg.get("n_tau", 512),
                                        eps=cfg.get("eps", 0.01 * T))
+    if t == "vpinn_lbfgs_is_tau":
+        # Échantillonnage biaisé τ → 0 pour mieux résoudre le γ près de la maturité
+        return make_sampler_vpinn_logS_is_tau(
+            cfg.get("n_tau", 512),
+            alpha=cfg.get("is_tau_alpha", 0.3),
+            eps=cfg.get("eps", 0.001 * T),
+        )
     raise ValueError(f"Unknown sampler_type: {t!r}")
 
 
@@ -1178,6 +2140,21 @@ def _build_payoff(cfg: dict):
 def _build_pinn() -> PINN:
     # No InputNormalization — x = ln(S) is already well-scaled
     return PINN(resnet=ResNet(d_in=2, d_out=1, n=50, M=4, L=2))
+
+
+def _build_engd_pinn(hidden: int = 32) -> torch.nn.Module:
+    """Small MLP [2 → hidden → 1] with Tanh activation — paper-faithful ENGD network.
+
+    Linear(2, hidden) → Tanh → Linear(hidden, 1)
+    With hidden=32: 2×32 + 32 + 32×1 + 1 = 129 parameters.
+    This matches the architecture in Zeinhofer et al. (ICML 2023) and ensures
+    N_int >> n_params (784 >> 129) so that lstsq gives a well-determined solution.
+    """
+    return torch.nn.Sequential(
+        torch.nn.Linear(2, hidden),
+        torch.nn.Tanh(),
+        torch.nn.Linear(hidden, 1),
+    )
 
 
 def _build_vpinn_loss(cfg: dict) -> _VPINNLossForwardLogS:
@@ -1216,7 +2193,7 @@ def _plot_variant(res: dict, vdir: Path) -> None:
     axes[2].set_xlabel("Iteration"); axes[2].grid(True, alpha=0.3)
     fig.suptitle(f"{label}\n{_SUPTITLE}", fontsize=10)
     fig.tight_layout()
-    _vpinn_like = res.get("sampler_type") in ("vpinn", "vpinn_engd")
+    _vpinn_like = res.get("sampler_type") in ("vpinn", "vpinn_engd", "vpinn_lbfgs", "vpinn_lbfgs_epoch", "vpinn_lbfgs_is_tau")
     lf_formula  = _FORMULA_LF_VPINN if _vpinn_like else _FORMULA_LF
     ltc_formula = _FORMULA_IC_QUAD  if _vpinn_like else _FORMULA_LTC
     _add_formula_box(fig, lf_formula + "\n" + ltc_formula + "\n" + _FORMULA_GRAD,
@@ -1375,7 +2352,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         plt.close(fig)
 
     # Loss Lf
-    has_vpinn = any(r.get("sampler_type") in ("vpinn", "vpinn_engd") for r in results)
+    has_vpinn = any(r.get("sampler_type") in ("vpinn", "vpinn_engd", "vpinn_lbfgs", "vpinn_lbfgs_epoch", "vpinn_lbfgs_is_tau") for r in results)
     fig, ax = plt.subplots(figsize=(10, 6))
     for i, res in enumerate(results):
         ax.semilogy(res["hist"]["iter"], res["hist"]["loss_f"],
@@ -1731,6 +2708,49 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         fig.savefig(comp_dir / "weak_residual_comparison.png", dpi=150)
         plt.close(fig)
 
+    # Comparaison L-BFGS : stochastique vs par époques (quand les deux sont présents)
+    lbfgs_stoch = next((r for r in results if r.get("sampler_type") == "vpinn_lbfgs"), None)
+    lbfgs_epoch = next((r for r in results if r.get("sampler_type") == "vpinn_lbfgs_epoch"), None)
+    if lbfgs_stoch is not None and lbfgs_epoch is not None:
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        for res, ls_label in [
+            (lbfgs_stoch, "L-BFGS stochastique\n(nouveau batch à chaque step)"),
+            (lbfgs_epoch, "L-BFGS par époques\n(même batch pendant 20 steps, puis nouveau tirage)"),
+        ]:
+            kw = dict(color=res["color"], linestyle=res["linestyle"],
+                      linewidth=res["linewidth"], label=ls_label)
+            axes[0].semilogy(res["hist"]["iter"], res["hist"]["loss"],      **kw)
+            axes[1].semilogy(res["hist"]["iter"], res["hist"]["loss_f"],    **kw)
+            axes[2].semilogy(res["hist"]["iter"], res["hist"]["grad_norm"], **kw)
+        for ax, title in [
+            (axes[0], "Perte totale"),
+            (axes[1], r"Perte EDP (forme faible) $\mathcal{L}_f$"),
+            (axes[2], r"Norme du gradient $\|\nabla_\theta\mathcal{L}\|_2$"),
+        ]:
+            ax.set_xlabel("Step L-BFGS (outer)"); ax.set_title(title, fontsize=9)
+            ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+        m_s = lbfgs_stoch["metrics"]; m_e = lbfgs_epoch["metrics"]
+        fig.suptitle(
+            f"L-BFGS : stochastique vs par époques  |  {_SUPTITLE}\n"
+            f"Stochastique : rel_L2={m_s['rel_l2']:.3e}  |  "
+            f"Par époques : rel_L2={m_e['rel_l2']:.3e}",
+            fontsize=9,
+        )
+        fig.tight_layout()
+        _add_formula_box(fig,
+            r"Stochastique : $t_{\rm batch}\sim U(0,T)$ à chaque step "
+            r"— $y_k=\nabla f_{B_{k+1}}(x_{k+1})-\nabla f_{B_k}(x_k)$ mélange deux objectifs "
+            r"(bruit de courbure, instabilités NaN)."
+            "\n"
+            r"Par époques : même $t_{\rm batch}$ pendant $N=20$ steps "
+            r"— $y_k=\nabla f_B(x_{k+1})-\nabla f_B(x_k)$ est une vraie estimation de courbure. "
+            r"Historique vidé à chaque nouvelle époque pour éviter les paires périmées.",
+            bottom_margin=0.16,
+        )
+        fig.savefig(comp_dir / "lbfgs_stoch_vs_epoch.png", dpi=150)
+        plt.close(fig)
+        logger.info("Comparaison L-BFGS sauvegardée → lbfgs_stoch_vs_epoch.png")
+
     _plot_gt_comparison(results, comp_dir)
     logger.info(f"Comparison plots saved to {comp_dir}/")
 
@@ -1824,15 +2844,43 @@ def _plot_gt_comparison(results: list[dict], comp_dir: Path) -> None:
 # Replot
 # ---------------------------------------------------------------------------
 
-def _load_model_for_variant(ablation_dir: Path, variant_name: str) -> torch.nn.Module | None:
-    """Load a saved PINN for a variant; return None if the checkpoint is missing."""
+def _build_model_for_variant(v: dict) -> torch.nn.Module:
+    """Instantiate the correct architecture for a variant config."""
+    if v["sampler_type"] == "engd":
+        return _build_engd_pinn(hidden=v.get("hidden", 32))
+    return _build_pinn()
+
+
+def _load_model_for_variant(ablation_dir: Path, variant_name: str,
+                             v: dict | None = None) -> torch.nn.Module | None:
+    """Load a saved model for a variant; return None if missing OR architecture mismatch.
+
+    Tolerant aux modèles obsolètes laissés par d'anciens runs (architecture
+    Sequential vs PINN actuelle) — émet juste un avertissement et continue,
+    plutôt que de crasher la régénération de tous les graphes.
+    """
     model_path = ablation_dir / f"variant_{variant_name}" / "models" / "pinn.pt"
     if not model_path.exists():
         return None
-    model = _build_pinn()
-    model.load_state_dict(torch.load(model_path, map_location=p3.DEVICE, weights_only=True))
-    model.to(p3.DEVICE)
-    return model
+    state = torch.load(model_path, map_location=p3.DEVICE, weights_only=True)
+    # Try the current architecture first; fall back to legacy engd_pinn if needed
+    candidates = [_build_pinn] if not variant_name.startswith("engd") else [_build_engd_pinn, _build_pinn]
+    if variant_name.startswith("engd"):
+        candidates = [_build_engd_pinn, _build_pinn]
+    for build_fn in candidates:
+        model = build_fn()
+        try:
+            model.load_state_dict(state)
+            model.to(p3.DEVICE)
+            return model
+        except RuntimeError:
+            continue
+    logger.warning(
+        f"⚠ Modèle pinn.pt de '{variant_name}' incompatible avec les architectures "
+        f"connues — variant ignoré pour le recalcul des GT slices (probablement "
+        f"un dossier orphelin d'un run antérieur)."
+    )
+    return None
 
 
 def _replot(ablation_dir: Path) -> None:
@@ -1873,14 +2921,24 @@ def _train_one_variant(
     n_f: int,
     n_tc: int,
     total_iters: int,
+    resume: bool = False,
 ) -> dict:
     """Build, train, evaluate, and save one variant; return the result dict."""
-    # variant config may cap total_iters (e.g. ENGD is expensive per step)
-    # min() ensures smoke tests with small --iters still finish quickly
-    effective_iters = min(v.get("max_iters", total_iters), total_iters)
-    model      = _build_pinn()
+    # Trois sémantiques possibles pour le nombre d'itérations effectif :
+    #   - iters_override : force exactement cette valeur, ignore --iters et max_iters
+    #     → utilisé pour les variants qui ont besoin de plus d'iters que --iters
+    #       (ex. Adam 50k pour mieux capter une singularité)
+    #   - max_iters : cap supérieur, on prend min(max_iters, total_iters)
+    #     → variants chers qui doivent rester sous total_iters (ENGD, L-BFGS)
+    #   - sinon : on suit total_iters (--iters)
+    if "iters_override" in v:
+        effective_iters = v["iters_override"]
+    else:
+        effective_iters = min(v.get("max_iters", total_iters), total_iters)
+    model      = _build_model_for_variant(v)
     sampler_fn = _build_sampler(v, n_f, n_tc)
     payoff_fn  = _build_payoff(v)
+    ckpt_path  = vdir / "checkpoint.pt"
 
     if v["sampler_type"] == "vpinn":
         vpinn_module = _build_vpinn_loss(v)
@@ -1891,7 +2949,36 @@ def _train_one_variant(
         vpinn_module = _build_vpinn_loss(v)
         hist = train_variant_vpinn_engd(model, vpinn_module, effective_iters,
                                         sampler_fn, payoff_fn, v["name"],
-                                        lam_f=v.get("lam_f"))
+                                        lam_f=v.get("lam_f"),
+                                        checkpoint_path=ckpt_path, resume=resume)
+    elif v["sampler_type"] == "engd":
+        hist = train_variant_engd(model, effective_iters,
+                                  sampler_fn, payoff_fn, v["name"],
+                                  n_grid=v.get("n_grid", 30),
+                                  n_tc_grid=v.get("n_tc_grid"),
+                                  tikhonov_rel=v.get("tikhonov_rel", 1e-6),
+                                  lam_f_override=v.get("lam_f_override"),
+                                  lam_tc_override=v.get("lam_tc_override"),
+                                  preconditioner_mode=v.get("preconditioner_mode", "joint"),
+                                  checkpoint_path=ckpt_path, resume=resume)
+    elif v["sampler_type"] in ("vpinn_lbfgs", "vpinn_lbfgs_is_tau"):
+        # Même fonction d'entraînement (L-BFGS stochastique avec NaN-guard) ;
+        # la différence vient du sampler_fn déjà construit en amont (uniforme
+        # vs biaisé τ→0).  Le bénéfice attendu de "is_tau" est sur la qualité
+        # locale du γ près de la maturité, pas sur la procédure d'optimisation.
+        vpinn_module = _build_vpinn_loss(v)
+        hist = train_variant_vpinn_lbfgs(model, vpinn_module, effective_iters,
+                                         sampler_fn, payoff_fn, v["name"],
+                                         lam_f=v.get("lam_f"),
+                                         checkpoint_path=ckpt_path, resume=resume,
+                                         stochastic_batch=True)
+    elif v["sampler_type"] == "vpinn_lbfgs_epoch":
+        vpinn_module = _build_vpinn_loss(v)
+        hist = train_variant_vpinn_lbfgs_epoch(model, vpinn_module, effective_iters,
+                                               sampler_fn, payoff_fn, v["name"],
+                                               lam_f=v.get("lam_f"),
+                                               epoch_size=v.get("epoch_size", 20),
+                                               checkpoint_path=ckpt_path, resume=resume)
     else:
         hist = train_variant(model, effective_iters, sampler_fn, payoff_fn, v["name"])
 
@@ -1899,16 +2986,24 @@ def _train_one_variant(
     gt_slices = _compute_gt_slices(model)
 
     torch.save(model.state_dict(), vdir / "models" / "pinn.pt")
-    res = {**v, "hist": hist, "metrics": metrics, "gt_slices": gt_slices}
+    res = {**v, "linestyle": _to_mpl_ls(v.get("linestyle", "-")),
+           "hist": hist, "metrics": metrics, "gt_slices": gt_slices}
     _save_variant(res, vdir)
     return res
+
+
+def _ls_to_yaml(ls):
+    """Recursively convert tuples → lists so yaml.safe_dump never writes !!python/tuple."""
+    if isinstance(ls, (tuple, list)):
+        return [_ls_to_yaml(x) for x in ls]
+    return ls
 
 
 def _summary_entry(v: dict, metrics: dict) -> dict:
     """Build the summary.yaml entry for one variant."""
     return {
         "name": v["name"], "label": v["label"],
-        "color": v["color"], "linestyle": v["linestyle"], "linewidth": v["linewidth"],
+        "color": v["color"], "linestyle": _ls_to_yaml(v["linestyle"]), "linewidth": v["linewidth"],
         "sampler_type": v["sampler_type"], "payoff_type": v["payoff_type"],
         "eps": v["eps"], "beta": v["beta"], "sigma_is": v["sigma_is"], "mix": v["mix"],
         **{k: val for k, val in metrics.items() if k != "pde_residual_tau"},
@@ -1933,6 +3028,8 @@ def main() -> None:
     parser.add_argument("--add-variant", type=str, default=None,
                         metavar="NAME:DIR",
                         help="Train variant NAME and append results to existing ablation DIR")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from checkpoint.pt in the variant dir (for ENGD/LBFGS)")
     args = parser.parse_args()
 
     # ── Replot only ───────────────────────────────────────────────────────────
@@ -1980,7 +3077,7 @@ def main() -> None:
         logger.info(f"\n{'='*60}\n  Adding variant: {v['name']} — {v['label']}\n{'='*60}")
         logger.info(f"cmdline: {' '.join(sys.argv)}")
 
-        res = _train_one_variant(v, vdir, n_f, n_tc, meta["iters"])
+        res = _train_one_variant(v, vdir, n_f, n_tc, meta["iters"], resume=args.resume)
         _plot_variant(res, vdir)
 
         m = res["metrics"]
@@ -2007,7 +3104,7 @@ def main() -> None:
             summary["variants"].append(new_entry)
             logger.info(f"Appended variant {variant_name!r} to summary.yaml")
         with open(ablation_dir / "summary.yaml", "w") as f:
-            yaml.dump(summary, f, allow_unicode=True)
+            yaml.safe_dump(summary, f, allow_unicode=True)
 
         # Regenerate all comparison plots with the complete variant set
         _replot(ablation_dir)
@@ -2047,7 +3144,7 @@ def main() -> None:
     logger.info(f"output: {ablation_dir}")
 
     with open(ablation_dir / "metadata.yaml", "w") as f:
-        yaml.dump({
+        yaml.safe_dump({
             "cmdline":     sys.argv,
             "mode":        args.mode,
             "iters":       args.iters,
@@ -2081,7 +3178,7 @@ def main() -> None:
         summary_variants.append(_summary_entry(v, m))
 
     with open(ablation_dir / "summary.yaml", "w") as f:
-        yaml.dump({"variants": summary_variants}, f, allow_unicode=True)
+        yaml.safe_dump({"variants": summary_variants}, f, allow_unicode=True)
 
     _plot_comparison(results, ablation_dir, args.iters, args.mode)
     logger.info(f"\nAll done — results in {ablation_dir}")
