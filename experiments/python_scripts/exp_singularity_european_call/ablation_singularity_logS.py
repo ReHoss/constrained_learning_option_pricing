@@ -2505,10 +2505,43 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
     labels     = [r["label"]     for r in results]
     linewidths = [r["linewidth"] for r in results]
 
-    def _savefig(fig, name, formula, bottom=0.10):
+    def _apply_outside_legend(fig):
+        """Replace every per-axis legend with one shared figure-level legend.
+
+        Harvests handles/labels from the first axis with labelled artists,
+        removes all per-axis legends to avoid duplicates, then attaches a
+        single legend on the right of the figure and shrinks the right
+        margin so the plotting area does not overlap it.
+        """
+        handles, labels = [], []
+        for ax in fig.axes:
+            h, lbl = ax.get_legend_handles_labels()
+            if lbl:
+                handles, labels = h, lbl
+                break
+        for ax in fig.axes:
+            leg = ax.get_legend()
+            if leg is not None:
+                leg.remove()
+        if handles:
+            fig.legend(handles, labels,
+                       loc="center left",
+                       bbox_to_anchor=(0.83, 0.5),
+                       fontsize=9, frameon=True)
+            fig.subplots_adjust(right=0.80)
+
+    def _savefig(fig, name, formula, bottom=0.10, legend_outside=False):
+        """Save ``fig`` under ``comp_dir`` with an optional formula box.
+
+        Set ``legend_outside=True`` when several axes share the same set of
+        variants — a per-axis legend is then redundant and crowds the plot
+        area.  See ``_apply_outside_legend``.
+        """
         fig.tight_layout()
+        if legend_outside:
+            _apply_outside_legend(fig)
         _add_formula_box(fig, formula, bottom_margin=bottom)
-        fig.savefig(comp_dir / name, dpi=150)
+        fig.savefig(comp_dir / name, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
     # Loss Lf — split into two rows (strong-form vs weak/VPINN) because the two
@@ -2559,7 +2592,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         r" (different norms). pde_residual_by_tau.png evaluates the same strong-form"
         r" residual on every trained model for a fair comparison.",
     ])
-    _savefig(fig, "loss_pde.png", lf_formula_cmp, bottom=0.20)
+    _savefig(fig, "loss_pde.png", lf_formula_cmp, bottom=0.20, legend_outside=True)
 
     # Gradient norm
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -2571,7 +2604,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
     ax.set_title("Gradient norm — singularity instability signature")
     ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
     fig.suptitle(_SUPTITLE, fontsize=10)
-    _savefig(fig, "grad_norm.png", _FORMULA_GRAD)
+    _savefig(fig, "grad_norm.png", _FORMULA_GRAD, legend_outside=True)
 
     # PDE residual profile — FAIR comparison (strong-form residual, post-training)
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -2589,7 +2622,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
     ax.set_title(pde_title, fontsize=9)
     ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
     fig.suptitle(_SUPTITLE, fontsize=10)
-    _savefig(fig, "pde_residual_by_tau.png", _FORMULA_PDE_TAU)
+    _savefig(fig, "pde_residual_by_tau.png", _FORMULA_PDE_TAU, legend_outside=True)
 
     # Fair-vs-unfair overview (side-by-side panel for quick reference)
     if has_vpinn:
@@ -2630,6 +2663,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
             fontsize=9,
         )
         fig2.tight_layout()
+        _apply_outside_legend(fig2)
         _add_formula_box(fig2,
             "\n".join([
                 r"Left: $\mathcal{L}_f$ during training — "
@@ -2640,7 +2674,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
             ]),
             bottom_margin=0.14,
         )
-        fig2.savefig(comp_dir / "fair_comparison_overview.png", dpi=150)
+        fig2.savefig(comp_dir / "fair_comparison_overview.png", dpi=150, bbox_inches="tight")
         plt.close(fig2)
 
     # Metric bar chart  (3 rows: global metrics / εΔ per τ / εΓ per τ)
@@ -2806,7 +2840,8 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         + " — split into separate rows to keep the comparison fair within each estimator.",
         fontsize=9,
     )
-    _savefig(fig, "loss_tc.png", _FORMULA_LTC + "\n" + _FORMULA_IC_QUAD, bottom=0.22)
+    _savefig(fig, "loss_tc.png", _FORMULA_LTC + "\n" + _FORMULA_IC_QUAD, bottom=0.22,
+             legend_outside=True)
 
     # Derivative norm comparison — aggregated grid: 2 rows (∂_x, ∂_xx) × N_probes cols
     valid_dx = [r for r in results if r["hist"].get("dx_rms")]
@@ -2850,8 +2885,9 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
             fontsize=9,
         )
         fig.tight_layout()
+        _apply_outside_legend(fig)
         _add_formula_box(fig, _FORMULA_DX_NORM, bottom_margin=0.10)
-        fig.savefig(comp_dir / "deriv_norms_comparison.png", dpi=150)
+        fig.savefig(comp_dir / "deriv_norms_comparison.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
 
     # Spatial derivative distribution — ∂_x V̂(x) and ∂_xx V̂(x) vs x at τ probes
@@ -2891,8 +2927,9 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
             fontsize=9,
         )
         fig.tight_layout()
+        _apply_outside_legend(fig)
         _add_formula_box(fig, _FORMULA_DERIV_SPATIAL, bottom_margin=0.13)
-        fig.savefig(comp_dir / "deriv_spatial_comparison.png", dpi=150)
+        fig.savefig(comp_dir / "deriv_spatial_comparison.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
 
     # Weak-form residual profile — fair comparison for all variants
@@ -2918,8 +2955,9 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         ax_weak.set_ylabel(r"$\mathcal{L}_f^{var}$")
         fig.suptitle(r"Residual comparison — strong vs weak form  |  " + _SUPTITLE, fontsize=9)
         fig.tight_layout()
+        _apply_outside_legend(fig)
         _add_formula_box(fig, _FORMULA_WEAK_RES, bottom_margin=0.14)
-        fig.savefig(comp_dir / "weak_residual_comparison.png", dpi=150)
+        fig.savefig(comp_dir / "weak_residual_comparison.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
 
     # L-BFGS comparison: stochastic batch vs epoch-based batch (when both are present)
@@ -2951,6 +2989,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
             fontsize=9,
         )
         fig.tight_layout()
+        _apply_outside_legend(fig)
         _add_formula_box(fig,
             r"Stochastic: $t_{\rm batch}\sim U(0,T)$ at every step "
             r"— $y_k=\nabla f_{B_{k+1}}(x_{k+1})-\nabla f_{B_k}(x_k)$ mixes two objectives "
@@ -2961,7 +3000,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
             r"The L-BFGS history is cleared at each new epoch to avoid stale (s,y) pairs.",
             bottom_margin=0.16,
         )
-        fig.savefig(comp_dir / "lbfgs_stoch_vs_epoch.png", dpi=150)
+        fig.savefig(comp_dir / "lbfgs_stoch_vs_epoch.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
         logger.info("L-BFGS comparison plot saved → lbfgs_stoch_vs_epoch.png")
 
@@ -2979,10 +3018,32 @@ def _plot_gt_comparison(results: list[dict], comp_dir: Path) -> None:
     S_vals     = np.exp(valid[0]["gt_slices"]["x_vals"])
     n_tau      = len(tau_slices)
 
-    def _save(fig, name, formula, bottom=0.12):
+    def _outside_legend(fig):
+        """Same as the helper in _plot_comparison — replace per-axis legends
+        with one figure-level legend on the right of the plotting area."""
+        handles, labels = [], []
+        for ax in fig.axes:
+            h, lbl = ax.get_legend_handles_labels()
+            if lbl:
+                handles, labels = h, lbl
+                break
+        for ax in fig.axes:
+            leg = ax.get_legend()
+            if leg is not None:
+                leg.remove()
+        if handles:
+            fig.legend(handles, labels,
+                       loc="center left",
+                       bbox_to_anchor=(0.83, 0.5),
+                       fontsize=9, frameon=True)
+            fig.subplots_adjust(right=0.80)
+
+    def _save(fig, name, formula, bottom=0.12, legend_outside=True):
         fig.tight_layout()
+        if legend_outside:
+            _outside_legend(fig)
         _add_formula_box(fig, formula, bottom_margin=bottom)
-        fig.savefig(comp_dir / name, dpi=150)
+        fig.savefig(comp_dir / name, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
     # ── Price comparison ──────────────────────────────────────────────────
