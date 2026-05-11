@@ -113,20 +113,22 @@ fi
 echo "  ablation dir: $EXPDIR"
 
 # ── Phase 1b: enumerate variants and write one YAML per variant ─────────────
+# Imports `_ablation_catalogue` directly (not the main script) so that the
+# YAML generation phase does not pay the multi-second torch import on
+# Lustre — `_ablation_catalogue` is intentionally torch-free.
 PATH_FOLDER_CONFIGS="$EXPDIR/configs"
 mkdir -p "$PATH_FOLDER_CONFIGS"
 python - <<PY
 import sys, yaml
 from pathlib import Path
 sys.path.insert(0, "experiments/python_scripts/exp_singularity_european_call")
-sys.path.insert(0, "experiments/python_scripts/exp1")
-import ablation_singularity_logS as als
+import _ablation_catalogue as ac
 mode    = "$MODE"
 expdir  = Path("$EXPDIR")
 out_dir = Path("$PATH_FOLDER_CONFIGS")
 written = []
-for v in als._build_variants(mode):
-    if v["name"] in als._PLOT_EXCLUDED_VARIANTS:
+for v in ac._build_variants(mode):
+    if v["name"] in ac._PLOT_EXCLUDED_VARIANTS:
         continue
     cfg = {
         "mode":         mode,
@@ -136,7 +138,7 @@ for v in als._build_variants(mode):
     }
     (out_dir / f"{v['name']}.yaml").write_text(yaml.safe_dump(cfg))
     written.append(v["name"])
-print(f"Wrote {len(written)} YAML configs:")
+print(f"Wrote {len(written)} YAML configs (torch-free):")
 for n in written:
     print(f"  - {n}")
 PY
