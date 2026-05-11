@@ -715,12 +715,29 @@ def train_variant_vpinn(
     lam_f: float | None = None,
     log_every: int | None = None,
     sampler_gen: torch.Generator | None = None,
+    checkpoint_path: Path | None = None,
+    resume: bool = False,
+    save_every: int = 500,
 ) -> dict:
     """Training loop for the VPINN variant (weak-form PDE loss).
 
-    ``sampler_gen`` is the explicit ``torch.Generator`` driving ``sampler_fn``.
-    Currently unused inside the loop (no checkpointing) but accepted for API
-    uniformity across training functions.
+    Supports checkpoint save / resume to survive interruptions (the laptop
+    closing, an OOM kill, etc.) without losing progress.  The checkpoint
+    captures the full state needed for a faithful resume:
+
+    * model parameters,
+    * Adam optimizer internal state (per-parameter first- and second-moment
+      estimates ``m_t``, ``v_t``),
+    * LR scheduler internal state (``last_epoch`` and friends),
+    * the running ``history`` dict (so the post-resume training curve is
+      continuous),
+    * the ``BestModelTracker`` state (best iter + parameter snapshot so far),
+    * the explicit sampler ``torch.Generator`` state, when provided, plus
+      the global CPU/CUDA RNG states as a fallback.
+
+    ``save_every`` defaults to 500 because a single Adam iter is cheap (~30 ms
+    on GPU) — saving every iter would dominate wall-clock; 500 strikes a good
+    balance.  Adjust if the checkpoint write becomes a bottleneck.
     """
     if log_every is None:
         log_every = p3._adaptive_log_every(total_iters)
@@ -734,6 +751,24 @@ def train_variant_vpinn(
                      "dx_rms": [], "d2x_rms": []}
     best_tracker = BestModelTracker()
     last_loss = float("nan")
+    start_iter = 1
+    if resume and checkpoint_path is not None and Path(checkpoint_path).exists():
+        ckpt = torch.load(checkpoint_path, map_location=p3.DEVICE, weights_only=False)
+        model.load_state_dict(ckpt["model_state"])
+        if "optimizer_state" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state"])
+        if "scheduler_state" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state"])
+        if "history" in ckpt:
+            history = ckpt["history"]
+        if "best_tracker" in ckpt:
+            best_tracker.load_state_dict(ckpt["best_tracker"])
+        start_iter = ckpt["iter"] + 1
+        logger.info(
+            f"[{label}] ── Resumed from checkpoint at iter {ckpt['iter']}/{total_iters} "
+            f"(model + Adam moments + LR scheduler + history + best-tracker restored)"
+        )
+        _restore_rng_state(ckpt, label, sampler_gen=sampler_gen)
     model.train()
     t0 = time.time()
     logger.info(
@@ -741,7 +776,7 @@ def train_variant_vpinn(
         f"with λ_f={lambda_f}, λ_tc={lambda_tc}  (L_ic = variational quadrature IC)"
     )
 
-    for it in range(1, total_iters + 1):
+    for it in range(start_iter, total_iters + 1):
         optimizer.zero_grad()
         t_batch = sampler_fn()
         loss, lf, ltc = compute_losses_vpinn_logS(
@@ -779,6 +814,17 @@ def train_variant_vpinn(
                 f"dx_rms(τ={_DERIV_TAU_PROBES[0]:.2f})={dx_rms[0]:.2e}  "
                 f"({time.time()-t0:.1f}s)"
             )
+
+        if checkpoint_path is not None and it % save_every == 0:
+            torch.save({
+                "iter": it,
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "scheduler_state": scheduler.state_dict(),
+                "history": history,
+                "best_tracker": best_tracker.state_dict(),
+                **_capture_rng_state(sampler_gen=sampler_gen),
+            }, checkpoint_path)
 
     if best_tracker.restore(model):
         logger.info(
@@ -3112,7 +3158,8 @@ def _train_one_variant(
         hist = train_variant_vpinn(model, vpinn_module, effective_iters,
                                    sampler_fn, payoff_fn, v["name"],
                                    lam_f=v.get("lam_f"),
-                                   sampler_gen=sampler_gen)
+                                   sampler_gen=sampler_gen,
+                                   checkpoint_path=ckpt_path, resume=resume)
     elif v["sampler_type"] == "vpinn_engd":
         vpinn_module = _build_vpinn_loss(v)
         hist = train_variant_vpinn_engd(model, vpinn_module, effective_iters,
