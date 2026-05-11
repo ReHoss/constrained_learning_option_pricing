@@ -2158,7 +2158,7 @@ _FORMULA_LF = "\n".join([
 ])
 _FORMULA_LTC = "\n".join([
     r"$\mathcal{L}_{tc} = \frac{1}{N_{tc}}\sum_i(\hat{V}(x_i,T)-\Phi(x_i))^2$   with $x=\ln S$",
-    r"Naïf / trunc.:  $\Phi(x)=(e^x-K)^+$",
+    r"Naive / trunc.:  $\Phi(x)=(e^x-K)^+$",
     r"Smooth:  $\tilde{\Phi}_\beta(x)=\frac{1}{\beta}\ln(1+e^{\beta(e^x-K)})-\frac{\ln 2}{\beta}$",
 ])
 _FORMULA_GRAD = "\n".join([
@@ -2255,7 +2255,7 @@ def _build_variants(mode: str) -> list[dict]:
     # All learned models share linestyle="-" so they form a unified visual group.
     # ──────────────────────────────────────────────────────────────────────────
     naive_cfg = dict(
-        name="naive", label="Naïf (control)",
+        name="naive", label="Naive (control)",
         sampler_type="naive", payoff_type="exact",
         eps=0.0, beta=None, sigma_is=None, mix=0.0,
         color="#0d47a1", linestyle="-", linewidth=2.0,
@@ -2286,10 +2286,10 @@ def _build_variants(mode: str) -> list[dict]:
                  eps=0.0, beta=None, sigma_is=None, mix=0.0,
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
                  # iters_override : force 50 000 iters Adam, ignore --iters et max_iters.
-                 # À 20k iters la pente log-log de la loss est ~-2.8 → encore en
-                 # descente rapide.  Adam préserve mieux la singularité du γ près de
-                 # τ=0 que L-BFGS (effet de moyennage stochastique + pas de
-                 # lissage par optimisation précise).
+                 # At 20k iters the log-log slope of the loss is ~-2.8 → still
+                 # in rapid descent. Adam preserves the γ singularity near τ=0
+                 # better than L-BFGS does (stochastic averaging effect, no
+                 # smoothing by precise optimization).
                  iters_override=50000,
                  color="#e53935", linestyle="-", linewidth=2.0),
             dict(name="vpinn_engd", label="VPINN + ENGD (nat. grad.)",
@@ -2985,9 +2985,9 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
             r"Exact:  $\Phi(x) = (e^x-K)^+$   — discontinuous slope at $x=\ln K$"
             r" (source of the terminal-condition singularity)",
             r"Smooth: $\tilde{\Phi}_\beta(x) = \frac{1}{\beta}\ln(1+e^{\beta(e^x-K)})"
-            r" - \frac{\ln 2}{\beta}$   (softplus, centré en $\tilde{\Phi}_\beta(\ln K)=0$)",
+            r" - \frac{\ln 2}{\beta}$   (softplus, centered at $\tilde{\Phi}_\beta(\ln K)=0$)",
             r"Max error: $\max_x|\tilde{\Phi}_\beta-\Phi| = \frac{\ln 2}{\beta}$"
-            r"   atteint en $x=\ln K$ (ATM)",
+            r"   attained at $x=\ln K$ (ATM)",
         ])
         _savefig(fig, "payoff_comparison.png", _formula_payoff, bottom=0.20)
 
@@ -3329,9 +3329,9 @@ def _load_model_for_variant(ablation_dir: Path, variant_name: str,
                              v: dict | None = None) -> torch.nn.Module | None:
     """Load a saved model for a variant; return None if missing OR architecture mismatch.
 
-    Tolerant aux modèles obsolètes laissés par d'anciens runs (architecture
-    Sequential vs PINN actuelle) — émet juste un avertissement et continue,
-    plutôt que de crasher la régénération de tous les graphes.
+    Tolerant of obsolete models left by old runs (Sequential vs current PINN
+    architecture) — emits a warning and continues, rather than crashing the
+    regeneration of all plots.
     """
     model_path = ablation_dir / f"variant_{variant_name}" / "models" / "pinn.pt"
     if not model_path.exists():
@@ -3350,9 +3350,9 @@ def _load_model_for_variant(ablation_dir: Path, variant_name: str,
         except RuntimeError:
             continue
     logger.warning(
-        f"⚠ Modèle pinn.pt de '{variant_name}' incompatible avec les architectures "
-        f"connues — variant ignoré pour le recalcul des GT slices (probablement "
-        f"un dossier orphelin d'un run antérieur)."
+        f"pinn.pt model of '{variant_name}' is incompatible with known "
+        f"architectures — variant skipped for GT slices recomputation "
+        f"(likely an orphan directory from a prior run)."
     )
     return None
 
