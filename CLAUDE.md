@@ -6,7 +6,7 @@
 - Please update `pyproject.toml` when needed and also the contribution guidelines in `CONTRIBUTING.md`.
 - Document the implementation by updating the markdown files under `documents/methodology/`.
 - In markdown files, please use LaTeX for mathematical expressions.
-- Log as much information as possible in experiments and scripts.
+- Log as much information as possible in experiments and scripts. Concretely, every experiment log file must be self-contained: log at startup the full command line, Python version, PyTorch version, CUDA version and GPU name/memory; log every hyperparameter and variant config key; log the model parameter count and the RNG seeds used. Log a confirmation line each time a checkpoint is saved (with the full path and iteration number). At the end of training, log total wall-clock time, seconds-per-iteration, and the best loss value with the iteration at which it was achieved.
 - the virtual environment is installed here venv/venv_learning_option_pricing
 - Save the run statistics so that plots can be easily updated without re-running the experiments.
 - Please also make sure the metrics are (reasonably) recorded per run so that figure patches can be applied without re-running the experiments
