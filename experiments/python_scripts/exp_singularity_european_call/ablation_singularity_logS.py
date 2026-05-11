@@ -2511,30 +2511,55 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         fig.savefig(comp_dir / name, dpi=150)
         plt.close(fig)
 
-    # Loss Lf
-    has_vpinn = any(r.get("sampler_type") in ("vpinn", "vpinn_engd", "vpinn_lbfgs", "vpinn_lbfgs_epoch", "vpinn_lbfgs_is_tau") for r in results)
-    fig, ax = plt.subplots(figsize=(10, 6))
-    for i, res in enumerate(results):
-        ax.semilogy(res["hist"]["iter"], res["hist"]["loss_f"],
-                    label=labels[i], color=colors[i],
-                    linestyle=linestyles[i], linewidth=linewidths[i])
-    ax.set_xlabel("Iteration"); ax.set_ylabel(r"$\mathcal{L}_f$")
-    lf_title = r"PDE residual loss $\mathcal{L}_f$  ($x=\ln S$)"
-    if has_vpinn:
-        lf_title += ("\n"
-                     r"[!] VPINN $\mathcal{L}_f$ = integrated weak-form residual "
-                     r"— different norm, NOT directly comparable to others")
-    ax.set_title(lf_title, fontsize=9)
-    ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
-    fig.suptitle(_SUPTITLE, fontsize=10)
-    lf_formula_cmp = _FORMULA_LF
-    if has_vpinn:
-        lf_formula_cmp = "\n".join([
-            _FORMULA_LF,
-            r"[!] VPINN uses a weak-form residual integrated over $x$ (different norm)."
-            r"  See pde_residual_by_tau.png for a fair (strong-form) comparison.",
-        ])
-    _savefig(fig, "loss_pde.png", lf_formula_cmp)
+    # Loss Lf — split into two rows (strong-form vs weak/VPINN) because the two
+    # losses live in different norms and are not directly comparable on a shared
+    # axis.  Each row shows only the variants of its formulation; when only one
+    # formulation is present, the figure degenerates to a single row.
+    _vpinn_like_types = ("vpinn", "vpinn_engd", "vpinn_lbfgs",
+                          "vpinn_lbfgs_epoch", "vpinn_lbfgs_is_tau")
+    has_vpinn  = any(r.get("sampler_type") in _vpinn_like_types for r in results)
+    strong_idx = [i for i, r in enumerate(results)
+                  if r.get("sampler_type") not in _vpinn_like_types]
+    weak_idx   = [i for i, r in enumerate(results)
+                  if r.get("sampler_type") in _vpinn_like_types]
+
+    rows = []
+    if strong_idx:
+        rows.append((
+            strong_idx,
+            r"Strong-form PDE residual  $\mathcal{L}_f = \frac{1}{N_f}\sum_i \mathcal{F}[\hat V](x_i,t_i)^2$",
+        ))
+    if weak_idx:
+        rows.append((
+            weak_idx,
+            r"Weak-form PDE residual (VPINN)  $\mathcal{L}_f^{var} = \frac{1}{N_t K}\sum_{i,k} R_{i,k}^2$",
+        ))
+    n_rows = max(len(rows), 1)
+    fig, axes = plt.subplots(n_rows, 1, figsize=(10, 5 * n_rows), squeeze=False)
+    for row, (idx, title) in enumerate(rows):
+        ax = axes[row, 0]
+        for i in idx:
+            res = results[i]
+            ax.semilogy(res["hist"]["iter"], res["hist"]["loss_f"],
+                        label=labels[i], color=colors[i],
+                        linestyle=linestyles[i], linewidth=linewidths[i])
+        ax.set_xlabel("Iteration"); ax.set_ylabel(r"$\mathcal{L}_f$")
+        ax.set_title(title, fontsize=9)
+        ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
+    fig.suptitle(
+        _SUPTITLE
+        + "\nThe two formulations carry DIFFERENT norms and are split into separate rows."
+        + "  See pde_residual_by_tau.png for a single-norm strong-form comparison.",
+        fontsize=9,
+    )
+    lf_formula_cmp = "\n".join([
+        _FORMULA_LF,
+        _FORMULA_LF_VPINN,
+        r"Note: the two formulations are NOT directly comparable on a shared axis"
+        r" (different norms). pde_residual_by_tau.png evaluates the same strong-form"
+        r" residual on every trained model for a fair comparison.",
+    ])
+    _savefig(fig, "loss_pde.png", lf_formula_cmp, bottom=0.20)
 
     # Gradient norm
     fig, ax = plt.subplots(figsize=(10, 6))
