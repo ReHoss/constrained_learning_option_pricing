@@ -180,8 +180,14 @@ _FORMULA_ANSATZ = "\n".join([
 _FORMULA_METRICS = "\n".join([
     r"$\varepsilon_{L^2} = \|\tilde{u}^{(B)}_\theta(\cdot,0) - V^{\mathrm{BT}}(\cdot,0)\|_2\,/\,\|V^{\mathrm{BT}}(\cdot,0)\|_2$  (grid $S\in[60,120]$)",
     r"$\varepsilon_{L^2}^{\mathrm{ATM}}$: same restricted to $S\in[0.9K,\,1.1K]$",
-    r"$\varepsilon_\Delta$: rel.\ $L^2$ of $\partial_S\tilde{u}^{(B)}_\theta(\cdot,0)$ vs $\Delta^{\mathrm{BT}}$ (finite difference of BT prices)",
+    r"$\varepsilon_\Delta$: rel.\ $L^2$ of $\partial_S\tilde{u}^{(B)}_\theta(\cdot,0)$ vs $\Delta^{\mathrm{BT}}$ (first finite difference of BT prices)",
+    r"$\varepsilon_\Gamma$: rel.\ $L^2$ of $\partial_{SS}\tilde{u}^{(B)}_\theta(\cdot,0)$ vs $\Gamma^{\mathrm{BT}}$ (second finite difference of BT prices, noisy near $S=K$)",
     r"$\mathrm{GEI} = \max\|\nabla_\theta\mathcal{L}\| / \mathrm{median}\|\nabla_\theta\mathcal{L}\|$   (first 2/3 of Stage B training)",
+])
+_FORMULA_GREEKS = "\n".join([
+    r"$\Delta(S) = \partial_S V(S, 0)$,  $\Gamma(S) = \partial_{SS} V(S, 0)$  (via autograd)",
+    r"Reference: $\Delta^{\mathrm{BT}} = \nabla_S V^{\mathrm{BT}}$,  $\Gamma^{\mathrm{BT}} = \nabla_S^2 V^{\mathrm{BT}}$  (centred finite differences on the binomial-tree price curve)",
+    r"BT Gamma is noisy near $S=K$ because the early-exercise kink is sharper than the BT grid; treat as a qualitative reference only",
 ])
 _FORMULA_PDE_PROFILE = "\n".join([
     r"$\bar{F}(t) = \frac{1}{N}\sum_{i=1}^{N}|\mathcal{F}[\tilde{u}^{(B)}_\theta](K,\,t)|$   ($N=50$ points at $S=K$ per slice)",
@@ -220,8 +226,12 @@ def compute_metrics_stage_b(
             rel_l2_bt       Relative L2 error vs BT at t=0 (full grid).
             rel_l2_atm      Same restricted to the ATM band |S-K| <= 0.1K.
             rel_l2_delta    Relative L2 of model Delta vs BT finite-diff Delta at t=0.
+            rel_l2_gamma    Relative L2 of model Gamma vs BT finite-diff Gamma at t=0.
             gei             Gradient Explosion Index from Stage B training history.
             pde_residual_t  Dict with keys "t" and "residual" — profile along S=K.
+            greeks          Dict with the per-point Delta/Gamma curves used to
+                            compute the rel_L2 metrics, for diagnostic plotting:
+                            {"s", "nn_delta", "bt_delta", "nn_gamma", "bt_gamma"}.
     """
     device = p3.DEVICE
     model.eval()
@@ -241,7 +251,13 @@ def compute_metrics_stage_b(
         np.linalg.norm(err[atm_mask]) / (np.linalg.norm(bt_prices[atm_mask]) + 1e-10)
     )
 
-    # --- Delta comparison via autograd vs BT finite differences at t=0 ------
+    # --- Delta and Gamma comparison via autograd vs BT finite differences at t=0
+    # Delta = dV/dS  (first autograd pass)
+    # Gamma = d^2V/dS^2  (second autograd pass on the same graph)
+    # References come from one-sided / centred finite differences on the
+    # binomial-tree price curve (np.gradient applied once for Delta, twice
+    # for Gamma).  The Gamma reference is noisy at the kink at S = K, so
+    # we also report it for diagnostic purposes only.
     try:
         s_d = torch.tensor(
             s_eval_arr, dtype=torch.get_default_dtype(), device=device
@@ -249,17 +265,33 @@ def compute_metrics_stage_b(
         t_d = torch.zeros(len(s_eval_arr), device=device, requires_grad=True)
         x_d = torch.stack([s_d, t_d], dim=1)
         V_d = model(x_d).squeeze()
-        (nn_delta,) = torch.autograd.grad(V_d.sum(), s_d, create_graph=False)
+        (nn_delta,) = torch.autograd.grad(V_d.sum(), s_d, create_graph=True)
+        (nn_gamma,) = torch.autograd.grad(nn_delta.sum(), s_d, create_graph=False)
         nn_delta_np = nn_delta.detach().cpu().numpy()
+        nn_gamma_np = nn_gamma.detach().cpu().numpy()
 
         bt_delta_np = np.gradient(bt_prices, s_eval_arr)
+        bt_gamma_np = np.gradient(bt_delta_np, s_eval_arr)
         delta_err   = nn_delta_np - bt_delta_np
+        gamma_err   = nn_gamma_np - bt_gamma_np
         rel_l2_delta = float(
             np.linalg.norm(delta_err) / (np.linalg.norm(bt_delta_np) + 1e-10)
         )
+        rel_l2_gamma = float(
+            np.linalg.norm(gamma_err) / (np.linalg.norm(bt_gamma_np) + 1e-10)
+        )
+        greeks_curves = {
+            "s":        np.asarray(s_eval_arr),
+            "nn_delta": nn_delta_np,
+            "bt_delta": bt_delta_np,
+            "nn_gamma": nn_gamma_np,
+            "bt_gamma": bt_gamma_np,
+        }
     except Exception as exc:
-        logger.warning(f"compute_metrics_stage_b: Delta computation failed ({exc}) — skipping.")
+        logger.warning(f"compute_metrics_stage_b: Greeks computation failed ({exc}) — skipping.")
         rel_l2_delta = float("nan")
+        rel_l2_gamma = float("nan")
+        greeks_curves = None
 
     # --- Gradient Explosion Index from Stage B training history ---------------
     norms = np.array(hist_b.get("grad_norm", []))
@@ -293,11 +325,13 @@ def compute_metrics_stage_b(
         "rel_l2_bt":     rel_l2_bt,
         "rel_l2_atm":    rel_l2_atm,
         "rel_l2_delta":  rel_l2_delta,
+        "rel_l2_gamma":  rel_l2_gamma,
         "gei":           gei,
         "pde_residual_t": {
             "t":        t_profile_tensor.cpu().tolist(),
             "residual": pde_residuals,
         },
+        "greeks":        greeks_curves,
     }
 
 
@@ -328,15 +362,25 @@ def _save_variant_results(res: dict, vdir: Path) -> None:
     if metrics is not None:
         pde_t   = np.array(metrics["pde_residual_t"]["t"])
         pde_res = np.array(metrics["pde_residual_t"]["residual"])
-        np.savez_compressed(
-            vdir / "metrics.npz",
-            rel_l2_bt=np.array([metrics["rel_l2_bt"]]),
-            rel_l2_atm=np.array([metrics["rel_l2_atm"]]),
-            rel_l2_delta=np.array([metrics["rel_l2_delta"]]),
-            gei=np.array([metrics["gei"]]),
-            pde_t=pde_t,
-            pde_residual=pde_res,
-        )
+        greeks  = metrics.get("greeks")
+        npz_payload: dict[str, np.ndarray] = {
+            "rel_l2_bt":    np.array([metrics["rel_l2_bt"]]),
+            "rel_l2_atm":   np.array([metrics["rel_l2_atm"]]),
+            "rel_l2_delta": np.array([metrics["rel_l2_delta"]]),
+            "rel_l2_gamma": np.array([metrics.get("rel_l2_gamma", float("nan"))]),
+            "gei":          np.array([metrics["gei"]]),
+            "pde_t":        pde_t,
+            "pde_residual": pde_res,
+        }
+        if greeks is not None:
+            npz_payload.update({
+                "greeks_s":        np.asarray(greeks["s"]),
+                "greeks_nn_delta": np.asarray(greeks["nn_delta"]),
+                "greeks_bt_delta": np.asarray(greeks["bt_delta"]),
+                "greeks_nn_gamma": np.asarray(greeks["nn_gamma"]),
+                "greeks_bt_gamma": np.asarray(greeks["bt_gamma"]),
+            })
+        np.savez_compressed(vdir / "metrics.npz", **npz_payload)
 
 
 def _load_variant_results(vdir: Path, summary_entry: dict, style: dict) -> dict:
@@ -360,12 +404,23 @@ def _load_variant_results(vdir: Path, summary_entry: dict, style: dict) -> dict:
             "rel_l2_bt":     float(m["rel_l2_bt"][0]),
             "rel_l2_atm":    float(m["rel_l2_atm"][0]),
             "rel_l2_delta":  float(m["rel_l2_delta"][0]),
+            "rel_l2_gamma":  float(m["rel_l2_gamma"][0]) if "rel_l2_gamma" in m.files else float("nan"),
             "gei":           float(m["gei"][0]),
             "pde_residual_t": {
                 "t":        m["pde_t"].tolist(),
                 "residual": m["pde_residual"].tolist(),
             },
         }
+        if "greeks_s" in m.files:
+            metrics["greeks"] = {
+                "s":        m["greeks_s"],
+                "nn_delta": m["greeks_nn_delta"],
+                "bt_delta": m["greeks_bt_delta"],
+                "nn_gamma": m["greeks_nn_gamma"],
+                "bt_gamma": m["greeks_bt_gamma"],
+            }
+        else:
+            metrics["greeks"] = None
     else:
         metrics = None
     return {
@@ -451,6 +506,47 @@ def _plot_variant(res: dict, vdir: Path) -> None:
         fig.tight_layout(rect=[0, 0.18, 1, 1])
         _add_formula_box(fig, _FORMULA_PDE_PROFILE, bottom_margin=0.20)
         fig.savefig(out / "pde_residual_by_t.png", dpi=150)
+        plt.close(fig)
+
+    # ── Greeks at t=0: Delta and Gamma (autograd) vs BT finite differences ----
+    greeks = metrics.get("greeks") if metrics is not None else None
+    if greeks is not None:
+        greeks_dir = vdir / "greeks"
+        greeks_dir.mkdir(exist_ok=True)
+        col = res.get("color", "tab:blue")
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharex=True)
+        axes[0].plot(greeks["s"], greeks["bt_delta"],
+                     color="black", linestyle="-", linewidth=1.5,
+                     label=r"$\Delta^{\mathrm{BT}}$ (reference)")
+        axes[0].plot(greeks["s"], greeks["nn_delta"],
+                     color=col, linestyle="--", linewidth=2.0,
+                     label=r"$\Delta_\theta=\partial_S\tilde{u}^{(B)}_\theta$")
+        axes[0].set_title(r"Delta $\Delta(S, 0)$")
+        axes[0].set_xlabel("Asset price $S$")
+        axes[0].set_ylabel(r"$\Delta$")
+        axes[0].axvline(p3.K, color="grey", linestyle=":", linewidth=0.8,
+                        label=rf"$S=K={p3.K:g}$")
+        axes[0].grid(True, alpha=0.3)
+        axes[0].legend(fontsize=9)
+
+        axes[1].plot(greeks["s"], greeks["bt_gamma"],
+                     color="black", linestyle="-", linewidth=1.5,
+                     label=r"$\Gamma^{\mathrm{BT}}$ (reference, noisy)")
+        axes[1].plot(greeks["s"], greeks["nn_gamma"],
+                     color=col, linestyle="--", linewidth=2.0,
+                     label=r"$\Gamma_\theta=\partial_{SS}\tilde{u}^{(B)}_\theta$")
+        axes[1].set_title(r"Gamma $\Gamma(S, 0)$")
+        axes[1].set_xlabel("Asset price $S$")
+        axes[1].set_ylabel(r"$\Gamma$")
+        axes[1].axvline(p3.K, color="grey", linestyle=":", linewidth=0.8,
+                        label=rf"$S=K={p3.K:g}$")
+        axes[1].grid(True, alpha=0.3)
+        axes[1].legend(fontsize=9)
+
+        fig.suptitle(f"{label}\n{_SUPTITLE_PARAMS}", fontsize=10)
+        fig.tight_layout(rect=[0, 0.22, 1, 1])
+        _add_formula_box(fig, _FORMULA_GREEKS, bottom_margin=0.24)
+        fig.savefig(greeks_dir / "delta_gamma_at_t0.png", dpi=150)
         plt.close(fig)
 
 
@@ -642,6 +738,54 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int) -> N
         logger.info("[OK] abl_pde_residual_by_t.png")
 
     # ------------------------------------------------------------------
+    # Plot 6b — Delta and Gamma curves at t=0 (requires metrics + greeks)
+    # ------------------------------------------------------------------
+    has_greeks = [
+        (res.get("metrics") is not None
+         and res["metrics"].get("greeks") is not None)
+        for res in results
+    ]
+    if any(has_greeks):
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharex=True)
+        # Use the first variant with greeks data to draw the BT reference once
+        ref_idx = next(i for i, ok in enumerate(has_greeks) if ok)
+        g_ref   = results[ref_idx]["metrics"]["greeks"]
+        s_ref   = g_ref["s"]
+        axes[0].plot(s_ref, g_ref["bt_delta"], color="black",
+                     linestyle="-", linewidth=1.5, label=r"$\Delta^{\mathrm{BT}}$ (reference)")
+        axes[1].plot(s_ref, g_ref["bt_gamma"], color="black",
+                     linestyle="-", linewidth=1.5, label=r"$\Gamma^{\mathrm{BT}}$ (reference, noisy)")
+        for i, (res, ok) in enumerate(zip(results, has_greeks)):
+            if not ok:
+                continue
+            g = res["metrics"]["greeks"]
+            axes[0].plot(g["s"], g["nn_delta"],
+                         label=labels[i], color=colors[i],
+                         linestyle=linestyles[i], linewidth=linewidths[i])
+            axes[1].plot(g["s"], g["nn_gamma"],
+                         label=labels[i], color=colors[i],
+                         linestyle=linestyles[i], linewidth=linewidths[i])
+        for ax, name, sym in zip(axes,
+                                 (r"Delta $\Delta(S,0)$", r"Gamma $\Gamma(S,0)$"),
+                                 (r"$\Delta$", r"$\Gamma$")):
+            ax.set_xlabel("Asset price $S$")
+            ax.set_ylabel(sym)
+            ax.set_title(name)
+            ax.axvline(p3.K, color="grey", linestyle=":", linewidth=0.8,
+                       label=rf"$S=K={p3.K:g}$")
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=8, loc="best")
+        fig.suptitle(
+            f"Ablation — Greeks at $t=0$  (autograd vs BT finite differences)\n{_SUPTITLE_PARAMS}",
+            fontsize=10,
+        )
+        fig.tight_layout(rect=[0, 0.22, 1, 1])
+        _add_formula_box(fig, _FORMULA_GREEKS, bottom_margin=0.24)
+        fig.savefig(comp_dir / "abl_greeks.png", dpi=150)
+        plt.close(fig)
+        logger.info("[OK] abl_greeks.png")
+
+    # ------------------------------------------------------------------
     # Plot 7 — Summary metrics bar chart
     # ------------------------------------------------------------------
     n_variants  = len(results)
@@ -650,18 +794,19 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int) -> N
     x           = np.arange(n_variants)
 
     if any(has_metrics):
-        # Rich bar chart: 5 panels
-        metric_keys  = ["mae_bt", "rel_l2_bt", "rel_l2_atm", "rel_l2_delta", "gei"]
+        # Rich bar chart: 6 panels (MAE, L2 global, L2 ATM, Delta, Gamma, GEI)
+        metric_keys  = ["mae_bt", "rel_l2_bt", "rel_l2_atm", "rel_l2_delta", "rel_l2_gamma", "gei"]
         metric_labels = [
             r"MAE  $= \frac{1}{N}\sum|\tilde{u}-V^{\mathrm{BT}}|$",
             r"$\varepsilon_{L^2}$ (global)",
             r"$\varepsilon_{L^2}^{\mathrm{ATM}}$",
             r"$\varepsilon_{\Delta}$",
+            r"$\varepsilon_{\Gamma}$",
             r"GEI",
         ]
 
         def _get_metric(res: dict, key: str) -> float:
-            if key in ("rel_l2_bt", "rel_l2_atm", "rel_l2_delta", "gei"):
+            if key in ("rel_l2_bt", "rel_l2_atm", "rel_l2_delta", "rel_l2_gamma", "gei"):
                 m = res.get("metrics")
                 if m is not None:
                     return m.get(key, float("nan"))
@@ -1044,6 +1189,7 @@ def main() -> None:
                 f"rel_L2={metrics['rel_l2_bt']:.4e}  "
                 f"rel_L2_ATM={metrics['rel_l2_atm']:.4e}  "
                 f"rel_L2_Delta={metrics['rel_l2_delta']:.4e}  "
+                f"rel_L2_Gamma={metrics['rel_l2_gamma']:.4e}  "
                 f"GEI={metrics['gei']:.2f}"
             )
         else:
@@ -1097,6 +1243,7 @@ def main() -> None:
             entry.update({
                 "rel_l2_atm":    float(metrics.get("rel_l2_atm",   float("nan"))),
                 "rel_l2_delta":  float(metrics.get("rel_l2_delta", float("nan"))),
+                "rel_l2_gamma":  float(metrics.get("rel_l2_gamma", float("nan"))),
                 "gei":           float(metrics.get("gei",          float("nan"))),
             })
         summary[v["name"]] = entry
