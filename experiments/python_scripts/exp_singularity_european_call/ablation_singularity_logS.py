@@ -1509,32 +1509,33 @@ def train_variant_vpinn_lbfgs_epoch(
     state is saved in the checkpoint so resumes are bit-for-bit reproducible
     vs an equivalent continuous run.
 
-    Principe : on découpe l'entraînement en époques de ``epoch_size`` steps.
-    Dans chaque époque, ``t_batch`` est tiré une seule fois et gardé fixe.
-    L'historique de courbure de L-BFGS est vidé au début de chaque époque.
+    Principle
+    ---------
+    Training is split into "epochs" of ``epoch_size`` consecutive L-BFGS outer
+    steps.  Within each epoch ``t_batch`` is drawn once and kept fixed; the
+    L-BFGS curvature history is cleared at the start of every new epoch.
 
-    Pourquoi ça résout le problème de la courbure corrompue
-    --------------------------------------------------------
-    L-BFGS estime la courbure via la condition sécante :
+    Why this fixes the corrupted-curvature problem
+    ----------------------------------------------
+    L-BFGS estimates curvature through the secant condition
 
         y_k = ∇f(x_{k+1}) − ∇f(x_k)  ≈  H · s_k
 
-    Cette approximation n'est valide que si les deux gradients sont calculés
-    sur le **même objectif** f.  Avec un tirage aléatoire à chaque step, on
-    calcule ∇f_{B_{k+1}}(x_{k+1}) − ∇f_{B_k}(x_k) : ce n'est pas de la
-    courbure, c'est du bruit.  En fixant le batch pendant une époque entière,
-    tous les pairs (s_k, y_k) de l'historique sont cohérents.
+    which is only valid when both gradients are taken on the *same* objective
+    ``f``.  Resampling the batch at every step computes
+    ``∇f_{B_{k+1}}(x_{k+1}) − ∇f_{B_k}(x_k)`` — that is noise, not curvature.
+    Pinning the batch across a whole epoch makes every (s_k, y_k) pair stored
+    in the history mutually consistent.
 
-    On recharge un nouveau batch à chaque époque pour couvrir l'ensemble
-    du domaine temporel [0, T] — l'intégrale en temps est bien estimée sur
-    la durée totale de l'entraînement.
+    A fresh batch is drawn at every new epoch so that the time integral over
+    [0, T] is still well covered across the run.
 
     Parameters
     ----------
     epoch_size : int
-        Nombre de steps L-BFGS par époque.  Doit être ≤ history_size
-        (fixé à epoch_size ici) pour que le buffer se remplisse exactement
-        une fois par époque.  Valeur recommandée : 20.
+        Number of L-BFGS outer steps per epoch.  Must be ≤ history_size
+        (which we set equal to epoch_size here) so the buffer fills exactly
+        once per epoch.  Recommended value: 20.
     """
     if log_every is None:
         log_every = p3._adaptive_log_every(total_iters)
@@ -1544,12 +1545,12 @@ def train_variant_vpinn_lbfgs_epoch(
     lambda_tc = p3.LAMBDA_TC
 
     def _make_optimizer():
-        """Crée un optimizer L-BFGS neuf avec historique vide."""
+        """Build a fresh L-BFGS optimizer with an empty curvature history."""
         return torch.optim.LBFGS(
             model.parameters(),
             lr=1.0,
             max_iter=20,
-            history_size=epoch_size,   # buffer exactement de la taille d'une époque
+            history_size=epoch_size,   # buffer sized for exactly one epoch
             line_search_fn="strong_wolfe",
             tolerance_grad=1e-7,
             tolerance_change=1e-9,
@@ -1583,9 +1584,9 @@ def train_variant_vpinn_lbfgs_epoch(
     t0 = time.time()
     n_epochs_total = math.ceil(total_iters / epoch_size)
     logger.info(
-        f"[{label}] VPINN + L-BFGS par époques — "
+        f"[{label}] Epoch-based VPINN + L-BFGS — "
         f"epoch_size={epoch_size}  history_size={epoch_size}  "
-        f"total_iters={total_iters}  n_époques≈{n_epochs_total}  "
+        f"total_iters={total_iters}  n_epochs≈{n_epochs_total}  "
         f"lr=1.0  line_search=strong_wolfe  λ_f={lambda_f}  λ_tc={lambda_tc}"
     )
 
@@ -1593,21 +1594,21 @@ def train_variant_vpinn_lbfgs_epoch(
     current_epoch = (start_iter - 1) // epoch_size
 
     for it in range(start_iter, total_iters + 1):
-        # ── Début d'une nouvelle époque ────────────────────────────────────
+        # ── Start of a new epoch ───────────────────────────────────────────
         new_epoch = (it - 1) // epoch_size
         if new_epoch != current_epoch:
             current_epoch = new_epoch
-            # Nouveau tirage : on voit une nouvelle portion de [0,T]
+            # Fresh draw: cover a new slice of [0, T] for this epoch.
             t_batch = sampler_fn()
-            # On vide l'historique de courbure : les pairs (s,y) de l'époque
-            # précédente ne sont plus valides pour le nouvel objectif f_{t_batch}
+            # Clear curvature history: (s, y) pairs from the previous epoch
+            # are no longer consistent with the new objective f_{t_batch}.
             optimizer = _make_optimizer()
             logger.info(
-                f"[{label}] ── Époque {current_epoch + 1}/{n_epochs_total} "
-                f"(iter {it}) : nouveau t_batch, historique L-BFGS réinitialisé"
+                f"[{label}] ── Epoch {current_epoch + 1}/{n_epochs_total} "
+                f"(iter {it}): drew a fresh t_batch and reset the L-BFGS history"
             )
 
-        # Snapshot des paramètres pour pouvoir revenir arrière en cas de NaN
+        # Snapshot params so we can roll back on a NaN
         params_before = flat_params(model).clone()
 
         def closure():
@@ -1651,7 +1652,7 @@ def train_variant_vpinn_lbfgs_epoch(
             history["dx_rms"].append(dx_rms)
             history["d2x_rms"].append(d2x_rms)
             logger.info(
-                f"[{label}] iter {it:>5d}/{total_iters}  époque {current_epoch + 1}/{n_epochs_total}  "
+                f"[{label}] iter {it:>5d}/{total_iters}  epoch {current_epoch + 1}/{n_epochs_total}  "
                 f"loss={loss_val:.4e}  "
                 f"(λ_f·Lf={lambda_f * _lf_last[0]:.4e}  "
                 f"λ_tc·L_ic={lambda_tc * _ltc_last[0]:.4e})  "
@@ -2147,13 +2148,13 @@ def _build_variants(mode: str) -> list[dict]:
                  max_iters=1000,
                  color="tab:pink", linestyle=[0, [1, 1]], linewidth=2.0),
             dict(name="vpinn_lbfgs_is_tau",
-                 label=r"VPINN + L-BFGS (échant. biaisé $\tau\to 0$, $\alpha=0.3$)",
+                 label=r"VPINN + L-BFGS (biased $\tau\to 0$ sampling, $\alpha=0.3$)",
                  sampler_type="vpinn_lbfgs_is_tau", payoff_type="exact",
                  eps=0.001 * T, beta=None, sigma_is=None, mix=0.0,
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
-                 # τ = T·U^(1/0.3) avec U~U(0,1) — concentre les points près de
-                 # la singularité en maturité. Estimateur biaisé volontairement
-                 # (pas de correction IS) pour donner plus de poids au γ près de τ=0.
+                 # τ = T·U^(1/0.3) with U~U(0,1) — concentrates time samples near
+                 # the maturity singularity. The estimator is intentionally biased
+                 # (no IS correction) so that γ near τ=0 carries more weight.
                  is_tau_alpha=0.3,
                  max_iters=1000,
                  color="tab:cyan", linestyle=[0, [3, 1, 1, 1]], linewidth=2.0),
@@ -2821,14 +2822,14 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         fig.savefig(comp_dir / "weak_residual_comparison.png", dpi=150)
         plt.close(fig)
 
-    # Comparaison L-BFGS : stochastique vs par époques (quand les deux sont présents)
+    # L-BFGS comparison: stochastic batch vs epoch-based batch (when both are present)
     lbfgs_stoch = next((r for r in results if r.get("sampler_type") == "vpinn_lbfgs"), None)
     lbfgs_epoch = next((r for r in results if r.get("sampler_type") == "vpinn_lbfgs_epoch"), None)
     if lbfgs_stoch is not None and lbfgs_epoch is not None:
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         for res, ls_label in [
-            (lbfgs_stoch, "L-BFGS stochastique\n(nouveau batch à chaque step)"),
-            (lbfgs_epoch, "L-BFGS par époques\n(même batch pendant 20 steps, puis nouveau tirage)"),
+            (lbfgs_stoch, "Stochastic L-BFGS\n(fresh batch every step)"),
+            (lbfgs_epoch, "Epoch L-BFGS\n(same batch for 20 steps, then resample)"),
         ]:
             kw = dict(color=res["color"], linestyle=res["linestyle"],
                       linewidth=res["linewidth"], label=ls_label)
@@ -2836,33 +2837,33 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
             axes[1].semilogy(res["hist"]["iter"], res["hist"]["loss_f"],    **kw)
             axes[2].semilogy(res["hist"]["iter"], res["hist"]["grad_norm"], **kw)
         for ax, title in [
-            (axes[0], "Perte totale"),
-            (axes[1], r"Perte EDP (forme faible) $\mathcal{L}_f$"),
-            (axes[2], r"Norme du gradient $\|\nabla_\theta\mathcal{L}\|_2$"),
+            (axes[0], "Total loss"),
+            (axes[1], r"PDE (weak-form) loss $\mathcal{L}_f$"),
+            (axes[2], r"Gradient norm $\|\nabla_\theta\mathcal{L}\|_2$"),
         ]:
-            ax.set_xlabel("Step L-BFGS (outer)"); ax.set_title(title, fontsize=9)
+            ax.set_xlabel("Outer L-BFGS step"); ax.set_title(title, fontsize=9)
             ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
         m_s = lbfgs_stoch["metrics"]; m_e = lbfgs_epoch["metrics"]
         fig.suptitle(
-            f"L-BFGS : stochastique vs par époques  |  {_SUPTITLE}\n"
-            f"Stochastique : rel_L2={m_s['rel_l2']:.3e}  |  "
-            f"Par époques : rel_L2={m_e['rel_l2']:.3e}",
+            f"L-BFGS: stochastic vs epoch-based batch  |  {_SUPTITLE}\n"
+            f"Stochastic: rel_L2={m_s['rel_l2']:.3e}  |  "
+            f"Epoch: rel_L2={m_e['rel_l2']:.3e}",
             fontsize=9,
         )
         fig.tight_layout()
         _add_formula_box(fig,
-            r"Stochastique : $t_{\rm batch}\sim U(0,T)$ à chaque step "
-            r"— $y_k=\nabla f_{B_{k+1}}(x_{k+1})-\nabla f_{B_k}(x_k)$ mélange deux objectifs "
-            r"(bruit de courbure, instabilités NaN)."
+            r"Stochastic: $t_{\rm batch}\sim U(0,T)$ at every step "
+            r"— $y_k=\nabla f_{B_{k+1}}(x_{k+1})-\nabla f_{B_k}(x_k)$ mixes two objectives "
+            r"(curvature noise, NaN instabilities)."
             "\n"
-            r"Par époques : même $t_{\rm batch}$ pendant $N=20$ steps "
-            r"— $y_k=\nabla f_B(x_{k+1})-\nabla f_B(x_k)$ est une vraie estimation de courbure. "
-            r"Historique vidé à chaque nouvelle époque pour éviter les paires périmées.",
+            r"Epoch-based: the same $t_{\rm batch}$ is kept for $N=20$ steps "
+            r"— $y_k=\nabla f_B(x_{k+1})-\nabla f_B(x_k)$ is a true curvature estimate. "
+            r"The L-BFGS history is cleared at each new epoch to avoid stale (s,y) pairs.",
             bottom_margin=0.16,
         )
         fig.savefig(comp_dir / "lbfgs_stoch_vs_epoch.png", dpi=150)
         plt.close(fig)
-        logger.info("Comparaison L-BFGS sauvegardée → lbfgs_stoch_vs_epoch.png")
+        logger.info("L-BFGS comparison plot saved → lbfgs_stoch_vs_epoch.png")
 
     _plot_gt_comparison(results, comp_dir)
     logger.info(f"Comparison plots saved to {comp_dir}/")
