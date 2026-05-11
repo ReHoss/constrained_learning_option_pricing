@@ -1437,6 +1437,7 @@ def train_variant_vpinn_lbfgs(
     payoff_fn,
     label: str = "vpinn_lbfgs",
     lam_f: float | None = None,
+    lam_tc: float | None = None,
     log_every: int | None = None,
     checkpoint_path: Path | None = None,
     resume: bool = False,
@@ -1470,8 +1471,8 @@ def train_variant_vpinn_lbfgs(
         log_every = p3._adaptive_log_every(total_iters)
     model.to(p3.DEVICE)
     vpinn_module.to(p3.DEVICE)
-    lambda_f  = lam_f if lam_f is not None else p3.LAMBDA_F
-    lambda_tc = p3.LAMBDA_TC
+    lambda_f  = lam_f  if lam_f  is not None else p3.LAMBDA_F
+    lambda_tc = lam_tc if lam_tc is not None else p3.LAMBDA_TC
 
     optimizer = torch.optim.LBFGS(
         model.parameters(),
@@ -2357,6 +2358,19 @@ def _build_variants(mode: str) -> list[dict]:
                  is_tau_alpha=0.3,
                  max_iters=400,
                  color="#7b1fa2", linestyle="-", linewidth=2.0),
+            dict(name="vpinn_lbfgs_is_tau_full_batch_lam_tc3",
+                 label=r"VPINN + L-BFGS (IS $\tau\to0$, fixed batch, $\lambda_{tc}=3$)",
+                 sampler_type="vpinn_lbfgs_is_tau_full_batch", payoff_type="exact",
+                 eps=0.001 * T, beta=None, sigma_is=None, mix=0.0,
+                 # Same as vpinn_lbfgs_is_tau_full_batch but with λ_tc=3 instead of 1.
+                 # Motivation: IS τ→0 concentrates points near the singularity and
+                 # creates tension between the PDE residual and the IC at τ=0,
+                 # causing L_ic to be ~2× higher than the uniform fixed-batch variant.
+                 # Increasing λ_tc re-weights the IC to compensate.
+                 n_tau=512, K_test=20, n_quad=100, lam_f=200.0, lam_tc=3.0,
+                 is_tau_alpha=0.3,
+                 max_iters=400,
+                 color="#ab47bc", linestyle="-", linewidth=2.0),
         ]
 
     if mode == "ablation-eps":
@@ -3506,6 +3520,7 @@ def _train_one_variant(
         hist = train_variant_vpinn_lbfgs(model, vpinn_module, effective_iters,
                                          sampler_fn, payoff_fn, v["name"],
                                          lam_f=v.get("lam_f"),
+                                         lam_tc=v.get("lam_tc"),
                                          checkpoint_path=ckpt_path, resume=resume,
                                          stochastic_batch=False,
                                          sampler_gen=sampler_gen)
