@@ -3358,9 +3358,9 @@ def _load_model_for_variant(ablation_dir: Path, variant_name: str,
 
 
 def _replot(ablation_dir: Path) -> None:
-    with open(ablation_dir / "summary.yaml") as f:
+    with open(ablation_dir / "summary.yaml", encoding="utf-8") as f:
         summary = yaml.safe_load(f)
-    with open(ablation_dir / "metadata.yaml") as f:
+    with open(ablation_dir / "metadata.yaml", encoding="utf-8") as f:
         meta = yaml.safe_load(f)
     visible_entries = [e for e in summary["variants"]
                        if e["name"] not in _PLOT_EXCLUDED_VARIANTS]
@@ -3609,7 +3609,7 @@ def main() -> None:
         variant_name, ablation_dir_str = args.add_variant.split(":", 1)
         ablation_dir = Path(ablation_dir_str)
 
-        with open(ablation_dir / "metadata.yaml") as f:
+        with open(ablation_dir / "metadata.yaml", encoding="utf-8") as f:
             meta = yaml.safe_load(f)
 
         p3._apply_device_arg(args.device)
@@ -3654,7 +3654,7 @@ def main() -> None:
         )
 
         # Append to summary.yaml (replace if same name, append otherwise)
-        with open(ablation_dir / "summary.yaml") as f:
+        with open(ablation_dir / "summary.yaml", encoding="utf-8") as f:
             summary = yaml.safe_load(f)
         existing_names = {e["name"] for e in summary["variants"]}
         new_entry = _summary_entry(v, m)
@@ -3667,7 +3667,7 @@ def main() -> None:
         else:
             summary["variants"].append(new_entry)
             logger.info(f"Appended variant {variant_name!r} to summary.yaml")
-        with open(ablation_dir / "summary.yaml", "w") as f:
+        with open(ablation_dir / "summary.yaml", "w", encoding="utf-8") as f:
             yaml.safe_dump(summary, f, allow_unicode=True)
 
         # Regenerate all comparison plots with the complete variant set
@@ -3718,7 +3718,7 @@ def main() -> None:
     logger.info(f"x_eval_lo={X_EVAL_LO:.3f}  x_eval_hi={X_EVAL_HI:.3f}")
     logger.info(f"output: {ablation_dir}")
 
-    with open(ablation_dir / "metadata.yaml", "w") as f:
+    with open(ablation_dir / "metadata.yaml", "w", encoding="utf-8") as f:
         yaml.safe_dump({
             "cmdline":     sys.argv,
             "mode":        args.mode,
@@ -3752,7 +3752,7 @@ def main() -> None:
         )
         summary_variants.append(_summary_entry(v, m))
 
-    with open(ablation_dir / "summary.yaml", "w") as f:
+    with open(ablation_dir / "summary.yaml", "w", encoding="utf-8") as f:
         yaml.safe_dump({"variants": summary_variants}, f, allow_unicode=True)
 
     if len(results) > 1:
