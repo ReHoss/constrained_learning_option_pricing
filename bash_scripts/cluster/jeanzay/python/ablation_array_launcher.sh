@@ -47,6 +47,7 @@ S_BATCH_QOS="qos_gpu-t3"
 S_BATCH_ACCOUNT="akz@v100"
 S_BATCH_CPU_PER_TASK=10
 S_BATCH_GPUS=1                       # one GPU per array task
+DEBUG=0                              # mark run as test (folder prefixed `_debug_`)
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
 while (( $# )); do
@@ -59,6 +60,7 @@ while (( $# )); do
         --time-finalize)     S_BATCH_TIME_FINALIZE="$2"; shift 2 ;;
         --venv-name)         V_ENV_NAME="$2";            shift 2 ;;
         --name-project)      NAME_PROJECT="$2";          shift 2 ;;
+        --debug)             DEBUG=1;                    shift 1 ;;
         -h|--help)
             sed -n '2,32p' "$0"; exit 0 ;;
         *)
@@ -101,9 +103,15 @@ source "$PATH_VENV_BIN"
 cd "$PATH_CONTENT_ROOT"
 
 # ── Phase 1: create the shared ablation directory ───────────────────────────
+DEBUG_FLAG=""
+if (( DEBUG == 1 )); then
+    DEBUG_FLAG="--debug"
+    echo "DEBUG mode: the timestamped folder will be prefixed with '_debug_'"
+fi
 echo "Phase 1: --init-only (login node)..."
 EXPDIR="$(python "$PATH_PYTHON_SCRIPT" \
             --mode "$MODE" --iters "$ITERS" --init-only \
+            $DEBUG_FLAG \
             --device cpu 2>/dev/null | tail -n1)"
 
 if [[ ! -d "$EXPDIR" ]]; then
