@@ -946,6 +946,228 @@ def _replot(ablation_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Add-variant mode — retrain or rescore a single variant inside an existing run
+# ---------------------------------------------------------------------------
+
+def _resolve_stage_a_for_add_variant(metadata: dict, ablation_dir: Path
+                                     ) -> tuple[bool, Path | None]:
+    """Inspect ``metadata.yaml`` and the on-disk run to determine how Stage A
+    was produced, so that ``--add-variant`` can reproduce the exact same
+    intermediate terminal condition as the original variants.
+
+    Returns:
+        ``(analytic_a, load_etcnn_a_path)`` — exactly one of the two will be
+        meaningful: ``analytic_a=True`` when the original run used the BS
+        formula, otherwise ``load_etcnn_a_path`` points at the etcnn_a.pt
+        checkpoint (either the one originally loaded, or — when the original
+        run trained Stage A from scratch — the checkpoint saved by the first
+        variant that was trained).
+    """
+    if metadata.get("analytical_stage_a"):
+        return True, None
+
+    loaded = metadata.get("loaded_stage_a")
+    if loaded:
+        return False, Path(loaded)
+
+    # Stage A was trained from scratch in the original run.  Find any saved
+    # etcnn_a.pt checkpoint among the variants and reuse it (the script
+    # already does this for variants 2..N during a fresh ablation run).
+    for v in metadata.get("variants", []):
+        candidate = ablation_dir / f"variant_{v['name']}" / "models" / "etcnn_a.pt"
+        if candidate.exists():
+            return False, candidate
+    raise FileNotFoundError(
+        f"Could not locate etcnn_a.pt under any variant_*/models/ in "
+        f"{ablation_dir}.  Cannot reproduce Stage A for --add-variant."
+    )
+
+
+def _run_add_variant(args: argparse.Namespace) -> None:
+    """Implementation of the ``--add-variant NAME:DIR`` CLI mode."""
+    if ":" not in args.add_variant:
+        raise SystemExit("--add-variant expects NAME:DIR  (e.g. baseline:data/ablation_bermudan/<run>)")
+    variant_name, ablation_dir_str = args.add_variant.split(":", 1)
+    ablation_dir = Path(ablation_dir_str)
+    metadata_path = ablation_dir / "metadata.yaml"
+    summary_path  = ablation_dir / "summary.yaml"
+    if not metadata_path.exists():
+        raise SystemExit(f"metadata.yaml not found in {ablation_dir}")
+
+    with open(metadata_path) as f:
+        metadata = yaml.safe_load(f)
+
+    # Look up the variant config from this script's VARIANTS list.  This
+    # guarantees consistency with what _replot expects, and with the styles
+    # used in the comparison plots.
+    matching = [v for v in VARIANTS if v["name"] == variant_name]
+    if not matching:
+        available = [v["name"] for v in VARIANTS]
+        raise SystemExit(
+            f"Variant {variant_name!r} not found in VARIANTS. Available: {available}"
+        )
+    variant = matching[0]
+
+    # Apply phase3 globals from metadata so that this rerun matches the original
+    p3._apply_device_arg(args.device)
+    if metadata.get("N_TC") is not None:
+        p3.N_TC = int(metadata["N_TC"])
+    if metadata.get("N_F") is not None:
+        p3.N_F = int(metadata["N_F"])
+
+    vdir = ablation_dir / f"variant_{variant_name}"
+    for sub in ("training_metrics", "pricing", "greeks", "diagnostics", "models"):
+        (vdir / sub).mkdir(parents=True, exist_ok=True)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(ablation_dir / "ablation.log", mode="a"),
+        ],
+    )
+    logging.getLogger("matplotlib.mathtext").setLevel(logging.WARNING)
+
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info(f"ADD-VARIANT  {variant_name}  ->  {ablation_dir}")
+    logger.info(f"  command: {' '.join(sys.argv)}")
+    logger.info(f"  put_ansatz={variant['put_ansatz']}"
+                f"  bypass_v={variant['bypass_v']}"
+                f"  use_spatial_weight={variant['use_spatial_weight']}")
+    logger.info(f"  reuse_checkpoint={args.reuse_checkpoint}")
+    logger.info("=" * 70)
+
+    analytic_a, load_etcnn_a_path = _resolve_stage_a_for_add_variant(metadata, ablation_dir)
+    if analytic_a:
+        logger.info("  Stage A: reproduced via analytical Black-Scholes formula (no model file).")
+    else:
+        logger.info(f"  Stage A: reusing checkpoint {load_etcnn_a_path}")
+
+    # Determine Stage B mode: from-scratch retrain (default), or checkpoint reuse
+    # (--reuse-checkpoint: load existing etcnn_b.pt and skip training).
+    load_etcnn_b_path: Path | None = None
+    iters_b = int(metadata.get("iters_b", 0))
+    if args.reuse_checkpoint:
+        candidate = vdir / "models" / "etcnn_b.pt"
+        if not candidate.exists():
+            raise FileNotFoundError(
+                f"--reuse-checkpoint requested but {candidate} does not exist."
+            )
+        load_etcnn_b_path = candidate
+        iters_b = 0
+        logger.info(f"  Stage B: reusing checkpoint {candidate} (iters_b forced to 0)")
+    else:
+        logger.info(f"  Stage B: training from scratch for {iters_b} iterations")
+
+    t0 = time.time()
+    res = bermudan_problem(
+        out_dir=vdir,
+        total_iters=[0, iters_b],
+        interp_method=variant["interp"],
+        put_ansatz=variant["put_ansatz"],
+        weight_decay=float(metadata.get("weight_decay", 0.0)),
+        load_etcnn_a=load_etcnn_a_path,
+        analytic_a=analytic_a,
+        g2_type=str(metadata.get("fixed", {}).get("g2_type", "bs")),
+        bypass_v=variant["bypass_v"],
+        sigma_w=float(metadata.get("sigma_w", 1.0)),
+        eps_w=float(metadata.get("eps_w", 1e-3)),
+        use_spatial_weight=variant["use_spatial_weight"],
+        load_etcnn_b=load_etcnn_b_path,
+    )
+    elapsed = time.time() - t0
+    logger.info(f"  [{variant_name}] bermudan_problem returned in {elapsed:.1f}s")
+
+    # In --reuse-checkpoint mode, train_model never ran, so hist_b is empty.
+    # Restore the original training history from disk so that GEI (which is
+    # derived from the gradient-norm trace) stays meaningful and so that
+    # _save_variant_results does not overwrite the saved hist_b.npz with the
+    # empty placeholder.
+    if args.reuse_checkpoint:
+        hist_path = vdir / "hist_b.npz"
+        if hist_path.exists():
+            hist_npz = np.load(hist_path)
+            res["hist_b"] = {
+                "iter":        hist_npz["iter"].tolist(),
+                "loss":        hist_npz["loss"].tolist(),
+                "loss_f":      hist_npz["loss_f"].tolist(),
+                "loss_tc":     hist_npz["loss_tc"].tolist(),
+                "grad_norm":   hist_npz["grad_norm"].tolist(),
+                "lr":          hist_npz["lr"].tolist(),
+                "tc_enforced": bool(hist_npz["tc_enforced"][0])
+                                if "tc_enforced" in hist_npz else True,
+            }
+            logger.info(f"  [{variant_name}] hist_b restored from {hist_path} "
+                        f"({len(res['hist_b']['iter'])} steps)")
+
+    etcnn_b = res.get("etcnn_b")
+    if etcnn_b is not None:
+        metrics = compute_metrics_stage_b(
+            etcnn_b, res["hist_b"], res["bt_prices"], res["s_eval_arr"]
+        )
+        res["metrics"] = metrics
+        logger.info(
+            f"  [{variant_name}] metrics: "
+            f"rel_L2={metrics['rel_l2_bt']:.4e}  "
+            f"rel_L2_ATM={metrics['rel_l2_atm']:.4e}  "
+            f"rel_L2_Delta={metrics['rel_l2_delta']:.4e}  "
+            f"rel_L2_Gamma={metrics['rel_l2_gamma']:.4e}  "
+            f"GEI={metrics['gei']:.2f}"
+        )
+    else:
+        res["metrics"] = None
+
+    res.update({k: variant[k] for k in ("color", "linestyle", "linewidth", "label", "name")})
+    _save_variant_results(res, vdir)
+    _plot_variant(res, vdir)
+
+    # Update summary.yaml: replace the entry for this variant if it exists,
+    # otherwise insert it at the position matching VARIANTS so subsequent plots
+    # keep the canonical ordering.
+    summary: dict
+    if summary_path.exists():
+        with open(summary_path) as f:
+            summary = yaml.safe_load(f) or {}
+    else:
+        summary = {}
+
+    new_entry = {
+        "mae_bt":       float(res["mae_bt"]),
+        "rel_l2_bt":    float(res["rel_l2_bt"]),
+        "jump_at_t1":   float(res["jump_at_t1"]),
+        "etcnn_b_at_K": float(res["etcnn_b_at_K"]),
+        "s_star": (
+            float(res["s_star"])
+            if not (isinstance(res["s_star"], float) and np.isnan(res["s_star"]))
+            else "nan"
+        ),
+    }
+    metrics = res.get("metrics")
+    if metrics is not None:
+        new_entry.update({
+            "rel_l2_atm":    float(metrics.get("rel_l2_atm",   float("nan"))),
+            "rel_l2_delta":  float(metrics.get("rel_l2_delta", float("nan"))),
+            "rel_l2_gamma":  float(metrics.get("rel_l2_gamma", float("nan"))),
+            "gei":           float(metrics.get("gei",          float("nan"))),
+        })
+
+    canonical_order = [v["name"] for v in VARIANTS]
+    summary[variant_name] = new_entry
+    summary = {name: summary[name] for name in canonical_order if name in summary}
+
+    with open(summary_path, "w") as f:
+        yaml.dump(summary, f, default_flow_style=False, sort_keys=False, width=float("inf"))
+    logger.info(f"  [{variant_name}] summary.yaml updated.")
+
+    logger.info(f"  [{variant_name}] regenerating comparison plots ...")
+    _replot(ablation_dir)
+    logger.info(f"\nAdd-variant {variant_name!r} done — results in {ablation_dir}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -995,6 +1217,24 @@ def main() -> None:
         help="Regenerate all plots from an existing ablation directory "
              "(no retraining). Reads variant list from metadata.yaml.",
     )
+    parser.add_argument(
+        "--add-variant", type=str, default=None, metavar="NAME:DIR",
+        help="Train (or rescore) a single variant inside an existing ablation "
+             "directory and update its entry in summary.yaml. NAME must match "
+             "one of the names in the VARIANTS list of this script. The Stage A "
+             "mode (analytical / loaded / from-scratch) and all other run "
+             "hyperparameters are read from metadata.yaml — they cannot be "
+             "overridden so that the resulting variant remains comparable to "
+             "the existing ones.",
+    )
+    parser.add_argument(
+        "--reuse-checkpoint", action="store_true", default=False,
+        help="When used with --add-variant: load the existing "
+             "<vdir>/models/etcnn_b.pt and skip Stage B training (iters_b=0). "
+             "Only the post-training evaluation runs, which is the right mode "
+             "for backfilling new metrics (e.g. Gamma) on previously trained "
+             "variants without retraining them.",
+    )
     args = parser.parse_args()
 
     # Exactly one of {train from scratch, load checkpoint, analytical formula}
@@ -1026,6 +1266,17 @@ def main() -> None:
         logging.getLogger("matplotlib.mathtext").setLevel(logging.WARNING)
         _replot(Path(args.replot))
         return
+
+    # ------------------------------------------------------------------
+    # Add-variant mode: train (or rescore) a single variant inside an
+    # existing ablation directory and update its summary.yaml entry.
+    # ------------------------------------------------------------------
+    if args.add_variant is not None:
+        _run_add_variant(args)
+        return
+
+    if args.reuse_checkpoint and args.add_variant is None:
+        parser.error("--reuse-checkpoint only makes sense with --add-variant.")
 
     # ------------------------------------------------------------------
     # Apply settings to phase3_training globals
