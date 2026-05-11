@@ -16,6 +16,7 @@
 - be verbose, minimise acronyms, except for well-known ones. Be verbose in general with file and folder names, variable names, and comments in the code. This will make it easier for others to understand the code and contribute to the project.
 - Code documentation must be in English.
 - Favour muliple small commits with descriptive commit messages over large commits with vague messages.
+- Before handing off work to a remote runner (Jean Zay agent, CI, or any cluster job), commit the relevant changes and push to the remote. The cluster only sees what is already in the upstream branch — local-only edits are invisible to it, so any change to scripts, configs, or `pyproject.toml` that the remote job will execute must land in a commit first.
 - Long training loops should checkpoint periodically and support resume — capture everything needed for a faithful continuation (model, optimizer, scheduler, RNG, running metrics) so an interruption costs at most the checkpoint interval.
 - Use explicit, propagated RNG handles rather than the implicit global state, and seed deterministically per variant.
 - Track the best-loss state during training and restore it at the end — the last iter is not always the best one.
