@@ -69,6 +69,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import phase3_training as p3
 from phase3_training import bermudan_problem
+from learning_option_pricing.utils.run_context import script_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -1075,6 +1076,26 @@ def _run_add_variant(args: argparse.Namespace) -> None:
     else:
         logger.info(f"  Stage B: training from scratch for {iters_b} iterations")
 
+    # g2_gamma source of truth: metadata.yaml is authoritative for an existing
+    # run (the saved weights were trained with that gamma).  Allow a CLI
+    # override only when no checkpoint is being reused, so the truncation
+    # profile that gets plotted always matches the weights on disk.
+    metadata_g2_gamma = metadata.get("g2_gamma")
+    if args.reuse_checkpoint or args.resume:
+        if args.g2_gamma is not None and args.g2_gamma != metadata_g2_gamma:
+            logger.warning(
+                f"  --g2-gamma={args.g2_gamma} ignored: metadata.yaml records "
+                f"g2_gamma={metadata_g2_gamma!r} and a checkpoint is being "
+                f"reused — using the metadata value to keep weights/plots consistent."
+            )
+        effective_g2_gamma = metadata_g2_gamma
+    else:
+        effective_g2_gamma = (
+            args.g2_gamma if args.g2_gamma is not None else metadata_g2_gamma
+        )
+    if effective_g2_gamma is not None:
+        logger.info(f"  Stage B temporal truncation: g2_gamma={effective_g2_gamma}")
+
     t0 = time.time()
     res = bermudan_problem(
         out_dir=vdir,
@@ -1089,6 +1110,7 @@ def _run_add_variant(args: argparse.Namespace) -> None:
         sigma_w=float(metadata.get("sigma_w", 1.0)),
         eps_w=float(metadata.get("eps_w", 1e-3)),
         use_spatial_weight=variant["use_spatial_weight"],
+        g2_gamma=effective_g2_gamma,
         load_etcnn_b=load_etcnn_b_path,
         stage_b_checkpoint_every=int(args.checkpoint_every),
         stage_b_resume_from=resume_from_path,
@@ -1216,7 +1238,7 @@ def _run_single_variant(args: argparse.Namespace) -> None:
     else:
         stage_a_tag = f"itersA{args.iters_a}"
     ablation_dir = (
-        Path("data/ablation_bermudan")
+        script_data_dir(__file__)
         / f"{timestamp}_{stage_a_tag}_itersB{args.iters_b}_variant_{args.variant}"
     )
     vdir = ablation_dir / f"variant_{args.variant}"
@@ -1279,6 +1301,7 @@ def _run_single_variant(args: argparse.Namespace) -> None:
         "iters_b":            args.iters_b,
         "sigma_w":            args.sigma_w,
         "eps_w":              args.eps_w,
+        "g2_gamma":           args.g2_gamma,
         "weight_decay":       args.weight_decay,
         "N_TC":               p3.N_TC,
         "N_F":                p3.N_F,
@@ -1304,6 +1327,7 @@ def _run_single_variant(args: argparse.Namespace) -> None:
         sigma_w=args.sigma_w,
         eps_w=args.eps_w,
         use_spatial_weight=variant["use_spatial_weight"],
+        g2_gamma=args.g2_gamma,
         stage_b_checkpoint_every=int(args.checkpoint_every),
         stage_b_resume_from=resume_from_path,
     )
@@ -1383,6 +1407,14 @@ def main() -> None:
     parser.add_argument(
         "--eps-w", type=float, default=1e-3,
         help="Floor of spatial weight at s* (default 1e-3)",
+    )
+    parser.add_argument(
+        "--g2-gamma", type=float, default=None, metavar="GAMMA",
+        help="Curvature gamma >= 0 of the Stage B temporal truncation profile "
+             "h(t) = exp(-gamma * (t1 - t)^2) applied to the g2 field. "
+             "None (default) disables the truncation (h ≡ 1, standard ETCNN). "
+             "When set, an additional diagnostics plot "
+             "(plotBh_temporal_truncation.png) is produced by bermudan_problem.",
     )
     parser.add_argument("--n-tc", type=int, default=None, help="Override N_TC")
     parser.add_argument("--n-f",  type=int, default=None, help="Override N_F")
@@ -1520,7 +1552,7 @@ def main() -> None:
     else:
         stage_a_tag = f"itersA{args.iters_a}"
     ablation_dir = (
-        Path("data/ablation_bermudan")
+        script_data_dir(__file__)
         / f"{timestamp}_{stage_a_tag}_itersB{args.iters_b}"
     )
     ablation_dir.mkdir(parents=True, exist_ok=True)
@@ -1589,6 +1621,7 @@ def main() -> None:
         "iters_b":           args.iters_b,
         "sigma_w":      args.sigma_w,
         "eps_w":        args.eps_w,
+        "g2_gamma":     args.g2_gamma,
         "weight_decay": args.weight_decay,
         "N_TC":         p3.N_TC,
         "N_F":          p3.N_F,
@@ -1645,6 +1678,7 @@ def main() -> None:
             sigma_w=args.sigma_w,
             eps_w=args.eps_w,
             use_spatial_weight=variant["use_spatial_weight"],
+            g2_gamma=args.g2_gamma,
             stage_b_checkpoint_every=int(args.checkpoint_every),
         )
         t_variant_elapsed = time.time() - t_variant_start
