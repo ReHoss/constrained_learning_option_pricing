@@ -268,58 +268,94 @@ def make_payoff_smooth_logS(beta: float):
 # Sampler factories in (x, t) space
 # ---------------------------------------------------------------------------
 
-def make_sampler_naive_logS(n_f: int, n_tc: int):
+def make_sampler_naive_logS(
+    n_f: int,
+    n_tc: int,
+    generator: torch.Generator | None = None,
+):
+    """Naive uniform sampler for (x, t) collocation and (x, T) terminal points.
+
+    Args:
+        n_f: number of PDE collocation points per batch.
+        n_tc: number of terminal-condition collocation points per batch.
+        generator: explicit ``torch.Generator`` driving the random draws.  When
+            ``None``, falls back to the global RNG state — kept only for
+            backward compatibility, do not rely on it for new code.  The
+            generator must live on the same device as ``p3.DEVICE``.
+    """
     def _sample():
         device = p3.DEVICE
-        x_f = (torch.rand(n_f, device=device) * (X_HI - X_LO) + X_LO).requires_grad_(True)
-        t_f = (torch.rand(n_f, device=device) * T).requires_grad_(True)
-        x_tc = torch.rand(n_tc, device=device) * (X_HI - X_LO) + X_LO
+        x_f = (torch.rand(n_f, generator=generator, device=device) * (X_HI - X_LO) + X_LO).requires_grad_(True)
+        t_f = (torch.rand(n_f, generator=generator, device=device) * T).requires_grad_(True)
+        x_tc = torch.rand(n_tc, generator=generator, device=device) * (X_HI - X_LO) + X_LO
         t_tc = torch.full((n_tc,), T, device=device)
         return x_f, t_f, x_tc, t_tc
     return _sample
 
 
-def make_sampler_truncated_logS(n_f: int, n_tc: int, eps: float):
-    """PDE points in t ∈ [0, T-eps]; terminal condition still at t=T exact."""
+def make_sampler_truncated_logS(
+    n_f: int,
+    n_tc: int,
+    eps: float,
+    generator: torch.Generator | None = None,
+):
+    """PDE points in t ∈ [0, T-eps]; terminal condition still at t=T exact.
+
+    ``generator`` semantics: see :func:`make_sampler_naive_logS`.
+    """
     def _sample():
         device = p3.DEVICE
-        x_f = (torch.rand(n_f, device=device) * (X_HI - X_LO) + X_LO).requires_grad_(True)
-        t_f = (torch.rand(n_f, device=device) * (T - eps)).requires_grad_(True)
-        x_tc = torch.rand(n_tc, device=device) * (X_HI - X_LO) + X_LO
+        x_f = (torch.rand(n_f, generator=generator, device=device) * (X_HI - X_LO) + X_LO).requires_grad_(True)
+        t_f = (torch.rand(n_f, generator=generator, device=device) * (T - eps)).requires_grad_(True)
+        x_tc = torch.rand(n_tc, generator=generator, device=device) * (X_HI - X_LO) + X_LO
         t_tc = torch.full((n_tc,), T, device=device)
         return x_f, t_f, x_tc, t_tc
     return _sample
 
 
-def make_sampler_importance_logS(n_f: int, n_tc: int,
-                                  sigma_is: float, mix: float = 0.5,
-                                  eps: float = 0.0):
-    """Mix of uniform + Gaussian concentrated around x = ln(K) (ATM)."""
+def make_sampler_importance_logS(
+    n_f: int,
+    n_tc: int,
+    sigma_is: float,
+    mix: float = 0.5,
+    eps: float = 0.0,
+    generator: torch.Generator | None = None,
+):
+    """Mix of uniform + Gaussian concentrated around x = ln(K) (ATM).
+
+    ``generator`` semantics: see :func:`make_sampler_naive_logS`.
+    """
     def _sample():
         device = p3.DEVICE
         n_focal   = int(n_f * mix)
         n_uniform = n_f - n_focal
-        x_uniform = torch.rand(n_uniform, device=device) * (X_HI - X_LO) + X_LO
-        x_focal   = (X_ATM + torch.randn(n_focal, device=device) * sigma_is).clamp(X_LO, X_HI)
+        x_uniform = torch.rand(n_uniform, generator=generator, device=device) * (X_HI - X_LO) + X_LO
+        x_focal   = (X_ATM + torch.randn(n_focal, generator=generator, device=device) * sigma_is).clamp(X_LO, X_HI)
         x_f = torch.cat([x_uniform, x_focal]).requires_grad_(True)
-        t_f = (torch.rand(n_f, device=device) * (T - eps)).requires_grad_(True)
-        x_tc = torch.rand(n_tc, device=device) * (X_HI - X_LO) + X_LO
+        t_f = (torch.rand(n_f, generator=generator, device=device) * (T - eps)).requires_grad_(True)
+        x_tc = torch.rand(n_tc, generator=generator, device=device) * (X_HI - X_LO) + X_LO
         t_tc = torch.full((n_tc,), T, device=device)
         return x_f, t_f, x_tc, t_tc
     return _sample
 
 
-def make_sampler_vpinn_logS(n_tau: int, eps: float = 0.01 * T):
+def make_sampler_vpinn_logS(
+    n_tau: int,
+    eps: float = 0.01 * T,
+    generator: torch.Generator | None = None,
+):
     """Return t_batch (time collocation points for the VPINN weak residual).
 
-    The IC at t=T is enforced via quadrature inside _VPINNLossForwardLogS.ic_loss_quad,
+    The IC at t=T is enforced via quadrature inside ``_VPINNLossForwardLogS.ic_loss_quad``,
     so no separate TC points are needed here.
 
     Args:
-        eps: Temporal truncation — PDE collocation points drawn from [0, T−eps].
+        n_tau: number of time points per batch.
+        eps: temporal truncation — PDE collocation points are drawn from [0, T−eps].
+        generator: explicit ``torch.Generator`` (see :func:`make_sampler_naive_logS`).
     """
     def _sample():
-        return torch.rand(n_tau, device=p3.DEVICE) * (T - eps)
+        return torch.rand(n_tau, generator=generator, device=p3.DEVICE) * (T - eps)
     return _sample
 
 
@@ -327,45 +363,46 @@ def make_sampler_vpinn_logS_is_tau(
     n_tau: int,
     alpha: float = 0.3,
     eps: float = 0.001 * T,
+    generator: torch.Generator | None = None,
 ):
-    """VPINN sampler biaisé vers τ → 0 (proche de la maturité).
+    """VPINN sampler biased toward τ → 0 (near maturity).
 
-    Tirage : τ = T · U^(1/α)  avec  U ~ Uniform(0, 1)
-    puis t = T − τ.
+    Draws τ = T · U^(1/α) with U ~ Uniform(0, 1), then sets t = T − τ.
 
-    Choix de α (où "biais" signifie "concentration des points près de τ=0") :
-        α = 1   → uniforme classique (aucun biais)
-        α = 0.5 → biais modéré (la moitié des points dans [0, T/4])
-        α = 0.3 → biais fort     (la moitié des points dans [0, T·0.099])
-        α = 0.2 → biais très fort (la moitié des points dans [0, T·0.031])
+    Choice of α (where "biased" means "concentration of points near τ=0"):
+        α = 1   → classical uniform (no bias)
+        α = 0.5 → moderate bias    (half the points fall in [0, T/4])
+        α = 0.3 → strong bias      (half the points fall in [0, T·0.099])
+        α = 0.2 → very strong bias (half the points fall in [0, T·0.031])
 
-    Effet attendu sur le γ près de τ=0
-    ----------------------------------
-    Le résidu PDE est plus difficile à satisfaire près de la maturité (γ y est
-    quasi-singulier).  En tirant plus de points dans cette zone, on force
-    l'optimiseur à y consacrer plus de capacité réseau — au prix d'une légère
-    dégradation potentielle ailleurs.
+    Expected effect on γ near τ=0
+    -----------------------------
+    The PDE residual is harder to satisfy near maturity (γ is near-singular
+    there).  Concentrating samples in that zone forces the optimizer to spend
+    more network capacity there, at the cost of slightly degrading the fit
+    elsewhere.
 
-    Pas de correction d'importance sampling
-    ---------------------------------------
-    Volontairement BIAISÉ : on minimise  E_{τ~q}[ℒ_f(T − τ)]  au lieu de
-    E_{τ~U(0,T)}[ℒ_f(T − τ)].  C'est exactement ce qu'on veut pour donner
-    plus de poids à la zone difficile.  Si on veut un estimateur non-biaisé
-    de l'intégrale uniforme, il faudrait pondérer chaque résidu par
-    p_uniform(τ) / q(τ) — mais alors le bénéfice se réduit à de la
-    réduction de variance, pas à un meilleur fit ciblé.
+    No importance sampling correction
+    ---------------------------------
+    Intentionally BIASED: we minimise E_{τ~q}[L_f(T − τ)] rather than
+    E_{τ~U(0,T)}[L_f(T − τ)].  That is exactly what we want when the goal is
+    to put more weight on the difficult region.  Re-weighting each residual
+    by p_uniform(τ) / q(τ) would recover the unbiased estimator of the
+    uniform integral — but then the benefit collapses to variance reduction,
+    not a targeted fit.
 
     Args:
-        n_tau: nombre de points temporels par batch.
-        alpha: exposant de la loi de puissance.  α < 1 ⟹ concentration en τ=0.
-        eps: clamp inférieur sur τ pour éviter de tirer τ=0 exactement
-             (le résidu y est mal défini, le réseau pure-payoff IC suffit).
+        n_tau: number of time points per batch.
+        alpha: power-law exponent.  α < 1 ⟹ concentration near τ=0.
+        eps: lower clamp on τ to avoid drawing τ=0 exactly (the residual is
+             ill-defined there; the pure-payoff IC term handles t=T already).
+        generator: explicit ``torch.Generator`` (see :func:`make_sampler_naive_logS`).
     """
     def _sample():
-        u = torch.rand(n_tau, device=p3.DEVICE).clamp(min=1e-6)
-        tau = T * u.pow(1.0 / alpha)         # densité ∝ τ^(α-1)/T^α
-        tau = tau.clamp(min=eps)              # garde-fou contre τ=0
-        return T - tau                         # back to t coordinates
+        u = torch.rand(n_tau, generator=generator, device=p3.DEVICE).clamp(min=1e-6)
+        tau = T * u.pow(1.0 / alpha)          # density ∝ τ^(α-1)/T^α
+        tau = tau.clamp(min=eps)               # guard against τ=0 exactly
+        return T - tau                          # back to t coordinates
     return _sample
 
 
@@ -430,45 +467,72 @@ def compute_losses_vpinn_logS(
 # Checkpoint helpers — reproducibility on resume
 # ---------------------------------------------------------------------------
 
-def _capture_rng_state() -> dict:
-    """Capture l'état des générateurs aléatoires CPU + CUDA pour le checkpoint.
+def _capture_rng_state(sampler_gen: torch.Generator | None = None) -> dict:
+    """Snapshot stochastic state for a checkpoint.
 
-    Sans ça, un resume échantillonne dans un état RNG différent de ce que le
-    run continu aurait vu : le t_batch tiré au step de reprise sera distinct
-    de celui d'un run continu équivalent.  En sauvegardant l'état RNG, on
-    garantit que les tirages stochastiques reprennent exactement où ils
-    s'étaient arrêtés — la trajectoire post-resume est bit-à-bit identique
-    à celle d'un run continu.
+    Captures three things, all optional:
+
+    * ``sampler_gen_state`` — the explicit per-variant ``torch.Generator`` used
+      by the sampler (preferred path: bit-for-bit reproducible, isolated from
+      the global RNG).
+    * ``torch_rng`` / ``torch_cuda_rng`` — the *global* CPU and CUDA RNG
+      states.  Kept as a fallback to make legacy code paths (e.g. anything
+      that still relies on ``torch.rand(...)`` without ``generator=``) also
+      survive a resume.
+
+    Captured states are CPU tensors so they can be serialised across devices.
     """
-    state = {"torch_rng": torch.get_rng_state()}
+    state: dict = {"torch_rng": torch.get_rng_state()}
     if torch.cuda.is_available():
         state["torch_cuda_rng"] = torch.cuda.get_rng_state_all()
+    if sampler_gen is not None:
+        state["sampler_gen_state"] = sampler_gen.get_state().cpu()
     return state
 
 
-def _restore_rng_state(ckpt: dict, label: str) -> bool:
-    """Restaure l'état RNG depuis le checkpoint si présent.
+def _restore_rng_state(
+    ckpt: dict,
+    label: str,
+    sampler_gen: torch.Generator | None = None,
+) -> bool:
+    """Restore stochastic state from a checkpoint.
 
-    Retourne True si l'état a pu être restauré, False sinon (checkpoint legacy
-    sans état RNG).  Émet un avertissement explicite dans les deux cas pour
-    que l'utilisateur soit informé du niveau de reproductibilité du resume.
+    If ``sampler_gen`` is provided and the checkpoint carries a saved
+    ``sampler_gen_state``, the dedicated per-variant generator is restored —
+    that is the bit-for-bit reproducible path for new code.  The global CPU
+    and CUDA RNG states are also restored when present, for legacy compatibility.
+
+    Returns True if any kind of stochastic state was restored, False otherwise.
+    A warning is logged when the checkpoint has neither kind of state (so the
+    user knows the resume is statistically equivalent but not bit-for-bit).
     """
+    restored_any = False
+    if sampler_gen is not None and "sampler_gen_state" in ckpt:
+        sampler_gen.set_state(ckpt["sampler_gen_state"].cpu())
+        logger.info(
+            f"[{label}] Restored dedicated sampler torch.Generator state from checkpoint"
+            " — resume is bit-for-bit reproducible vs an equivalent continuous run"
+        )
+        restored_any = True
     if "torch_rng" in ckpt:
         torch.set_rng_state(ckpt["torch_rng"])
         if "torch_cuda_rng" in ckpt and torch.cuda.is_available():
             torch.cuda.set_rng_state_all(ckpt["torch_cuda_rng"])
-        logger.info(
-            f"[{label}] État RNG restauré (CPU{' + CUDA' if 'torch_cuda_rng' in ckpt else ''}) "
-            f"— le resume est bit-à-bit reproductible vis-à-vis d'un run continu équivalent"
+        if not restored_any:
+            logger.info(
+                f"[{label}] Restored global RNG state (CPU"
+                f"{' + CUDA' if 'torch_cuda_rng' in ckpt else ''}) from checkpoint"
+                " — legacy fallback path (consider migrating to a propagated"
+                " torch.Generator for stronger guarantees)"
+            )
+        restored_any = True
+    if not restored_any:
+        logger.warning(
+            f"[{label}] ⚠ Checkpoint has no stochastic state — the resume will draw"
+            " from a fresh random state.  The post-resume trajectory will diverge"
+            " from a continuous run (statistically equivalent, not bit-for-bit)."
         )
-        return True
-    logger.warning(
-        f"[{label}] ⚠ Checkpoint sans état RNG (format ancien) — "
-        f"le resume utilisera un état aléatoire frais.  La trajectoire post-resume "
-        f"divergera d'un run continu (statistiquement équivalente, mais pas bit-à-bit "
-        f"identique).  Les futurs checkpoints sauveront le RNG pour pleine reproductibilité."
-    )
-    return False
+    return restored_any
 
 
 class BestModelTracker:
@@ -573,7 +637,14 @@ def train_variant(
     payoff_fn,
     label: str,
     log_every: int | None = None,
+    sampler_gen: torch.Generator | None = None,
 ) -> dict:
+    """Adam training loop for strong-form variants.
+
+    ``sampler_gen`` is the explicit ``torch.Generator`` driving ``sampler_fn``.
+    It is unused inside this function (this loop has no checkpointing yet) but
+    accepted for API uniformity across training functions.
+    """
     if log_every is None:
         log_every = p3._adaptive_log_every(total_iters)
     model.to(p3.DEVICE)
@@ -643,8 +714,14 @@ def train_variant_vpinn(
     label: str,
     lam_f: float | None = None,
     log_every: int | None = None,
+    sampler_gen: torch.Generator | None = None,
 ) -> dict:
-    """Training loop for the VPINN variant (weak-form PDE loss)."""
+    """Training loop for the VPINN variant (weak-form PDE loss).
+
+    ``sampler_gen`` is the explicit ``torch.Generator`` driving ``sampler_fn``.
+    Currently unused inside the loop (no checkpointing) but accepted for API
+    uniformity across training functions.
+    """
     if log_every is None:
         log_every = p3._adaptive_log_every(total_iters)
     model.to(p3.DEVICE)
@@ -779,8 +856,13 @@ def train_variant_vpinn_engd(
     checkpoint_path: Path | None = None,
     resume: bool = False,
     save_every: int = 50,
+    sampler_gen: torch.Generator | None = None,
 ) -> dict:
     """VPINN training with ENGD (natural gradient).
+
+    ``sampler_gen``: explicit ``torch.Generator`` driving the sampler.  Its
+    state is saved in the checkpoint so resumes are bit-for-bit reproducible
+    vs an equivalent continuous run.
 
     The Gram matrix is built from the Jacobian of the forward-time weak residuals
     ``_vpinn_residuals_forward_logS``, matching the ``_VPINNLossForwardLogS``
@@ -827,7 +909,7 @@ def train_variant_vpinn_engd(
         if "best_tracker" in ckpt:
             best_tracker.load_state_dict(ckpt["best_tracker"])
         logger.info(f"[{label}] ── Resumed from checkpoint at iter {ckpt['iter']}/{total_iters}")
-        _restore_rng_state(ckpt, label)
+        _restore_rng_state(ckpt, label, sampler_gen=sampler_gen)
 
     model.train()
     t0 = time.time()
@@ -905,7 +987,7 @@ def train_variant_vpinn_engd(
             torch.save({"iter": it, "model_state": model.state_dict(),
                         "history": history,
                         "best_tracker": best_tracker.state_dict(),
-                        **_capture_rng_state()}, checkpoint_path)
+                        **_capture_rng_state(sampler_gen=sampler_gen)}, checkpoint_path)
 
     if best_tracker.restore(model):
         logger.info(
@@ -983,8 +1065,13 @@ def train_variant_engd(
     checkpoint_path: Path | None = None,
     resume: bool = False,
     save_every: int = 50,
+    sampler_gen: torch.Generator | None = None,
 ) -> dict:
     """Strong-form PINN training with paper-faithful ENGD (lstsq + fixed grid).
+
+    ``sampler_gen``: explicit ``torch.Generator`` driving the sampler.  Its
+    state is saved in the checkpoint so resumes are bit-for-bit reproducible
+    vs an equivalent continuous run.
 
     Follows Zeinhofer et al. (ICML 2023) closely:
     - Fixed deterministic grid: (n_grid-2)^2 interior + (n_grid-1) terminal points
@@ -1041,7 +1128,7 @@ def train_variant_engd(
         if "best_tracker" in ckpt:
             best_tracker.load_state_dict(ckpt["best_tracker"])
         logger.info(f"[{label}] ── Resumed from checkpoint at iter {ckpt['iter']}/{total_iters}")
-        _restore_rng_state(ckpt, label)
+        _restore_rng_state(ckpt, label, sampler_gen=sampler_gen)
 
     model.train()
     t0 = time.time()
@@ -1211,7 +1298,7 @@ def train_variant_engd(
             torch.save({"iter": it, "model_state": model.state_dict(),
                         "history": history,
                         "best_tracker": best_tracker.state_dict(),
-                        **_capture_rng_state()}, checkpoint_path)
+                        **_capture_rng_state(sampler_gen=sampler_gen)}, checkpoint_path)
 
     if best_tracker.restore(model):
         logger.info(
@@ -1236,8 +1323,13 @@ def train_variant_vpinn_lbfgs(
     resume: bool = False,
     save_every: int = 50,
     stochastic_batch: bool = True,
+    sampler_gen: torch.Generator | None = None,
 ) -> dict:
     """VPINN training with L-BFGS (quasi-Newton, limited-memory Hessian approx.).
+
+    ``sampler_gen``: explicit ``torch.Generator`` driving the sampler.  Its
+    state is saved in the checkpoint so resumes are bit-for-bit reproducible
+    vs an equivalent continuous run.
 
     Each outer L-BFGS step may call the closure multiple times for the
     strong-Wolfe line search.  One 'iteration' here corresponds to one outer
@@ -1297,7 +1389,7 @@ def train_variant_vpinn_lbfgs(
         else:
             logger.info(f"[{label}] ── Resumed from checkpoint at iter {ckpt['iter']}/{total_iters}"
                         " (L-BFGS curvature history restored)")
-        _restore_rng_state(ckpt, label)
+        _restore_rng_state(ckpt, label, sampler_gen=sampler_gen)
 
     model.train()
     t0 = time.time()
@@ -1381,7 +1473,7 @@ def train_variant_vpinn_lbfgs(
                                "optimizer_state": optimizer.state_dict(),
                                "history": history,
                                "best_tracker": best_tracker.state_dict(),
-                               **_capture_rng_state()}
+                               **_capture_rng_state(sampler_gen=sampler_gen)}
             if t_batch_fixed is not None:
                 ckpt_data["t_batch_fixed"] = t_batch_fixed.cpu()
             torch.save(ckpt_data, checkpoint_path)
@@ -1409,8 +1501,13 @@ def train_variant_vpinn_lbfgs_epoch(
     resume: bool = False,
     save_every: int = 50,
     epoch_size: int = 20,
+    sampler_gen: torch.Generator | None = None,
 ) -> dict:
-    """VPINN training with L-BFGS par époques à batch fixe.
+    """VPINN training with epoch-based L-BFGS (fixed batch within an epoch).
+
+    ``sampler_gen``: explicit ``torch.Generator`` driving the sampler.  Its
+    state is saved in the checkpoint so resumes are bit-for-bit reproducible
+    vs an equivalent continuous run.
 
     Principe : on découpe l'entraînement en époques de ``epoch_size`` steps.
     Dans chaque époque, ``t_batch`` est tiré une seule fois et gardé fixe.
@@ -1480,7 +1577,7 @@ def train_variant_vpinn_lbfgs_epoch(
             f"[{label}] ── Resumed from checkpoint at iter {ckpt['iter']}/{total_iters} "
             f"(L-BFGS curvature history + epoch t_batch restored)"
         )
-        _restore_rng_state(ckpt, label)
+        _restore_rng_state(ckpt, label, sampler_gen=sampler_gen)
 
     model.train()
     t0 = time.time()
@@ -1572,7 +1669,7 @@ def train_variant_vpinn_lbfgs_epoch(
                 "t_batch_epoch": t_batch.cpu(),
                 "history": history,
                 "best_tracker": best_tracker.state_dict(),
-                **_capture_rng_state(),
+                **_capture_rng_state(sampler_gen=sampler_gen),
             }, checkpoint_path)
 
     if best_tracker.restore(model):
@@ -2106,25 +2203,41 @@ def _build_variants(mode: str) -> list[dict]:
     raise ValueError(f"Unknown mode: {mode!r}")
 
 
-def _build_sampler(cfg: dict, n_f: int, n_tc: int):
+def _build_sampler(
+    cfg: dict,
+    n_f: int,
+    n_tc: int,
+    generator: torch.Generator | None = None,
+):
+    """Build the per-variant sampling closure, propagating an explicit RNG.
+
+    The ``generator`` argument should be a ``torch.Generator`` created on
+    ``p3.DEVICE`` and owned by the caller (typically :func:`_train_one_variant`).
+    Passing it here makes the sampler's stochasticity independent from the
+    global ``torch`` RNG and lets the caller checkpoint / restore the state
+    deterministically across resumes.
+    """
     t = cfg["sampler_type"]
     if t in ("naive", "engd"):
-        return make_sampler_naive_logS(n_f, n_tc)
+        return make_sampler_naive_logS(n_f, n_tc, generator=generator)
     if t == "truncated":
-        return make_sampler_truncated_logS(n_f, n_tc, eps=cfg["eps"])
+        return make_sampler_truncated_logS(n_f, n_tc, eps=cfg["eps"], generator=generator)
     if t == "importance":
         return make_sampler_importance_logS(n_f, n_tc,
                                             sigma_is=cfg["sigma_is"],
-                                            mix=cfg["mix"], eps=cfg["eps"])
+                                            mix=cfg["mix"], eps=cfg["eps"],
+                                            generator=generator)
     if t in ("vpinn", "vpinn_engd", "vpinn_lbfgs", "vpinn_lbfgs_epoch"):
         return make_sampler_vpinn_logS(cfg.get("n_tau", 512),
-                                       eps=cfg.get("eps", 0.01 * T))
+                                       eps=cfg.get("eps", 0.01 * T),
+                                       generator=generator)
     if t == "vpinn_lbfgs_is_tau":
-        # Échantillonnage biaisé τ → 0 pour mieux résoudre le γ près de la maturité
+        # Biased τ → 0 sampling to better resolve γ near maturity
         return make_sampler_vpinn_logS_is_tau(
             cfg.get("n_tau", 512),
             alpha=cfg.get("is_tau_alpha", 0.3),
             eps=cfg.get("eps", 0.001 * T),
+            generator=generator,
         )
     raise ValueError(f"Unknown sampler_type: {t!r}")
 
@@ -2915,6 +3028,24 @@ def _replot(ablation_dir: Path) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+_INIT_SEED_OFFSET    = 0x5EED_1117   # arbitrary disambiguation between roles
+_SAMPLER_SEED_OFFSET = 0x5A11_9100
+
+
+def _variant_seed(variant_name: str, salt: int) -> int:
+    """Deterministic 64-bit seed derived from a variant name and a role salt.
+
+    Built from a stable hash so that two runs with the same variant produce
+    the same initial model weights and the same sampler trajectory, while
+    different variants are decorrelated by construction.
+    """
+    import hashlib
+    h = hashlib.blake2b(variant_name.encode("utf-8"), digest_size=8).digest()
+    raw = int.from_bytes(h, "big") ^ (salt & ((1 << 64) - 1))
+    # torch.Generator.manual_seed expects a positive 64-bit int
+    return raw & ((1 << 63) - 1)
+
+
 def _train_one_variant(
     v: dict,
     vdir: Path,
@@ -2923,20 +3054,55 @@ def _train_one_variant(
     total_iters: int,
     resume: bool = False,
 ) -> dict:
-    """Build, train, evaluate, and save one variant; return the result dict."""
-    # Trois sémantiques possibles pour le nombre d'itérations effectif :
-    #   - iters_override : force exactement cette valeur, ignore --iters et max_iters
-    #     → utilisé pour les variants qui ont besoin de plus d'iters que --iters
-    #       (ex. Adam 50k pour mieux capter une singularité)
-    #   - max_iters : cap supérieur, on prend min(max_iters, total_iters)
-    #     → variants chers qui doivent rester sous total_iters (ENGD, L-BFGS)
-    #   - sinon : on suit total_iters (--iters)
+    """Build, train, evaluate, and save one variant; return the result dict.
+
+    Random-number-generator hygiene
+    -------------------------------
+    Two roles need decorrelated, deterministic RNGs:
+
+    1. *Model initialisation* — done once before training.  Currently the
+       PyTorch ``nn.Module`` parameter init helpers (Kaiming, etc.) all read
+       from the *global* RNG, so we set ``torch.manual_seed(...)`` once
+       deterministically right before ``_build_model_for_variant(v)``.  On
+       resume the model weights are loaded from the checkpoint and this
+       seed has no observable effect — it is only useful for reproducing
+       a fresh run from scratch.
+
+    2. *Stochastic sampling during training* — happens at every step.  We
+       create a dedicated ``torch.Generator`` on ``p3.DEVICE`` and propagate
+       it explicitly to the sampler closure via :func:`_build_sampler` and
+       to the training function (for checkpoint save/restore).  This is the
+       modern best practice: it avoids relying on hidden global state,
+       which is brittle (cross-library pollution, non-thread-safe) and
+       opaque (no inspectable seed).
+
+    The two seeds are derived from the variant name through different salts
+    so different variants — and the two roles within a variant — are
+    decorrelated.
+    """
+    # Three possible semantics for the effective iteration count:
+    #   - iters_override: forces this exact value, ignoring --iters and max_iters
+    #     → for variants that need more iters than --iters provides
+    #       (e.g. Adam 50k to better resolve a singularity).
+    #   - max_iters: upper cap, take min(max_iters, total_iters)
+    #     → variants expensive per step that must stay under total_iters
+    #       (ENGD, L-BFGS).
+    #   - otherwise: follow total_iters (--iters).
     if "iters_override" in v:
         effective_iters = v["iters_override"]
     else:
         effective_iters = min(v.get("max_iters", total_iters), total_iters)
+
+    # Deterministic model init (only matters for from-scratch runs; on resume
+    # the weights are loaded from the checkpoint).
+    torch.manual_seed(_variant_seed(v["name"], _INIT_SEED_OFFSET))
+
+    # Dedicated sampler RNG, propagated explicitly — independent of global state.
+    sampler_gen = torch.Generator(device=p3.DEVICE)
+    sampler_gen.manual_seed(_variant_seed(v["name"], _SAMPLER_SEED_OFFSET))
+
     model      = _build_model_for_variant(v)
-    sampler_fn = _build_sampler(v, n_f, n_tc)
+    sampler_fn = _build_sampler(v, n_f, n_tc, generator=sampler_gen)
     payoff_fn  = _build_payoff(v)
     ckpt_path  = vdir / "checkpoint.pt"
 
@@ -2944,13 +3110,15 @@ def _train_one_variant(
         vpinn_module = _build_vpinn_loss(v)
         hist = train_variant_vpinn(model, vpinn_module, effective_iters,
                                    sampler_fn, payoff_fn, v["name"],
-                                   lam_f=v.get("lam_f"))
+                                   lam_f=v.get("lam_f"),
+                                   sampler_gen=sampler_gen)
     elif v["sampler_type"] == "vpinn_engd":
         vpinn_module = _build_vpinn_loss(v)
         hist = train_variant_vpinn_engd(model, vpinn_module, effective_iters,
                                         sampler_fn, payoff_fn, v["name"],
                                         lam_f=v.get("lam_f"),
-                                        checkpoint_path=ckpt_path, resume=resume)
+                                        checkpoint_path=ckpt_path, resume=resume,
+                                        sampler_gen=sampler_gen)
     elif v["sampler_type"] == "engd":
         hist = train_variant_engd(model, effective_iters,
                                   sampler_fn, payoff_fn, v["name"],
@@ -2960,27 +3128,31 @@ def _train_one_variant(
                                   lam_f_override=v.get("lam_f_override"),
                                   lam_tc_override=v.get("lam_tc_override"),
                                   preconditioner_mode=v.get("preconditioner_mode", "joint"),
-                                  checkpoint_path=ckpt_path, resume=resume)
+                                  checkpoint_path=ckpt_path, resume=resume,
+                                  sampler_gen=sampler_gen)
     elif v["sampler_type"] in ("vpinn_lbfgs", "vpinn_lbfgs_is_tau"):
-        # Même fonction d'entraînement (L-BFGS stochastique avec NaN-guard) ;
-        # la différence vient du sampler_fn déjà construit en amont (uniforme
-        # vs biaisé τ→0).  Le bénéfice attendu de "is_tau" est sur la qualité
-        # locale du γ près de la maturité, pas sur la procédure d'optimisation.
+        # Same training function (stochastic L-BFGS with NaN-guard); the
+        # difference is the sampler_fn built upstream (uniform vs τ→0 biased).
+        # The expected benefit of "is_tau" is on the local γ quality near
+        # maturity, not on the optimization procedure itself.
         vpinn_module = _build_vpinn_loss(v)
         hist = train_variant_vpinn_lbfgs(model, vpinn_module, effective_iters,
                                          sampler_fn, payoff_fn, v["name"],
                                          lam_f=v.get("lam_f"),
                                          checkpoint_path=ckpt_path, resume=resume,
-                                         stochastic_batch=True)
+                                         stochastic_batch=True,
+                                         sampler_gen=sampler_gen)
     elif v["sampler_type"] == "vpinn_lbfgs_epoch":
         vpinn_module = _build_vpinn_loss(v)
         hist = train_variant_vpinn_lbfgs_epoch(model, vpinn_module, effective_iters,
                                                sampler_fn, payoff_fn, v["name"],
                                                lam_f=v.get("lam_f"),
                                                epoch_size=v.get("epoch_size", 20),
-                                               checkpoint_path=ckpt_path, resume=resume)
+                                               checkpoint_path=ckpt_path, resume=resume,
+                                               sampler_gen=sampler_gen)
     else:
-        hist = train_variant(model, effective_iters, sampler_fn, payoff_fn, v["name"])
+        hist = train_variant(model, effective_iters, sampler_fn, payoff_fn, v["name"],
+                             sampler_gen=sampler_gen)
 
     metrics   = compute_metrics(model, hist)
     gt_slices = _compute_gt_slices(model)
