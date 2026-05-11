@@ -2,6 +2,9 @@
 
 # Name of the project
 NAME_PROJECT="doe4rl"
+# Name of the virtual environment under venv/  (no fallback — must match a
+# real venv directory in the project).
+V_ENV_NAME="venv_learning_option_pricing"
 # Name of the job array script
 NAME_JOB_ARRAY_SCRIPT="job_array_batch_xp.slurm"
 
@@ -126,7 +129,7 @@ sbatch \
   --array=0-"$N_LAST_ARRAYID" \
   --output="$PATH_LOG_DIR"/job_array_launcher_%A_%a.out \
   --error="$PATH_LOG_DIR"/job_array_launcher_%A_%a.err \
-  --export=NAME_PROJECT="$NAME_PROJECT",PATH_PYTHON_SCRIPT="$PATH_PYTHON_SCRIPT",PATH_FOLDER_CONFIGS="$PATH_FOLDER_CONFIGS",WORKDIR="$WORKDIR" \
+  --export=NAME_PROJECT="$NAME_PROJECT",PATH_PYTHON_SCRIPT="$PATH_PYTHON_SCRIPT",PATH_FOLDER_CONFIGS="$PATH_FOLDER_CONFIGS",WORKDIR="$WORKDIR",V_ENV_NAME="$V_ENV_NAME" \
   --cpus-per-task="$S_BATCH_CPU_PER_TASK" \
   --time="$S_BATCH_TIME" \
   --qos="$S_BATCH_QOS" \

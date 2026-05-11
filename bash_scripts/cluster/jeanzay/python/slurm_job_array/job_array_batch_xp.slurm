@@ -33,14 +33,18 @@ fi
 PATH_PARENT=$( cd "$(dirname "${BASH_SOURCE[0]}")" || exit ; pwd -P )
 PATH_CONTENT_ROOT="$WORKDIR"/pycharm_remote_project/"$NAME_PROJECT"
 
-# Get the venv name from the command line
-V_ENV_NAME="venvbarl"
+# Venv name — must be exported by the launcher via --export=V_ENV_NAME=...
+if [ -z "${V_ENV_NAME:-}" ]; then
+    echo "The environment variable V_ENV_NAME is not defined"
+    echo "Set it in the launcher's --export, e.g. V_ENV_NAME=venv_learning_option_pricing"
+    exit 1
+fi
 # Get the path of the virtual environment
 PATH_VENV_BIN="$PATH_CONTENT_ROOT"/venv/"$V_ENV_NAME"/bin/activate
 echo PATH_VENV_BIN: "$PATH_VENV_BIN"
 echo
 # Activate the virtual environment, if working echo the name of the venv
-# shellcheck source=/home/hosseinkhan/Documents/work/phd/git_repositories/doe4rl/venv/venvbarl/bin/activate
+# shellcheck source=/dev/null
 source "$PATH_VENV_BIN" && echo "Activation of virtual environment: $V_ENV_NAME"
 echo
 
