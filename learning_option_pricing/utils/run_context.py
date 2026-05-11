@@ -13,6 +13,52 @@ from pathlib import Path
 from typing import Any
 
 
+def find_repo_root(start: str | Path | None = None) -> Path:
+    """Walk upward from ``start`` (default: this module) until a directory
+    containing ``pyproject.toml`` is found and return it.
+
+    Raises:
+        FileNotFoundError: if no ancestor of ``start`` contains
+            ``pyproject.toml``.  This indicates the script is being run from
+            outside the repository checkout.
+    """
+    if start is None:
+        start = Path(__file__)
+    start = Path(start).resolve()
+    for parent in (start, *start.parents):
+        if (parent / "pyproject.toml").exists():
+            return parent
+    raise FileNotFoundError(
+        f"Could not locate repository root (no pyproject.toml found above "
+        f"{start})."
+    )
+
+
+def script_data_dir(script_file: str | Path) -> Path:
+    """Return ``<repo_root>/data/<script_stem>/`` — the canonical output root
+    for the calling script, per the convention in ``CLAUDE.md``.
+
+    Every script that writes experiment data MUST derive its top-level output
+    directory from this helper by passing ``__file__``, so the folder name on
+    disk is mechanically tied to the running script and cannot drift.  The
+    timestamped sub-folder for an individual run is appended by the caller,
+    e.g.::
+
+        out_dir = script_data_dir(__file__) / f"{timestamp}_{config_tag}"
+
+    Args:
+        script_file: pass ``__file__`` from the running script.
+
+    Returns:
+        Absolute :class:`Path` to ``<repo_root>/data/<script_stem>/``.  The
+        directory is **not** created — the caller decides when/whether to
+        ``mkdir`` it (so the helper is side-effect-free and cheap to import
+        from init-only / non-torch code paths).
+    """
+    script_path = Path(script_file).resolve()
+    return find_repo_root(script_path) / "data" / script_path.stem
+
+
 def configure_cli_script_logging(*, verbose: bool) -> None:
     """Console logging for standalone scripts (no ``run.log``).
 
