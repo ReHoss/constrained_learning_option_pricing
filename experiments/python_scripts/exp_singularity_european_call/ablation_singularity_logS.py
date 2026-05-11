@@ -464,6 +464,54 @@ def compute_losses_vpinn_logS(
 
 
 # ---------------------------------------------------------------------------
+# Environment / config logging helpers
+# ---------------------------------------------------------------------------
+
+def _log_environment() -> None:
+    """Log Python version, PyTorch version, CUDA toolkit version, and GPU info.
+
+    Called once at script startup so every log file is self-contained and
+    reproducible issues can be traced back to the exact software environment.
+    """
+    import platform
+    logger.info(f"Python      : {platform.python_version()}  ({sys.executable})")
+    logger.info(f"PyTorch     : {torch.__version__}")
+    if torch.cuda.is_available():
+        logger.info(f"CUDA toolkit: {torch.version.cuda}")
+        for gpu_index in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(gpu_index)
+            total_memory_gib = props.total_memory / (1024 ** 3)
+            logger.info(
+                f"  GPU {gpu_index}: {props.name}  "
+                f"{total_memory_gib:.1f} GiB  "
+                f"compute capability {props.major}.{props.minor}"
+            )
+    else:
+        logger.info("CUDA        : not available — running on CPU")
+
+
+def _log_variant_config(v: dict, effective_iters: int,
+                        model: torch.nn.Module,
+                        init_seed: int, sampler_seed: int) -> None:
+    """Log the full configuration of a variant before training starts.
+
+    Logs every key in the variant dict, the effective iteration count, the
+    model parameter count, and the RNG seeds used — so the log file alone is
+    sufficient to reproduce or audit a run without consulting the source code.
+    """
+    n_params = sum(p.numel() for p in model.parameters())
+    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"  effective_iters : {effective_iters}")
+    logger.info(f"  model_parameters: {n_params:,} total  ({n_trainable:,} trainable)")
+    logger.info(f"  init_seed       : {init_seed}")
+    logger.info(f"  sampler_seed    : {sampler_seed}")
+    skip_keys = {"color", "linestyle", "linewidth", "label"}
+    for key, value in sorted(v.items()):
+        if key not in skip_keys:
+            logger.info(f"  {key:<20}: {value}")
+
+
+# ---------------------------------------------------------------------------
 # Checkpoint helpers — reproducibility on resume
 # ---------------------------------------------------------------------------
 
@@ -515,9 +563,11 @@ def _restore_rng_state(
         )
         restored_any = True
     if "torch_rng" in ckpt:
-        torch.set_rng_state(ckpt["torch_rng"])
+        # Always restore on CPU — map_location='cuda' would have moved this
+        # ByteTensor to GPU, but torch.set_rng_state requires a CPU tensor.
+        torch.set_rng_state(ckpt["torch_rng"].cpu())
         if "torch_cuda_rng" in ckpt and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(ckpt["torch_cuda_rng"])
+            torch.cuda.set_rng_state_all([s.cpu() for s in ckpt["torch_cuda_rng"]])
         if not restored_any:
             logger.info(
                 f"[{label}] Restored global RNG state (CPU"
@@ -701,7 +751,12 @@ def train_variant(
             f"(loss={best_tracker.best_loss:.4e}; last iter loss was {last_loss:.4e})"
         )
     model.eval()
-    logger.info(f"[{label}] Training done in {time.time()-t0:.1f}s")
+    elapsed = time.time() - t0
+    logger.info(
+        f"[{label}] Training done — {total_iters} iters in {elapsed:.1f}s "
+        f"({elapsed / max(total_iters, 1):.2f}s/iter)  "
+        f"best_loss={best_tracker.best_loss:.4e} at iter {best_tracker.best_iter}"
+    )
     return history
 
 
@@ -825,6 +880,7 @@ def train_variant_vpinn(
                 "best_tracker": best_tracker.state_dict(),
                 **_capture_rng_state(sampler_gen=sampler_gen),
             }, checkpoint_path)
+            logger.info(f"[{label}] Checkpoint saved at iter {it}/{total_iters} → {checkpoint_path}")
 
     if best_tracker.restore(model):
         logger.info(
@@ -832,7 +888,12 @@ def train_variant_vpinn(
             f"(loss={best_tracker.best_loss:.4e}; last iter loss was {last_loss:.4e})"
         )
     model.eval()
-    logger.info(f"[{label}] Training done in {time.time()-t0:.1f}s")
+    elapsed = time.time() - t0
+    logger.info(
+        f"[{label}] Training done — {total_iters} iters in {elapsed:.1f}s "
+        f"({elapsed / max(total_iters, 1):.2f}s/iter)  "
+        f"best_loss={best_tracker.best_loss:.4e} at iter {best_tracker.best_iter}"
+    )
     return history
 
 
@@ -1034,6 +1095,7 @@ def train_variant_vpinn_engd(
                         "history": history,
                         "best_tracker": best_tracker.state_dict(),
                         **_capture_rng_state(sampler_gen=sampler_gen)}, checkpoint_path)
+            logger.info(f"[{label}] Checkpoint saved at iter {it}/{total_iters} → {checkpoint_path}")
 
     if best_tracker.restore(model):
         logger.info(
@@ -1041,7 +1103,12 @@ def train_variant_vpinn_engd(
             f"(loss={best_tracker.best_loss:.4e}; last iter loss was {last_loss:.4e})"
         )
     model.eval()
-    logger.info(f"[{label}] Training done in {time.time()-t0:.1f}s")
+    elapsed = time.time() - t0
+    logger.info(
+        f"[{label}] Training done — {total_iters} iters in {elapsed:.1f}s "
+        f"({elapsed / max(total_iters, 1):.2f}s/iter)  "
+        f"best_loss={best_tracker.best_loss:.4e} at iter {best_tracker.best_iter}"
+    )
     return history
 
 
@@ -1345,6 +1412,7 @@ def train_variant_engd(
                         "history": history,
                         "best_tracker": best_tracker.state_dict(),
                         **_capture_rng_state(sampler_gen=sampler_gen)}, checkpoint_path)
+            logger.info(f"[{label}] Checkpoint saved at iter {it}/{total_iters} → {checkpoint_path}")
 
     if best_tracker.restore(model):
         logger.info(
@@ -1352,7 +1420,12 @@ def train_variant_engd(
             f"(loss={best_tracker.best_loss:.4e}; last iter loss was {last_loss:.4e})"
         )
     model.eval()
-    logger.info(f"[{label}] Training done in {time.time()-t0:.1f}s")
+    elapsed = time.time() - t0
+    logger.info(
+        f"[{label}] Training done — {total_iters} iters in {elapsed:.1f}s "
+        f"({elapsed / max(total_iters, 1):.2f}s/iter)  "
+        f"best_loss={best_tracker.best_loss:.4e} at iter {best_tracker.best_iter}"
+    )
     return history
 
 
@@ -1419,22 +1492,30 @@ def train_variant_vpinn_lbfgs(
     if resume and checkpoint_path is not None and Path(checkpoint_path).exists():
         ckpt = torch.load(checkpoint_path, map_location=p3.DEVICE, weights_only=False)
         model.load_state_dict(ckpt["model_state"])
-        optimizer.load_state_dict(ckpt["optimizer_state"])
         start_iter = ckpt["iter"] + 1
         history    = ckpt["history"]
         if "best_tracker" in ckpt:
             best_tracker.load_state_dict(ckpt["best_tracker"])
         if not stochastic_batch and "t_batch_fixed" in ckpt:
-            # Restore the exact same time points so the objective is identical
-            # to what built the curvature history — secant condition stays valid.
+            # Restore optimizer state only when the batch is fixed: the curvature
+            # history was built on exactly these time points, so the secant
+            # condition remains valid across the resume boundary.
+            optimizer.load_state_dict(ckpt["optimizer_state"])
             t_batch_fixed = ckpt["t_batch_fixed"].to(p3.DEVICE)
             logger.info(
                 f"[{label}] ── Resumed from checkpoint at iter {ckpt['iter']}/{total_iters} "
                 f"— curvature history + fixed t_batch restored"
             )
         else:
-            logger.info(f"[{label}] ── Resumed from checkpoint at iter {ckpt['iter']}/{total_iters}"
-                        " (L-BFGS curvature history restored)")
+            # Stochastic batch: the curvature history was built on batches drawn
+            # from a different RNG sequence; restoring it would misguide the line
+            # search and cause NaN cascades.  Start L-BFGS fresh (lr=1.0) from
+            # the saved model weights instead.
+            logger.info(
+                f"[{label}] ── Resumed from checkpoint at iter {ckpt['iter']}/{total_iters} "
+                f"— model weights restored, L-BFGS curvature history reset "
+                f"(stochastic batch: old history invalid across resume boundary)"
+            )
         _restore_rng_state(ckpt, label, sampler_gen=sampler_gen)
 
     model.train()
@@ -1455,6 +1536,11 @@ def train_variant_vpinn_lbfgs(
         )
 
     _lf_last, _ltc_last = [0.0], [0.0]
+    # Tracks consecutive NaN steps to detect and break the lr-halving spiral:
+    # after _NAN_STREAK_HARD_RESET consecutive NaN, lr is reset to a moderate
+    # value so the optimizer can recover rather than decaying to underflow.
+    _NAN_STREAK_HARD_RESET = 15
+    _nan_streak = [0]
 
     for it in range(start_iter, total_iters + 1):
         t_batch = sampler_fn() if stochastic_batch else t_batch_fixed  # type: ignore[assignment]
@@ -1474,17 +1560,33 @@ def train_variant_vpinn_lbfgs(
 
         loss = optimizer.step(closure)
 
-        # NaN guard: roll back params AND reset optimizer state (corrupted curvature)
+        # NaN guard: roll back params AND reset optimizer state (corrupted curvature).
+        # Hard recovery after _NAN_STREAK_HARD_RESET consecutive NaN steps: reset
+        # lr to 1e-3 to break the exponential-halving spiral that would otherwise
+        # drive lr to floating-point underflow.
         if loss is None or not torch.isfinite(torch.tensor(loss.item())):
+            _nan_streak[0] += 1
             set_flat_params(model, params_before)
             old_lr = optimizer.param_groups[0]["lr"]
-            new_lr = old_lr * 0.5
+            if _nan_streak[0] >= _NAN_STREAK_HARD_RESET:
+                new_lr = 1e-3
+                logger.warning(
+                    f"[{label}] iter {it}: {_nan_streak[0]} consecutive NaN steps — "
+                    f"hard-reset lr {old_lr:.2e}→{new_lr:.2e} to break halving spiral"
+                )
+                _nan_streak[0] = 0
+            else:
+                new_lr = max(old_lr * 0.5, 1e-8)
+                logger.warning(
+                    f"[{label}] iter {it}: NaN (streak={_nan_streak[0]}) — "
+                    f"rolled back + reset optimizer, lr {old_lr:.2e}→{new_lr:.2e}"
+                )
             optimizer.__init__(model.parameters(), lr=new_lr, max_iter=20,
                                history_size=100, line_search_fn="strong_wolfe",
                                tolerance_grad=1e-7, tolerance_change=1e-9)
-            logger.warning(f"[{label}] iter {it}: NaN — rolled back + reset optimizer, lr {old_lr:.2e}→{new_lr:.2e}")
             continue
 
+        _nan_streak[0] = 0
         last_loss = loss.item() if loss is not None else float("nan")
         best_tracker.update(model, last_loss, it)
 
@@ -1523,6 +1625,7 @@ def train_variant_vpinn_lbfgs(
             if t_batch_fixed is not None:
                 ckpt_data["t_batch_fixed"] = t_batch_fixed.cpu()
             torch.save(ckpt_data, checkpoint_path)
+            logger.info(f"[{label}] Checkpoint saved at iter {it}/{total_iters} → {checkpoint_path}")
 
     if best_tracker.restore(model):
         logger.info(
@@ -1530,7 +1633,12 @@ def train_variant_vpinn_lbfgs(
             f"(loss={best_tracker.best_loss:.4e}; last iter loss was {last_loss:.4e})"
         )
     model.eval()
-    logger.info(f"[{label}] Training done in {time.time()-t0:.1f}s")
+    elapsed = time.time() - t0
+    logger.info(
+        f"[{label}] Training done — {total_iters} iters in {elapsed:.1f}s "
+        f"({elapsed / max(total_iters, 1):.2f}s/iter)  "
+        f"best_loss={best_tracker.best_loss:.4e} at iter {best_tracker.best_iter}"
+    )
     return history
 
 
@@ -1725,9 +1833,12 @@ def train_variant_vpinn_lbfgs_epoch(
             f"(loss={best_tracker.best_loss:.4e}; last iter loss was {last_loss:.4e})"
         )
     model.eval()
+    elapsed = time.time() - t0
     logger.info(
-        f"[{label}] Training done in {time.time()-t0:.1f}s  "
-        f"({n_epochs_total} epochs of {epoch_size} steps)"
+        f"[{label}] Training done — {total_iters} iters in {elapsed:.1f}s "
+        f"({elapsed / max(total_iters, 1):.2f}s/iter)  "
+        f"{n_epochs_total} epochs of {epoch_size} steps  "
+        f"best_loss={best_tracker.best_loss:.4e} at iter {best_tracker.best_iter}"
     )
     return history
 
@@ -2132,11 +2243,17 @@ _COLORS     = ["tab:blue", "tab:orange", "tab:green", "tab:red",
 
 
 def _build_variants(mode: str) -> list[dict]:
+    # ── Color families ────────────────────────────────────────────────────────
+    # Strong-form PINNs  → blue palette   (#0d47a1 dark … #42a5f5 light)
+    # Weak-form VPINNs   → red/warm palette (#b71c1c dark … #ff7043 orange-red)
+    # Analytical BS ref  → black (enforced in each plotting function)
+    # All learned models share linestyle="-" so they form a unified visual group.
+    # ──────────────────────────────────────────────────────────────────────────
     naive_cfg = dict(
         name="naive", label="Naïf (control)",
         sampler_type="naive", payoff_type="exact",
         eps=0.0, beta=None, sigma_is=None, mix=0.0,
-        color="tab:blue", linestyle="-", linewidth=2.5,
+        color="#0d47a1", linestyle="-", linewidth=2.0,
     )
 
     if mode == "compare-boundary-singularity-european-call":
@@ -2145,11 +2262,11 @@ def _build_variants(mode: str) -> list[dict]:
             dict(name="truncated", label=r"$\varepsilon$-trunc. ($\varepsilon=1\%T$)",
                  sampler_type="truncated", payoff_type="exact",
                  eps=0.01*T, beta=None, sigma_is=None, mix=0.0,
-                 color="tab:orange", linestyle="--", linewidth=2.0),
+                 color="#1976d2", linestyle="-", linewidth=2.0),
             dict(name="smooth", label=r"Smooth ($\beta=100$)",
                  sampler_type="naive", payoff_type="smooth",
                  eps=0.0, beta=100, sigma_is=None, mix=0.0,
-                 color="tab:green", linestyle="-.", linewidth=2.0),
+                 color="#42a5f5", linestyle="-", linewidth=2.0),
             dict(name="vpinn", label="VPINN (weak form)",
                  sampler_type="vpinn", payoff_type="exact",
                  eps=0.0, beta=None, sigma_is=None, mix=0.0,
@@ -2158,7 +2275,7 @@ def _build_variants(mode: str) -> list[dict]:
                  #   PDE contributes ~50% of the gradient (was 24% with lam_f=20)
                  # eps=0.0: no temporal truncation — train on full [0,T] including singularity
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
-                 color="tab:red", linestyle=":", linewidth=2.0),
+                 color="#b71c1c", linestyle="-", linewidth=2.0),
             dict(name="vpinn_50k", label="VPINN — Adam 50k iters (long run)",
                  sampler_type="vpinn", payoff_type="exact",
                  eps=0.0, beta=None, sigma_is=None, mix=0.0,
@@ -2169,7 +2286,7 @@ def _build_variants(mode: str) -> list[dict]:
                  # τ=0 que L-BFGS (effet de moyennage stochastique + pas de
                  # lissage par optimisation précise).
                  iters_override=50000,
-                 color="darkred", linestyle=(0, (5, 1, 1, 1, 1, 1)), linewidth=2.5),
+                 color="#e53935", linestyle="-", linewidth=2.0),
             dict(name="vpinn_engd", label="VPINN + ENGD (nat. grad.)",
                  sampler_type="vpinn_engd", payoff_type="exact",
                  eps=0.0, beta=None, sigma_is=None, mix=0.0,
@@ -2177,7 +2294,7 @@ def _build_variants(mode: str) -> list[dict]:
                  # max_iters: ENGD steps are ~100× more expensive per iteration;
                  #   1000 natural-gradient steps ≈ 20k Adam steps wall-clock.
                  max_iters=1000,
-                 color="tab:purple", linestyle=[0, [3, 2, 1, 2]], linewidth=2.0),
+                 color="#ff7043", linestyle="-", linewidth=2.0),
             dict(name="engd", label="Strong-form + ENGD (paper-faithful, lstsq)",
                  sampler_type="engd", payoff_type="exact",
                  eps=0.0, beta=None, sigma_is=None, mix=0.0,
@@ -2187,7 +2304,7 @@ def _build_variants(mode: str) -> list[dict]:
                  n_grid=30,
                  tikhonov_rel=1e-6,
                  max_iters=1000,
-                 color="tab:brown", linestyle=[0, [5, 2]], linewidth=2.0),
+                 color="#7986cb", linestyle="-", linewidth=2.0),
             # Note: two failed variants explored during diagnostics —
             #   `engd_tc_dense` (N_tc=200 vs 29)        : marginal, same trap
             #   `engd_alt` (alternating G_F / G_TC)     : never reaches J^T r=0
@@ -2197,11 +2314,11 @@ def _build_variants(mode: str) -> list[dict]:
                  sampler_type="vpinn_lbfgs", payoff_type="exact",
                  eps=0.0, beta=None, sigma_is=None, mix=0.0,
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
-                 # One outer L-BFGS step ≈ 2–3s on GPU → cap at 1000 steps ≈ 15 min on GPU.
-                 # Loss à iter 500 = 0.040 et descend encore (|g|=1.7) → 1000 steps offre
-                 # ~30% de gain supplémentaire sans plateau visible.
-                 max_iters=1000,
-                 color="tab:pink", linestyle=[0, [1, 1]], linewidth=2.0),
+                 # One outer L-BFGS step ≈ 2–3s on GPU → cap raised to 3000 steps ≈ 26 min.
+                 # At iter 1000 loss ≈ 0.015–0.017 with |g| ≈ 4–7, still descending —
+                 # extended run resumes from iter 1000 checkpoint.
+                 max_iters=3000,
+                 color="#e53935", linestyle="-", linewidth=2.0),
             dict(name="vpinn_lbfgs_is_tau",
                  label=r"VPINN + L-BFGS (biased $\tau\to 0$ sampling, $\alpha=0.3$)",
                  sampler_type="vpinn_lbfgs_is_tau", payoff_type="exact",
@@ -2212,7 +2329,34 @@ def _build_variants(mode: str) -> list[dict]:
                  # (no IS correction) so that γ near τ=0 carries more weight.
                  is_tau_alpha=0.3,
                  max_iters=1000,
-                 color="tab:cyan", linestyle=[0, [3, 1, 1, 1]], linewidth=2.0),
+                 color="#ff7043", linestyle="-", linewidth=2.0),
+            dict(name="vpinn_lbfgs_full_batch",
+                 label="VPINN + L-BFGS (fixed full batch)",
+                 sampler_type="vpinn_lbfgs_full_batch", payoff_type="exact",
+                 eps=0.0, beta=None, sigma_is=None, mix=0.0,
+                 # Same 512 time points drawn once before the loop and held fixed
+                 # for the entire run.  The objective is deterministic across outer
+                 # L-BFGS steps → secant condition is always valid → curvature
+                 # history is reliable.  Compare against vpinn_lbfgs (stochastic)
+                 # to isolate the effect of batch noise on the quasi-Newton update.
+                 n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
+                 max_iters=3000,
+                 color="#ff7043", linestyle="-", linewidth=2.0),
+            dict(name="vpinn_lbfgs_is_tau_full_batch",
+                 label=r"VPINN + L-BFGS (IS $\tau\to0$, fixed full batch)",
+                 sampler_type="vpinn_lbfgs_is_tau_full_batch", payoff_type="exact",
+                 eps=0.001 * T, beta=None, sigma_is=None, mix=0.0,
+                 # Combines IS τ→0 biased sampling with a fixed batch:
+                 # — IS τ→0 (α=0.3): concentrates the 512 time points near the
+                 #   maturity singularity, improving γ resolution near τ=0.
+                 # — Fixed batch: the same biased sample is reused for every outer
+                 #   L-BFGS step → deterministic objective → valid secant condition.
+                 # — Full convergence observed at ~266 steps on the uniform variant;
+                 #   400 steps is a safe cap here.
+                 n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
+                 is_tau_alpha=0.3,
+                 max_iters=400,
+                 color="#7b1fa2", linestyle="-", linewidth=2.0),
         ]
 
     if mode == "ablation-eps":
@@ -2283,11 +2427,12 @@ def _build_sampler(
                                             sigma_is=cfg["sigma_is"],
                                             mix=cfg["mix"], eps=cfg["eps"],
                                             generator=generator)
-    if t in ("vpinn", "vpinn_engd", "vpinn_lbfgs", "vpinn_lbfgs_epoch"):
+    if t in ("vpinn", "vpinn_engd", "vpinn_lbfgs", "vpinn_lbfgs_epoch",
+             "vpinn_lbfgs_full_batch"):
         return make_sampler_vpinn_logS(cfg.get("n_tau", 512),
                                        eps=cfg.get("eps", 0.01 * T),
                                        generator=generator)
-    if t == "vpinn_lbfgs_is_tau":
+    if t in ("vpinn_lbfgs_is_tau", "vpinn_lbfgs_is_tau_full_batch"):
         # Biased τ → 0 sampling to better resolve γ near maturity
         return make_sampler_vpinn_logS_is_tau(
             cfg.get("n_tau", 512),
@@ -2362,7 +2507,7 @@ def _plot_variant(res: dict, vdir: Path) -> None:
     axes[2].set_xlabel("Iteration"); axes[2].grid(True, alpha=0.3)
     fig.suptitle(f"{label}\n{_SUPTITLE}", fontsize=10)
     fig.tight_layout()
-    _vpinn_like = res.get("sampler_type") in ("vpinn", "vpinn_engd", "vpinn_lbfgs", "vpinn_lbfgs_epoch", "vpinn_lbfgs_is_tau")
+    _vpinn_like = res.get("sampler_type") in ("vpinn", "vpinn_engd", "vpinn_lbfgs", "vpinn_lbfgs_epoch", "vpinn_lbfgs_is_tau", "vpinn_lbfgs_full_batch", "vpinn_lbfgs_is_tau_full_batch")
     lf_formula  = _FORMULA_LF_VPINN if _vpinn_like else _FORMULA_LF
     ltc_formula = _FORMULA_IC_QUAD  if _vpinn_like else _FORMULA_LTC
     _add_formula_box(fig, lf_formula + "\n" + ltc_formula + "\n" + _FORMULA_GRAD,
@@ -2506,7 +2651,19 @@ def _plot_gt_per_variant(res: dict, vdir: Path) -> None:
 # Comparison plots
 # ---------------------------------------------------------------------------
 
+# Variants to exclude from all comparison figures.  Data and checkpoints are
+# still saved (training runs normally) — only the visual output is suppressed.
+_PLOT_EXCLUDED_VARIANTS: set[str] = {
+    "vpinn_lbfgs_is_tau",  # importance-sampling τ→0 biased variant — removed
+                           # from plots pending a fair comparison study
+    "vpinn_lbfgs",         # stochastic-batch L-BFGS — superseded by
+                           # vpinn_lbfgs_full_batch which is strictly better
+                           # on all metrics (rel_L2, delta, gamma, GEI)
+}
+
+
 def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: str):
+    results = [r for r in results if r.get("name") not in _PLOT_EXCLUDED_VARIANTS]
     comp_dir = ablation_dir / "comparison"
     comp_dir.mkdir(exist_ok=True)
     colors     = [r["color"]     for r in results]
@@ -2563,7 +2720,8 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
     # axis.  Each row shows only the variants of its formulation; when only one
     # formulation is present, the figure degenerates to a single row.
     _vpinn_like_types = ("vpinn", "vpinn_engd", "vpinn_lbfgs",
-                          "vpinn_lbfgs_epoch", "vpinn_lbfgs_is_tau")
+                          "vpinn_lbfgs_epoch", "vpinn_lbfgs_is_tau",
+                          "vpinn_lbfgs_full_batch", "vpinn_lbfgs_is_tau_full_batch")
     has_vpinn  = any(r.get("sampler_type") in _vpinn_like_types for r in results)
     strong_idx = [i for i, r in enumerate(results)
                   if r.get("sampler_type") not in _vpinn_like_types]
@@ -2974,15 +3132,17 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         fig.savefig(comp_dir / "weak_residual_comparison.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
 
-    # L-BFGS comparison: stochastic batch vs epoch-based batch (when both are present)
-    lbfgs_stoch = next((r for r in results if r.get("sampler_type") == "vpinn_lbfgs"), None)
-    lbfgs_epoch = next((r for r in results if r.get("sampler_type") == "vpinn_lbfgs_epoch"), None)
-    if lbfgs_stoch is not None and lbfgs_epoch is not None:
+    # L-BFGS comparison: stochastic / epoch-based / full-batch (whichever are present)
+    lbfgs_stoch      = next((r for r in results if r.get("sampler_type") == "vpinn_lbfgs"), None)
+    lbfgs_epoch      = next((r for r in results if r.get("sampler_type") == "vpinn_lbfgs_epoch"), None)
+    lbfgs_full_batch = next((r for r in results if r.get("sampler_type") == "vpinn_lbfgs_full_batch"), None)
+    _lbfgs_candidates = [(lbfgs_stoch, "Stochastic L-BFGS\n(fresh batch every step)"),
+                         (lbfgs_epoch, "Epoch L-BFGS\n(same batch for 20 steps, then resample)"),
+                         (lbfgs_full_batch, "Full-batch L-BFGS\n(same fixed batch for entire run)")]
+    _lbfgs_present = [(r, lbl) for r, lbl in _lbfgs_candidates if r is not None]
+    if len(_lbfgs_present) >= 2:
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-        for res, ls_label in [
-            (lbfgs_stoch, "Stochastic L-BFGS\n(fresh batch every step)"),
-            (lbfgs_epoch, "Epoch L-BFGS\n(same batch for 20 steps, then resample)"),
-        ]:
+        for res, ls_label in _lbfgs_present:
             kw = dict(color=res["color"], linestyle=res["linestyle"],
                       linewidth=res["linewidth"], label=ls_label)
             axes[0].semilogy(res["hist"]["iter"], res["hist"]["loss"],      **kw)
@@ -2995,11 +3155,12 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         ]:
             ax.set_xlabel("Outer L-BFGS step"); ax.set_title(title, fontsize=9)
             ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
-        m_s = lbfgs_stoch["metrics"]; m_e = lbfgs_epoch["metrics"]
+        metrics_summary = "  |  ".join(
+            f"{lbl.split(chr(10))[0]}: rel_L2={r['metrics']['rel_l2']:.3e}"
+            for r, lbl in _lbfgs_present
+        )
         fig.suptitle(
-            f"L-BFGS: stochastic vs epoch-based batch  |  {_SUPTITLE}\n"
-            f"Stochastic: rel_L2={m_s['rel_l2']:.3e}  |  "
-            f"Epoch: rel_L2={m_e['rel_l2']:.3e}",
+            f"L-BFGS batch strategy comparison  |  {_SUPTITLE}\n{metrics_summary}",
             fontsize=9,
         )
         fig.tight_layout()
@@ -3009,14 +3170,14 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
             r"— $y_k=\nabla f_{B_{k+1}}(x_{k+1})-\nabla f_{B_k}(x_k)$ mixes two objectives "
             r"(curvature noise, NaN instabilities)."
             "\n"
-            r"Epoch-based: the same $t_{\rm batch}$ is kept for $N=20$ steps "
-            r"— $y_k=\nabla f_B(x_{k+1})-\nabla f_B(x_k)$ is a true curvature estimate. "
-            r"The L-BFGS history is cleared at each new epoch to avoid stale (s,y) pairs.",
+            r"Epoch-based: the same $t_{\rm batch}$ is kept for $N=20$ steps; "
+            r"Full-batch: the same $t_{\rm batch}$ is kept for the entire run "
+            r"— $y_k=\nabla f_B(x_{k+1})-\nabla f_B(x_k)$ is a true curvature estimate.",
             bottom_margin=0.16,
         )
-        fig.savefig(comp_dir / "lbfgs_stoch_vs_epoch.png", dpi=150, bbox_inches="tight")
+        fig.savefig(comp_dir / "lbfgs_batch_strategy_comparison.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
-        logger.info("L-BFGS comparison plot saved → lbfgs_stoch_vs_epoch.png")
+        logger.info("L-BFGS comparison plot saved → lbfgs_batch_strategy_comparison.png")
 
     _plot_gt_comparison(results, comp_dir)
     logger.info(f"Comparison plots saved to {comp_dir}/")
@@ -3183,12 +3344,14 @@ def _replot(ablation_dir: Path) -> None:
         summary = yaml.safe_load(f)
     with open(ablation_dir / "metadata.yaml") as f:
         meta = yaml.safe_load(f)
+    visible_entries = [e for e in summary["variants"]
+                       if e["name"] not in _PLOT_EXCLUDED_VARIANTS]
     results = [_load_variant(ablation_dir / f"variant_{e['name']}", e)
-               for e in summary["variants"]]
+               for e in visible_entries]
 
     # Always recompute GT slices from the saved model so that changes to
     # _GT_TAU_SLICES (e.g. adding a near-singularity slice) are picked up.
-    for res, entry in zip(results, summary["variants"]):
+    for res, entry in zip(results, visible_entries):
         model = _load_model_for_variant(ablation_dir, entry["name"])
         if model is not None:
             gt_slices = _compute_gt_slices(model)
@@ -3201,7 +3364,7 @@ def _replot(ablation_dir: Path) -> None:
         else:
             logger.warning(f"No model found for variant {entry['name']} — GT plots skipped")
 
-    for res, entry in zip(results, summary["variants"]):
+    for res, entry in zip(results, visible_entries):
         _plot_variant(res, ablation_dir / f"variant_{entry['name']}")
     _plot_comparison(results, ablation_dir, meta["iters"], meta["mode"])
 
@@ -3277,16 +3440,20 @@ def _train_one_variant(
 
     # Deterministic model init (only matters for from-scratch runs; on resume
     # the weights are loaded from the checkpoint).
-    torch.manual_seed(_variant_seed(v["name"], _INIT_SEED_OFFSET))
+    init_seed    = _variant_seed(v["name"], _INIT_SEED_OFFSET)
+    sampler_seed = _variant_seed(v["name"], _SAMPLER_SEED_OFFSET)
+    torch.manual_seed(init_seed)
 
     # Dedicated sampler RNG, propagated explicitly — independent of global state.
     sampler_gen = torch.Generator(device=p3.DEVICE)
-    sampler_gen.manual_seed(_variant_seed(v["name"], _SAMPLER_SEED_OFFSET))
+    sampler_gen.manual_seed(sampler_seed)
 
     model      = _build_model_for_variant(v)
     sampler_fn = _build_sampler(v, n_f, n_tc, generator=sampler_gen)
     payoff_fn  = _build_payoff(v)
     ckpt_path  = vdir / "checkpoint.pt"
+
+    _log_variant_config(v, effective_iters, model, init_seed, sampler_seed)
 
     if v["sampler_type"] == "vpinn":
         vpinn_module = _build_vpinn_loss(v)
@@ -3324,6 +3491,23 @@ def _train_one_variant(
                                          lam_f=v.get("lam_f"),
                                          checkpoint_path=ckpt_path, resume=resume,
                                          stochastic_batch=True,
+                                         sampler_gen=sampler_gen)
+    elif v["sampler_type"] in ("vpinn_lbfgs_full_batch", "vpinn_lbfgs_is_tau_full_batch"):
+        # Full-batch L-BFGS: the n_tau time points are drawn once before the loop
+        # and held fixed for every outer step.  The objective is deterministic,
+        # so the L-BFGS secant condition is always consistent — curvature history
+        # accumulates reliable second-order information.  Unlike the stochastic
+        # variant, the optimizer state (including curvature history) can be safely
+        # restored across checkpoint resumes.
+        # vpinn_lbfgs_is_tau_full_batch additionally uses IS τ→0 biased sampling
+        # (τ = T·U^(1/α), α=0.3) to concentrate the fixed batch near the maturity
+        # singularity while keeping the deterministic L-BFGS objective.
+        vpinn_module = _build_vpinn_loss(v)
+        hist = train_variant_vpinn_lbfgs(model, vpinn_module, effective_iters,
+                                         sampler_fn, payoff_fn, v["name"],
+                                         lam_f=v.get("lam_f"),
+                                         checkpoint_path=ckpt_path, resume=resume,
+                                         stochastic_batch=False,
                                          sampler_gen=sampler_gen)
     elif v["sampler_type"] == "vpinn_lbfgs_epoch":
         vpinn_module = _build_vpinn_loss(v)
@@ -3431,6 +3615,8 @@ def main() -> None:
 
         logger.info(f"\n{'='*60}\n  Adding variant: {v['name']} — {v['label']}\n{'='*60}")
         logger.info(f"cmdline: {' '.join(sys.argv)}")
+        _log_environment()
+        logger.info(f"device={p3.DEVICE}  N_TC={n_tc}  N_F={n_f}")
 
         res = _train_one_variant(v, vdir, n_f, n_tc, meta["iters"], resume=args.resume)
         _plot_variant(res, vdir)
@@ -3493,7 +3679,9 @@ def main() -> None:
 
     logger.info(f"exp_singularity_european_call  coords=logS  mode={args.mode}  iters={args.iters}")
     logger.info(f"cmdline: {' '.join(sys.argv)}")
+    _log_environment()
     logger.info(f"device={p3.DEVICE}  N_TC={n_tc}  N_F={n_f}")
+    logger.info(f"sigma={sigma}  r={r}  K={K}  T={T}")
     logger.info(f"x_lo={X_LO:.3f}  x_hi={X_HI:.3f}  x_atm={X_ATM:.3f}")
     logger.info(f"x_eval_lo={X_EVAL_LO:.3f}  x_eval_hi={X_EVAL_HI:.3f}")
     logger.info(f"output: {ablation_dir}")
