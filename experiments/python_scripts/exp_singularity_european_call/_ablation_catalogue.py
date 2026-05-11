@@ -120,6 +120,12 @@ def _build_variants(mode: str) -> list[dict]:
         name="naive", label="Naive (control)",
         sampler_type="naive", payoff_type="exact",
         eps=0.0, beta=None, sigma_is=None, mix=0.0,
+        # default_num_iterations: every variant declares its own natural
+        # training budget so that the CLI no longer needs --num-iterations
+        # for production runs.  Adam strong-form: 20_000 is the standard
+        # budget used by the original `compare-boundary-singularity-...`
+        # study; below ~2_000 the loss is still in rapid descent.
+        default_num_iterations=20000,
         color="#0d47a1", linestyle="-", linewidth=2.0,
     )
 
@@ -129,10 +135,12 @@ def _build_variants(mode: str) -> list[dict]:
             dict(name="truncated", label=r"$\varepsilon$-trunc. ($\varepsilon=1\%T$)",
                  sampler_type="truncated", payoff_type="exact",
                  eps=0.01*T, beta=None, sigma_is=None, mix=0.0,
+                 default_num_iterations=20000,
                  color="#1976d2", linestyle="-", linewidth=2.0),
             dict(name="smooth", label=r"Smooth ($\beta=100$)",
                  sampler_type="naive", payoff_type="smooth",
                  eps=0.0, beta=100, sigma_is=None, mix=0.0,
+                 default_num_iterations=20000,
                  color="#42a5f5", linestyle="-", linewidth=2.0),
             dict(name="vpinn", label="VPINN (weak form)",
                  sampler_type="vpinn", payoff_type="exact",
@@ -142,25 +150,25 @@ def _build_variants(mode: str) -> list[dict]:
                  #   PDE contributes ~50% of the gradient (was 24% with lam_f=20)
                  # eps=0.0: no temporal truncation — train on full [0,T] including singularity
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
+                 default_num_iterations=20000,
                  color="#b71c1c", linestyle="-", linewidth=2.0),
             dict(name="vpinn_50k", label="VPINN — Adam 50k iters (long run)",
                  sampler_type="vpinn", payoff_type="exact",
                  eps=0.0, beta=None, sigma_is=None, mix=0.0,
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
-                 # iters_override: force 50,000 Adam iters, ignore --iters and max_iters.
-                 # At 20k iters the log-log slope of the loss is ~-2.8 → still
-                 # in rapid descent. Adam preserves the γ singularity near τ=0
-                 # better than L-BFGS does (stochastic averaging effect, no
-                 # smoothing by precise optimization).
-                 iters_override=50000,
+                 # 50_000 Adam iters: at 20k iters the log-log slope of the loss
+                 # is ~-2.8 → still in rapid descent.  Adam preserves the γ
+                 # singularity near τ=0 better than L-BFGS does (stochastic
+                 # averaging effect, no smoothing by precise optimisation).
+                 default_num_iterations=50000,
                  color="#e53935", linestyle="-", linewidth=2.0),
             dict(name="vpinn_engd", label="VPINN + ENGD (nat. grad.)",
                  sampler_type="vpinn_engd", payoff_type="exact",
                  eps=0.0, beta=None, sigma_is=None, mix=0.0,
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
-                 # max_iters: ENGD steps are ~100× more expensive per iteration;
-                 #   1000 natural-gradient steps ≈ 20k Adam steps wall-clock.
-                 max_iters=1000,
+                 # ENGD steps are ~100× more expensive per iteration than Adam;
+                 # 1000 natural-gradient steps ≈ 20k Adam steps wall-clock.
+                 default_num_iterations=1000,
                  color="#ff7043", linestyle="-", linewidth=2.0),
             dict(name="engd", label="Strong-form + ENGD (paper-faithful, lstsq)",
                  sampler_type="engd", payoff_type="exact",
@@ -170,7 +178,7 @@ def _build_variants(mode: str) -> list[dict]:
                  # M/n_params ≈ 6 — same regime as Zeinhofer et al. ICML 2023.
                  n_grid=30,
                  tikhonov_rel=1e-6,
-                 max_iters=1000,
+                 default_num_iterations=1000,
                  color="#7986cb", linestyle="-", linewidth=2.0),
             # Note: two failed variants explored during diagnostics —
             #   `engd_tc_dense` (N_tc=200 vs 29)        : marginal, same trap
@@ -181,10 +189,11 @@ def _build_variants(mode: str) -> list[dict]:
                  sampler_type="vpinn_lbfgs", payoff_type="exact",
                  eps=0.0, beta=None, sigma_is=None, mix=0.0,
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
-                 # One outer L-BFGS step ≈ 2–3s on GPU → cap raised to 3000 steps ≈ 26 min.
-                 # At iter 1000 loss ≈ 0.015–0.017 with |g| ≈ 4–7, still descending —
-                 # extended run resumes from iter 1000 checkpoint.
-                 max_iters=3000,
+                 # Excluded from comparison plots (see _PLOT_EXCLUDED_VARIANTS).
+                 # Kept here for ad-hoc inspection.  500 outer L-BFGS steps is
+                 # enough to expose the curvature-noise pathology of the
+                 # stochastic-batch variant — running longer just wastes GPU.
+                 default_num_iterations=500,
                  color="#e53935", linestyle="-", linewidth=2.0),
             dict(name="vpinn_lbfgs_is_tau",
                  label=r"VPINN + L-BFGS (biased $\tau\to 0$ sampling, $\alpha=0.3$)",
@@ -195,7 +204,7 @@ def _build_variants(mode: str) -> list[dict]:
                  # the maturity singularity. The estimator is intentionally biased
                  # (no IS correction) so that γ near τ=0 carries more weight.
                  is_tau_alpha=0.3,
-                 max_iters=1000,
+                 default_num_iterations=500,
                  color="#ff7043", linestyle="-", linewidth=2.0),
             dict(name="vpinn_lbfgs_full_batch",
                  label="VPINN + L-BFGS (fixed full batch)",
@@ -206,8 +215,9 @@ def _build_variants(mode: str) -> list[dict]:
                  # L-BFGS steps → secant condition is always valid → curvature
                  # history is reliable.  Compare against vpinn_lbfgs (stochastic)
                  # to isolate the effect of batch noise on the quasi-Newton update.
+                 # Convergence observed at ~266 outer steps; 500 is a safe cap.
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
-                 max_iters=3000,
+                 default_num_iterations=500,
                  color="#ff7043", linestyle="-", linewidth=2.0),
             dict(name="vpinn_lbfgs_is_tau_full_batch",
                  label=r"VPINN + L-BFGS (IS $\tau\to0$, fixed full batch)",
@@ -222,7 +232,7 @@ def _build_variants(mode: str) -> list[dict]:
                  #   400 steps is a safe cap here.
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
                  is_tau_alpha=0.3,
-                 max_iters=400,
+                 default_num_iterations=400,
                  color="#7b1fa2", linestyle="-", linewidth=2.0),
             dict(name="vpinn_lbfgs_is_tau_full_batch_lam_tc3",
                  label=r"VPINN + L-BFGS (IS $\tau\to0$, fixed batch, $\lambda_{tc}=3$)",
@@ -235,7 +245,7 @@ def _build_variants(mode: str) -> list[dict]:
                  # Increasing λ_tc re-weights the IC to compensate.
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0, lam_tc=3.0,
                  is_tau_alpha=0.3,
-                 max_iters=400,
+                 default_num_iterations=400,
                  color="#ab47bc", linestyle="-", linewidth=2.0),
         ]
 
@@ -262,12 +272,14 @@ def _build_variants(mode: str) -> list[dict]:
                  label="Hard-IC ansatz — Naïve (strong form)",
                  sampler_type="naive", payoff_type="exact",
                  eps=0.0, beta=None,
+                 default_num_iterations=20000,
                  color="#0d47a1", linestyle="-", linewidth=2.0,
                  **_hard_ic_common),
             dict(name="hard_ic_truncated",
                  label=r"Hard-IC ansatz — $\varepsilon$-trunc. ($\varepsilon=1\%T$)",
                  sampler_type="truncated", payoff_type="exact",
                  eps=0.01 * T, beta=None,
+                 default_num_iterations=20000,
                  color="#1976d2", linestyle="-", linewidth=2.0,
                  **_hard_ic_common),
             dict(name="hard_ic_smooth",
@@ -276,6 +288,7 @@ def _build_variants(mode: str) -> list[dict]:
                  # IC loss (which no longer exists): V(x,T) = softplus(e^x-K).
                  sampler_type="naive", payoff_type="smooth",
                  eps=0.0, beta=100,
+                 default_num_iterations=20000,
                  color="#42a5f5", linestyle="-", linewidth=2.0,
                  **_hard_ic_common),
             # ── Weak-form (VPINN) variants ──────────────────────────────
@@ -284,6 +297,7 @@ def _build_variants(mode: str) -> list[dict]:
                  sampler_type="vpinn", payoff_type="exact",
                  eps=0.0, beta=None,
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
+                 default_num_iterations=20000,
                  color="#b71c1c", linestyle="-", linewidth=2.0,
                  **_hard_ic_common),
             dict(name="hard_ic_vpinn_50k",
@@ -291,7 +305,7 @@ def _build_variants(mode: str) -> list[dict]:
                  sampler_type="vpinn", payoff_type="exact",
                  eps=0.0, beta=None,
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
-                 iters_override=50000,
+                 default_num_iterations=50000,
                  color="#e53935", linestyle="-", linewidth=2.0,
                  **_hard_ic_common),
             dict(name="hard_ic_vpinn_lbfgs_full_batch",
@@ -299,7 +313,9 @@ def _build_variants(mode: str) -> list[dict]:
                  sampler_type="vpinn_lbfgs_full_batch", payoff_type="exact",
                  eps=0.0, beta=None,
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
-                 max_iters=3000,
+                 # L-BFGS uniform converges around outer step ~266 on this
+                 # problem; 500 is a safe ceiling.
+                 default_num_iterations=500,
                  color="#ff7043", linestyle="-", linewidth=2.0,
                  **_hard_ic_common),
             dict(name="hard_ic_vpinn_lbfgs_is_tau_full_batch",
@@ -308,7 +324,7 @@ def _build_variants(mode: str) -> list[dict]:
                  eps=0.001 * T, beta=None,
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
                  is_tau_alpha=0.3,
-                 max_iters=400,
+                 default_num_iterations=400,
                  color="#7b1fa2", linestyle="-", linewidth=2.0,
                  **_hard_ic_common),
         ]
@@ -321,6 +337,7 @@ def _build_variants(mode: str) -> list[dict]:
                 name=f"trunc_{pct}pct", label=rf"$\varepsilon={pct}\%T$",
                 sampler_type="truncated", payoff_type="exact",
                 eps=eps, beta=None, sigma_is=None, mix=0.0,
+                default_num_iterations=20000,
                 color=_COLORS[i+1], linestyle="--", linewidth=1.8,
             ))
         return variants
@@ -332,6 +349,7 @@ def _build_variants(mode: str) -> list[dict]:
                 name=f"smooth_b{beta}", label=rf"$\beta={beta}$",
                 sampler_type="naive", payoff_type="smooth",
                 eps=0.0, beta=beta, sigma_is=None, mix=0.0,
+                default_num_iterations=20000,
                 color=_COLORS[i+1], linestyle="-.", linewidth=1.8,
             ))
         return variants
@@ -342,6 +360,7 @@ def _build_variants(mode: str) -> list[dict]:
             dict(name="trunc_1pct", label=r"Trunc. unif.",
                  sampler_type="truncated", payoff_type="exact",
                  eps=0.01*T, beta=None, sigma_is=None, mix=0.0,
+                 default_num_iterations=20000,
                  color="tab:orange", linestyle="--", linewidth=2.0),
         ]
         for i, (sig, mix) in enumerate(_IS_CONFIGS):
@@ -350,6 +369,7 @@ def _build_variants(mode: str) -> list[dict]:
                 label=rf"IS $\sigma_x={sig}$, mix={mix}",
                 sampler_type="importance", payoff_type="exact",
                 eps=0.01*T, beta=None, sigma_is=sig, mix=mix,
+                default_num_iterations=20000,
                 color=_COLORS[i+2], linestyle=":", linewidth=1.8,
             ))
         return variants
@@ -385,7 +405,11 @@ def handle_init_only_cli() -> None:
 
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--mode", required=True)
-    parser.add_argument("--iters", type=int, default=200)
+    parser.add_argument("--num-iterations", dest="num_iterations",
+                        type=int, default=None,
+                        help=("Global override for every variant's "
+                              "default_num_iterations. Omit to let each "
+                              "variant use its own natural budget."))
     parser.add_argument("--variant", default=None)
     parser.add_argument("--n-tc", dest="n_tc", type=int, default=None)
     parser.add_argument("--n-f",  dest="n_f",  type=int, default=None)
@@ -408,10 +432,18 @@ def handle_init_only_cli() -> None:
     # and trivially wipeable with
     #     find data -type d -name '_debug_*' -prune -exec rm -rf {} +
     debug_prefix = "_debug_" if args.debug else ""
+    # The folder name only carries an explicit iteration count when the
+    # user provided a global ``--num-iterations`` override; otherwise each
+    # variant uses its own ``default_num_iterations`` and a single global
+    # number in the path would be misleading.
+    num_iterations_tag = (
+        f"_num_iterations_{args.num_iterations}"
+        if args.num_iterations is not None else ""
+    )
     data_root = Path(data_root_for_mode(args.mode))
     ablation_dir = (
         data_root
-        / f"{debug_prefix}{timestamp}_{args.mode}_logS_iters{args.iters}{variant_suffix}"
+        / f"{debug_prefix}{timestamp}_{args.mode}_logS{num_iterations_tag}{variant_suffix}"
     )
     ablation_dir.mkdir(parents=True, exist_ok=True)
     (ablation_dir / "comparison").mkdir(exist_ok=True)
@@ -441,26 +473,28 @@ def handle_init_only_cli() -> None:
     )
     logger = logging.getLogger(__name__)
     logger.info(
-        f"--init-only (torch-free fast path): mode={args.mode} iters={args.iters}"
+        f"--init-only (torch-free fast path): mode={args.mode} "
+        f"num_iterations={args.num_iterations!r} "
+        f"(None = per-variant default_num_iterations)"
     )
     logger.info(f"output: {ablation_dir}")
 
-    # ``metadata.yaml`` — same shape as the main-script version.  We cannot
-    # resolve ``device`` against ``torch.cuda.is_available()`` here (the
-    # whole point is to avoid torch); we record the requested value and let
-    # the training tasks log the resolved device themselves.
+    # ``metadata.yaml`` — shared with the main-script version.  ``num_iterations``
+    # is the user-supplied global override (or null when each variant should use
+    # its own ``default_num_iterations``); the actual iteration count per variant
+    # is recorded in that variant's hist.npz / log file.
     with open(ablation_dir / "metadata.yaml", "w", encoding="utf-8") as f:
         yaml.safe_dump({
-            "cmdline":     sys.argv,
-            "mode":        args.mode,
-            "iters":       args.iters,
-            "coords":      "logS",
-            "device":      args.device,
-            "n_tc":        n_tc,
-            "n_f":         n_f,
-            "K":           K,  "r": r, "sigma": sigma, "T": T,
-            "x_lo":        X_LO,      "x_hi":      X_HI,      "x_atm":      X_ATM,
-            "x_eval_lo":   X_EVAL_LO, "x_eval_hi": X_EVAL_HI,
+            "cmdline":         sys.argv,
+            "mode":            args.mode,
+            "num_iterations":  args.num_iterations,
+            "coords":          "logS",
+            "device":          args.device,
+            "n_tc":            n_tc,
+            "n_f":             n_f,
+            "K":               K,  "r": r, "sigma": sigma, "T": T,
+            "x_lo":            X_LO,      "x_hi":      X_HI,      "x_atm":      X_ATM,
+            "x_eval_lo":       X_EVAL_LO, "x_eval_hi": X_EVAL_HI,
         }, f)
 
     # Empty ``summary.yaml`` (populated by subsequent ``--add-variant`` jobs).
