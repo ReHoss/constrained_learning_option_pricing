@@ -13,6 +13,7 @@ from .natural_gradient import (
     flat_params,
     grid_line_search,
     measurement_jacobian,
+    measurement_jacobian_fwd,
     set_flat_params,
     solve_cg,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "solve_cg",
     "grid_line_search",
     "measurement_jacobian",
+    "measurement_jacobian_fwd",
     "flat_grad",
     "flat_params",
     "set_flat_params",

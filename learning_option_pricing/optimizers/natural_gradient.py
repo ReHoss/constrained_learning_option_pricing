@@ -48,7 +48,7 @@ import torch
 import torch.nn as nn
 from torch.func import functional_call
 from torch.func import grad as func_grad
-from torch.func import jacrev, vmap
+from torch.func import jacfwd, jacrev, vmap
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +229,23 @@ def measurement_jacobian(
     """
     jac_pytree = jacrev(measurement_fn, argnums=0)(params_dict, *args)
     # jac_pytree[name] has shape (M, *params_dict[name].shape)
+    return torch.cat([j.flatten(start_dim=1) for j in jac_pytree.values()], dim=1)
+
+
+def measurement_jacobian_fwd(
+    measurement_fn: Callable,
+    params_dict: dict,
+    *args,
+) -> torch.Tensor:
+    """Same as :func:`measurement_jacobian` but uses **forward-mode** AD (``jacfwd``).
+
+    Prefer this when ``n_params < n_measurements`` (the regime of the ICML 2023
+    paper).  ``jacfwd`` does ``n_params`` JVPs instead of ``n_measurements`` VJPs,
+    which is cheaper when the Jacobian matrix is tall (M ≫ n).
+
+    Parameters / Returns: identical to :func:`measurement_jacobian`.
+    """
+    jac_pytree = jacfwd(measurement_fn, argnums=0)(params_dict, *args)
     return torch.cat([j.flatten(start_dim=1) for j in jac_pytree.values()], dim=1)
 
 
