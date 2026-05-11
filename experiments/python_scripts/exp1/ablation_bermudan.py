@@ -36,9 +36,13 @@ Usage (from repo root):
     # Full run on GPU:
     python3 experiments/python_scripts/exp1/ablation_bermudan.py --iters-a 2000 --iters-b 2000 --device cuda
 
-    # Reuse a pre-trained Stage A to save time:
+    # Reuse a pre-trained Stage A checkpoint to save time:
     python3 experiments/python_scripts/exp1/ablation_bermudan.py \\
         --iters-b 2000 --load-stage-a data/ablation_bermudan/<run>/variant_baseline/models/etcnn_a.pt
+
+    # Use the exact Black-Scholes formula for Stage A (no Stage A training at all):
+    python3 experiments/python_scripts/exp1/ablation_bermudan.py \\
+        --iters-b 2000 --analytical-stage-a --device cuda
 
     # Regenerate all comparison plots from a saved run (no retraining):
     python3 experiments/python_scripts/exp1/ablation_bermudan.py \\
@@ -830,7 +834,16 @@ def main() -> None:
     parser.add_argument(
         "--load-stage-a", type=str, default=None, metavar="PATH",
         help="Path to a pre-trained etcnn_a.pt (or a run directory containing "
-             "models/etcnn_a.pt) to skip Stage A training for all variants.",
+             "models/etcnn_a.pt) to skip Stage A training for all variants. "
+             "Mutually exclusive with --iters-a and --analytical-stage-a.",
+    )
+    parser.add_argument(
+        "--analytical-stage-a", action="store_true", default=False,
+        help="Replace Stage A with the exact Black-Scholes European put formula "
+             "(no neural network trained for Stage A). The terminal condition at "
+             "t1 becomes max(payoff(s), BS_put(s, K, r, sigma, T-t1)) exactly, "
+             "isolating Stage B from any Stage A approximation error. "
+             "Mutually exclusive with --iters-a and --load-stage-a.",
     )
     parser.add_argument(
         "--replot", type=str, default=None, metavar="DIR",
@@ -839,13 +852,19 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # --iters-a and --load-stage-a are mutually exclusive: Stage A is either
-    # trained from scratch (--iters-a) or loaded from a checkpoint (--load-stage-a),
-    # never both at the same time.
-    if args.load_stage_a is not None and args.iters_a is not None:
-        parser.error("--iters-a and --load-stage-a are mutually exclusive: "
-                     "when loading a pre-trained Stage A checkpoint, the number "
-                     "of Stage A iterations is irrelevant.")
+    # Exactly one of {train from scratch, load checkpoint, analytical formula}
+    # must be chosen for Stage A.  --iters-a belongs only to the train-from-scratch
+    # path, so it is mutually exclusive with the other two options.
+    stage_a_modes_active = sum([
+        args.load_stage_a is not None,
+        args.analytical_stage_a,
+    ])
+    if stage_a_modes_active > 1:
+        parser.error("--load-stage-a and --analytical-stage-a are mutually exclusive: "
+                     "choose at most one Stage A override.")
+    if args.iters_a is not None and stage_a_modes_active > 0:
+        parser.error("--iters-a is only valid when training Stage A from scratch. "
+                     "Drop it when using --load-stage-a or --analytical-stage-a.")
     if args.iters_a is None:
         args.iters_a = 50  # default for training-from-scratch runs
 
@@ -876,7 +895,12 @@ def main() -> None:
     # Output directory
     # ------------------------------------------------------------------
     timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
-    stage_a_tag = "loadedA" if args.load_stage_a is not None else f"itersA{args.iters_a}"
+    if args.analytical_stage_a:
+        stage_a_tag = "analyticalA"
+    elif args.load_stage_a is not None:
+        stage_a_tag = "loadedA"
+    else:
+        stage_a_tag = f"itersA{args.iters_a}"
     ablation_dir = (
         Path("data/ablation_bermudan")
         / f"{timestamp}_{stage_a_tag}_itersB{args.iters_b}"
@@ -915,7 +939,9 @@ def main() -> None:
     if _torch.cuda.is_available():
         logger.info(f"  GPU: {_torch.cuda.get_device_name(0)}")
     logger.info(f"  Device: {p3.DEVICE}")
-    if args.load_stage_a is not None:
+    if args.analytical_stage_a:
+        logger.info(f"  iters_a=N/A (Stage A = exact Black-Scholes formula)  iters_b={args.iters_b}")
+    elif args.load_stage_a is not None:
         logger.info(f"  iters_a=N/A (Stage A loaded from checkpoint)  iters_b={args.iters_b}")
     else:
         logger.info(f"  iters_a={args.iters_a}  iters_b={args.iters_b}")
@@ -939,8 +965,9 @@ def main() -> None:
              if k not in ("color", "linestyle", "linewidth")}
             for var in VARIANTS
         ],
-        "iters_a":           None if args.load_stage_a is not None else args.iters_a,
+        "iters_a":           None if (args.load_stage_a is not None or args.analytical_stage_a) else args.iters_a,
         "loaded_stage_a":    args.load_stage_a,
+        "analytical_stage_a": args.analytical_stage_a,
         "iters_b":           args.iters_b,
         "sigma_w":      args.sigma_w,
         "eps_w":        args.eps_w,
@@ -994,6 +1021,7 @@ def main() -> None:
             put_ansatz=variant["put_ansatz"],
             weight_decay=args.weight_decay,
             load_etcnn_a=load_etcnn_a_path,
+            analytic_a=args.analytical_stage_a,
             g2_type="bs",
             bypass_v=variant["bypass_v"],
             sigma_w=args.sigma_w,
@@ -1039,8 +1067,10 @@ def main() -> None:
         )
         results.append(res)
 
-        # Share Stage A across all subsequent variants
-        if load_etcnn_a_path is None:
+        # Share Stage A across all subsequent variants.
+        # In analytical mode, every variant uses the closed-form BS formula
+        # independently — no checkpoint to share.
+        if not args.analytical_stage_a and load_etcnn_a_path is None:
             load_etcnn_a_path = vdir / "models" / "etcnn_a.pt"
             logger.info(f"  Stage A checkpoint for subsequent variants: {load_etcnn_a_path}")
 
