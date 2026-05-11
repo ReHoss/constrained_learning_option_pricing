@@ -805,8 +805,9 @@ def main() -> None:
         description="Ablation study — Bermuda put ansatz design choices (put-ansatz, bypass_v, spatial_weight)"
     )
     parser.add_argument(
-        "--iters-a", type=int, default=50,
-        help="Stage A iterations (default 50 — smoke test; use 2000+ for production)",
+        "--iters-a", type=int, default=None,
+        help="Stage A iterations (default 50 — smoke test; use 2000+ for production). "
+             "Mutually exclusive with --load-stage-a.",
     )
     parser.add_argument(
         "--iters-b", type=int, default=50,
@@ -838,6 +839,16 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # --iters-a and --load-stage-a are mutually exclusive: Stage A is either
+    # trained from scratch (--iters-a) or loaded from a checkpoint (--load-stage-a),
+    # never both at the same time.
+    if args.load_stage_a is not None and args.iters_a is not None:
+        parser.error("--iters-a and --load-stage-a are mutually exclusive: "
+                     "when loading a pre-trained Stage A checkpoint, the number "
+                     "of Stage A iterations is irrelevant.")
+    if args.iters_a is None:
+        args.iters_a = 50  # default for training-from-scratch runs
+
     # ------------------------------------------------------------------
     # Replot mode: just regenerate plots, no training
     # ------------------------------------------------------------------
@@ -864,10 +875,11 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Output directory
     # ------------------------------------------------------------------
-    timestamp    = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    stage_a_tag = "loadedA" if args.load_stage_a is not None else f"itersA{args.iters_a}"
     ablation_dir = (
         Path("data/ablation_bermudan")
-        / f"{timestamp}_itersA{args.iters_a}_itersB{args.iters_b}"
+        / f"{timestamp}_{stage_a_tag}_itersB{args.iters_b}"
     )
     ablation_dir.mkdir(parents=True, exist_ok=True)
     (ablation_dir / "comparison").mkdir(exist_ok=True)
@@ -903,7 +915,10 @@ def main() -> None:
     if _torch.cuda.is_available():
         logger.info(f"  GPU: {_torch.cuda.get_device_name(0)}")
     logger.info(f"  Device: {p3.DEVICE}")
-    logger.info(f"  iters_a={args.iters_a}  iters_b={args.iters_b}")
+    if args.load_stage_a is not None:
+        logger.info(f"  iters_a=N/A (Stage A loaded from checkpoint)  iters_b={args.iters_b}")
+    else:
+        logger.info(f"  iters_a={args.iters_a}  iters_b={args.iters_b}")
     logger.info(f"  N_TC={p3.N_TC}  N_F={p3.N_F}")
     logger.info(f"  LAMBDA_F={p3.LAMBDA_F}  LAMBDA_TC={p3.LAMBDA_TC}")
     logger.info(f"  SEED={p3.SEED}  weight_decay={args.weight_decay}")
@@ -924,8 +939,9 @@ def main() -> None:
              if k not in ("color", "linestyle", "linewidth")}
             for var in VARIANTS
         ],
-        "iters_a":      args.iters_a,
-        "iters_b":      args.iters_b,
+        "iters_a":           None if args.load_stage_a is not None else args.iters_a,
+        "loaded_stage_a":    args.load_stage_a,
+        "iters_b":           args.iters_b,
         "sigma_w":      args.sigma_w,
         "eps_w":        args.eps_w,
         "weight_decay": args.weight_decay,
