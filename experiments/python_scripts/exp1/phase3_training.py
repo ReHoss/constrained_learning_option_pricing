@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import random
 import sys
 import yaml
 import time
@@ -272,6 +273,94 @@ def _adaptive_log_every(total_iters: int, n_target: int = 50) -> int:
     return int(10 * mag)  # fallback (unreachable in practice)
 
 
+def _capture_rng_state() -> dict:
+    """Snapshot every global RNG that ``train_model`` and ``sample_collocation``
+    can possibly consume.  This is what guarantees that a training run resumed
+    from a checkpoint produces bit-identical results to one that ran straight
+    through.
+
+    Returns:
+        Dict with keys ``torch_cpu`` (always present), ``torch_cuda`` (list of
+        per-device states, only when CUDA is available), ``numpy`` (when
+        :mod:`numpy.random` is in use), and ``python_random``.
+    """
+    state: dict = {
+        "torch_cpu":     torch.get_rng_state(),
+        "numpy":         np.random.get_state(),
+        "python_random": random.getstate(),
+    }
+    if torch.cuda.is_available():
+        state["torch_cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_rng_state(state: dict) -> None:
+    """Restore the global RNGs from a snapshot produced by
+    :func:`_capture_rng_state`.  Silently ignores per-device CUDA RNG state
+    when no CUDA device is available (e.g. resuming a GPU-trained checkpoint
+    on a CPU-only machine for inspection)."""
+    torch.set_rng_state(state["torch_cpu"])
+    np.random.set_state(state["numpy"])
+    random.setstate(state["python_random"])
+    if "torch_cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["torch_cuda"])
+
+
+def _save_training_checkpoint(
+    checkpoint_path: Path,
+    iter_done: int,
+    total_iters: int,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LambdaLR,
+    history: dict,
+    label: str,
+) -> None:
+    """Persist enough state to resume training faithfully after an interruption.
+
+    Saves model weights, optimizer state, scheduler state, global RNG state
+    (CPU + CUDA + numpy + python), the accumulated metric history, the iter
+    counter and the target total_iters into a single ``.pt`` file.  Writes
+    atomically via a ``.tmp`` rename so an interrupted write never corrupts
+    the previous checkpoint.
+    """
+    checkpoint_path = Path(checkpoint_path)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
+    payload = {
+        "iter_done":       iter_done,
+        "total_iters":     total_iters,
+        "label":           label,
+        "model_state":     model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "scheduler_state": scheduler.state_dict(),
+        "history":         history,
+        "rng_state":       _capture_rng_state(),
+    }
+    torch.save(payload, tmp_path)
+    tmp_path.replace(checkpoint_path)
+    logger.info(f"[{label}] checkpoint saved at iter {iter_done}/{total_iters} -> {checkpoint_path}")
+
+
+def _load_training_checkpoint(
+    checkpoint_path: Path,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LambdaLR,
+) -> tuple[int, int, dict]:
+    """Restore model, optimizer, scheduler and global RNGs from a checkpoint.
+
+    Returns ``(iter_done, total_iters_saved, history)`` so the caller can
+    continue training from ``iter_done + 1``.
+    """
+    payload = torch.load(checkpoint_path, map_location=DEVICE)
+    model.load_state_dict(payload["model_state"])
+    optimizer.load_state_dict(payload["optimizer_state"])
+    scheduler.load_state_dict(payload["scheduler_state"])
+    _restore_rng_state(payload["rng_state"])
+    return int(payload["iter_done"]), int(payload["total_iters"]), payload["history"]
+
+
 def train_model(
     model: torch.nn.Module,
     total_iters: int,
@@ -288,6 +377,9 @@ def train_model(
     sigma_w: float = 1.0,
     eps_w: float = 1e-3,
     use_spatial_weight: bool = False,
+    checkpoint_path: Path | None = None,
+    checkpoint_every: int = 0,
+    resume_from: Path | None = None,
 ):
     """Train a model with Adam + two-stage LR schedule.
 
@@ -296,6 +388,19 @@ def train_model(
             by the model ansatz (e.g. ETCNN with g1(s,T)=0). L_tc will then
             be labelled ``<enforced>`` in the log rather than a numeric value,
             to avoid the misleading impression that the optimiser drove it to zero.
+        checkpoint_path: When provided, the training loop will write a
+            self-contained checkpoint (model + optimizer + scheduler + RNG +
+            metric history + iter counter) to this path.  Always written once
+            at the end of training; additionally written every
+            ``checkpoint_every`` iterations when that is positive.
+        checkpoint_every: Period (in iterations) at which intermediate
+            checkpoints are written.  ``0`` (default) disables periodic
+            checkpointing — only the final checkpoint is saved.
+        resume_from: Path to a checkpoint produced by a previous call.  When
+            set, the model, optimizer, scheduler, RNG state and history are
+            restored and training continues at ``iter_done + 1`` up to
+            ``total_iters``.  ``total_iters`` here means TOTAL iterations
+            (cumulative across the resume), not "additional" iterations.
     """
     if log_every is None:
         log_every = _adaptive_log_every(total_iters)
@@ -304,10 +409,38 @@ def train_model(
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, build_lr_lambda(total_iters))
 
     history = {"loss": [], "loss_f": [], "loss_tc": [], "iter": [], "grad_norm": [], "lr": [], "tc_enforced": tc_enforced}
+
+    # Resume from checkpoint if requested.  We restore model, optimizer,
+    # scheduler and RNGs, then jump straight to iter_done + 1 in the loop.
+    start_iter = 1
+    if resume_from is not None:
+        resume_from = Path(resume_from)
+        if not resume_from.exists():
+            raise FileNotFoundError(f"train_model: resume_from path does not exist: {resume_from}")
+        iter_done, total_iters_saved, history = _load_training_checkpoint(
+            resume_from, model, optimizer, scheduler,
+        )
+        if total_iters_saved != total_iters:
+            logger.warning(
+                f"[{label}] resume target total_iters={total_iters} differs from "
+                f"checkpointed total_iters={total_iters_saved}; using the new target."
+            )
+        start_iter = iter_done + 1
+        if start_iter > total_iters:
+            logger.info(
+                f"[{label}] checkpoint already at iter {iter_done} >= target {total_iters} "
+                f"— no training to do."
+            )
+        else:
+            logger.info(
+                f"[{label}] resumed from {resume_from} (iter {iter_done}); "
+                f"continuing to iter {total_iters}."
+            )
+
     model.train()
 
     t0 = time.time()
-    for it in range(1, total_iters + 1):
+    for it in range(start_iter, total_iters + 1):
         optimizer.zero_grad()
         s_f, t_f, s_tc, t_tc = sample_collocation(
             N_F, N_TC, s_lo, s_hi, t_lo, t_hi,
@@ -347,9 +480,27 @@ def train_model(
                 f"|grad|={total_norm:.2e}  lr={lr_now:.6f}  ({elapsed:.1f}s)"
             )
 
+        # Periodic checkpoint: save full state every ``checkpoint_every`` iters
+        # so an interruption costs at most that many iterations of work.
+        if (checkpoint_path is not None and checkpoint_every > 0
+                and it % checkpoint_every == 0 and it < total_iters):
+            _save_training_checkpoint(
+                checkpoint_path, it, total_iters,
+                model, optimizer, scheduler, history, label,
+            )
+
     model.eval()
     elapsed = time.time() - t0
     logger.info(f"[{label}] Training done in {elapsed:.1f}s")
+
+    # Final checkpoint at the end of training (always written when
+    # ``checkpoint_path`` is set), so a subsequent ``--resume`` with the same
+    # or a larger ``total_iters`` can pick up cleanly.
+    if checkpoint_path is not None and total_iters > 0:
+        _save_training_checkpoint(
+            checkpoint_path, total_iters, total_iters,
+            model, optimizer, scheduler, history, label,
+        )
     return history
 
 
@@ -950,6 +1101,8 @@ def bermudan_problem(
     g2_gamma: float | None = None,
     load_etcnn_b: Path | None = None,
     analytic_a: bool = False,
+    stage_b_checkpoint_every: int = 0,
+    stage_b_resume_from: Path | None = None,
 ):
     """Two-stage Bermudan put with exercise date t1=0.5.
 
@@ -1485,11 +1638,18 @@ def bermudan_problem(
         )
     else:
         logger.info("Stage B spatial weighting: OFF (plain MSE)")
+    # Stage B checkpoint path: lives next to the eventual etcnn_b.pt so
+    # resumability is local to each variant's directory.  An interruption
+    # therefore loses at most ``stage_b_checkpoint_every`` iterations.
+    stage_b_ckpt_path = out_dir / "models" / "stage_b_checkpoint.pt"
     hist_b = train_model(
         etcnn_b, iters_b, S_TRAIN_LO, S_TRAIN_HI, 0.0, t1,
         payoff_t1, label="ETCNN_B", weight_decay=weight_decay, tc_enforced=True,
         s_star=_s_star_b, sigma_w=sigma_w, eps_w=eps_w,
         use_spatial_weight=use_spatial_weight,
+        checkpoint_path=stage_b_ckpt_path,
+        checkpoint_every=stage_b_checkpoint_every,
+        resume_from=stage_b_resume_from,
     )
     plot_training_metrics(hist_b, "ETCNN_B", out_dir)
 

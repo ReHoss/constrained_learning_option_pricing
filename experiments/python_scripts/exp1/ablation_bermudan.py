@@ -1046,10 +1046,15 @@ def _run_add_variant(args: argparse.Namespace) -> None:
     else:
         logger.info(f"  Stage A: reusing checkpoint {load_etcnn_a_path}")
 
-    # Determine Stage B mode: from-scratch retrain (default), or checkpoint reuse
-    # (--reuse-checkpoint: load existing etcnn_b.pt and skip training).
+    # Determine Stage B mode.  Three options are mutually exclusive:
+    #   * --reuse-checkpoint : load etcnn_b.pt + iters_b=0 (no training, just rescore)
+    #   * --resume           : load stage_b_checkpoint.pt + iters_b=<metadata>
+    #   * neither            : full retrain from scratch
     load_etcnn_b_path: Path | None = None
+    resume_from_path: Path | None = None
     iters_b = int(metadata.get("iters_b", 0))
+    if args.reuse_checkpoint and args.resume:
+        raise SystemExit("--reuse-checkpoint and --resume are mutually exclusive.")
     if args.reuse_checkpoint:
         candidate = vdir / "models" / "etcnn_b.pt"
         if not candidate.exists():
@@ -1058,7 +1063,15 @@ def _run_add_variant(args: argparse.Namespace) -> None:
             )
         load_etcnn_b_path = candidate
         iters_b = 0
-        logger.info(f"  Stage B: reusing checkpoint {candidate} (iters_b forced to 0)")
+        logger.info(f"  Stage B: reusing weights {candidate} (iters_b forced to 0)")
+    elif args.resume:
+        candidate = vdir / "models" / "stage_b_checkpoint.pt"
+        if not candidate.exists():
+            raise FileNotFoundError(
+                f"--resume requested but {candidate} does not exist."
+            )
+        resume_from_path = candidate
+        logger.info(f"  Stage B: resuming from {candidate}, target iters_b={iters_b}")
     else:
         logger.info(f"  Stage B: training from scratch for {iters_b} iterations")
 
@@ -1077,6 +1090,8 @@ def _run_add_variant(args: argparse.Namespace) -> None:
         eps_w=float(metadata.get("eps_w", 1e-3)),
         use_spatial_weight=variant["use_spatial_weight"],
         load_etcnn_b=load_etcnn_b_path,
+        stage_b_checkpoint_every=int(args.checkpoint_every),
+        stage_b_resume_from=resume_from_path,
     )
     elapsed = time.time() - t0
     logger.info(f"  [{variant_name}] bermudan_problem returned in {elapsed:.1f}s")
@@ -1168,6 +1183,179 @@ def _run_add_variant(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Single-variant mode — train a single variant in a fresh ablation directory
+# ---------------------------------------------------------------------------
+
+def _run_single_variant(args: argparse.Namespace) -> None:
+    """Implementation of the ``--variant NAME`` CLI mode.
+
+    Creates a fresh timestamped output directory (with a ``_variant_<NAME>``
+    suffix) holding only the requested variant — no cross-variant comparison
+    plots are generated.  Intended for smoke tests and quick iteration on a
+    single architecture without paying for the full 5-variant sweep.
+    """
+    matching = [v for v in VARIANTS if v["name"] == args.variant]
+    if not matching:
+        available = [v["name"] for v in VARIANTS]
+        raise SystemExit(
+            f"--variant {args.variant!r} not found in VARIANTS. Available: {available}"
+        )
+    variant = matching[0]
+
+    p3._apply_device_arg(args.device)
+    if args.n_tc is not None:
+        p3.N_TC = args.n_tc
+    if args.n_f is not None:
+        p3.N_F = args.n_f
+
+    timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    if args.analytical_stage_a:
+        stage_a_tag = "analyticalA"
+    elif args.load_stage_a is not None:
+        stage_a_tag = "loadedA"
+    else:
+        stage_a_tag = f"itersA{args.iters_a}"
+    ablation_dir = (
+        Path("data/ablation_bermudan")
+        / f"{timestamp}_{stage_a_tag}_itersB{args.iters_b}_variant_{args.variant}"
+    )
+    vdir = ablation_dir / f"variant_{args.variant}"
+    for sub in ("training_metrics", "pricing", "greeks", "diagnostics", "models"):
+        (vdir / sub).mkdir(parents=True, exist_ok=True)
+
+    log_path = ablation_dir / "ablation.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[logging.StreamHandler(), logging.FileHandler(log_path)],
+    )
+    logging.getLogger("matplotlib.mathtext").setLevel(logging.WARNING)
+
+    logger.info("=" * 70)
+    logger.info(f"SINGLE-VARIANT MODE: {args.variant}")
+    logger.info("=" * 70)
+    logger.info(f"  Command: {' '.join(sys.argv)}")
+    logger.info(f"  output:  {ablation_dir}")
+    logger.info(f"  log:     {log_path}")
+
+    # Build the same Stage A wiring as the full ablation main path
+    load_etcnn_a_path: Path | None = None
+    if args.load_stage_a is not None:
+        requested = Path(args.load_stage_a)
+        if requested.is_dir():
+            candidate = requested / "models" / "etcnn_a.pt"
+            load_etcnn_a_path = candidate if candidate.exists() else requested / "etcnn_a.pt"
+        else:
+            load_etcnn_a_path = requested
+        if not load_etcnn_a_path.exists():
+            raise FileNotFoundError(f"--load-stage-a: file not found: {load_etcnn_a_path}")
+
+    resume_from_path: Path | None = None
+    if args.resume:
+        candidate = vdir / "models" / "stage_b_checkpoint.pt"
+        if not candidate.exists():
+            raise FileNotFoundError(
+                f"--resume requested but {candidate} does not exist."
+            )
+        resume_from_path = candidate
+        logger.info(f"  Stage B: resuming from {candidate}")
+
+    # Save a minimal metadata.yaml so that --replot / --add-variant can later
+    # operate on this directory just like on a full-ablation directory.
+    metadata = {
+        "command":           " ".join(sys.argv),
+        "timestamp":         datetime.now(timezone.utc).isoformat(),
+        "mode":              "single-variant",
+        "fixed":             {"g2_type": "bs", "tc_enforced": True},
+        "ablation_axes":     ["put_ansatz", "bypass_v", "use_spatial_weight"],
+        "variants": [
+            {k: v for k, v in variant.items()
+             if k not in ("color", "linestyle", "linewidth")},
+        ],
+        "iters_a":            None if (args.load_stage_a is not None or args.analytical_stage_a) else args.iters_a,
+        "loaded_stage_a":     args.load_stage_a,
+        "analytical_stage_a": args.analytical_stage_a,
+        "iters_b":            args.iters_b,
+        "sigma_w":            args.sigma_w,
+        "eps_w":              args.eps_w,
+        "weight_decay":       args.weight_decay,
+        "N_TC":               p3.N_TC,
+        "N_F":                p3.N_F,
+        "LAMBDA_F":           p3.LAMBDA_F,
+        "LAMBDA_TC":          p3.LAMBDA_TC,
+        "SEED":               p3.SEED,
+        "checkpoint_every":   args.checkpoint_every,
+    }
+    with open(ablation_dir / "metadata.yaml", "w") as f:
+        yaml.dump(metadata, f, default_flow_style=False, sort_keys=False, width=float("inf"))
+
+    t0 = time.time()
+    res = bermudan_problem(
+        out_dir=vdir,
+        total_iters=[args.iters_a, args.iters_b],
+        interp_method=variant["interp"],
+        put_ansatz=variant["put_ansatz"],
+        weight_decay=args.weight_decay,
+        load_etcnn_a=load_etcnn_a_path,
+        analytic_a=args.analytical_stage_a,
+        g2_type="bs",
+        bypass_v=variant["bypass_v"],
+        sigma_w=args.sigma_w,
+        eps_w=args.eps_w,
+        use_spatial_weight=variant["use_spatial_weight"],
+        stage_b_checkpoint_every=int(args.checkpoint_every),
+        stage_b_resume_from=resume_from_path,
+    )
+    logger.info(f"  [{args.variant}] training done in {time.time() - t0:.1f}s")
+
+    etcnn_b = res.get("etcnn_b")
+    if etcnn_b is not None:
+        metrics = compute_metrics_stage_b(
+            etcnn_b, res["hist_b"], res["bt_prices"], res["s_eval_arr"]
+        )
+        res["metrics"] = metrics
+        logger.info(
+            f"  [{args.variant}] metrics: "
+            f"rel_L2={metrics['rel_l2_bt']:.4e}  "
+            f"rel_L2_Delta={metrics['rel_l2_delta']:.4e}  "
+            f"rel_L2_Gamma={metrics['rel_l2_gamma']:.4e}  "
+            f"GEI={metrics['gei']:.2f}"
+        )
+    else:
+        res["metrics"] = None
+
+    res.update({k: variant[k] for k in ("color", "linestyle", "linewidth", "label", "name")})
+    _save_variant_results(res, vdir)
+    _plot_variant(res, vdir)
+
+    summary = {
+        args.variant: {
+            "mae_bt":       float(res["mae_bt"]),
+            "rel_l2_bt":    float(res["rel_l2_bt"]),
+            "jump_at_t1":   float(res["jump_at_t1"]),
+            "etcnn_b_at_K": float(res["etcnn_b_at_K"]),
+            "s_star": (
+                float(res["s_star"])
+                if not (isinstance(res["s_star"], float) and np.isnan(res["s_star"]))
+                else "nan"
+            ),
+        }
+    }
+    m = res.get("metrics")
+    if m is not None:
+        summary[args.variant].update({
+            "rel_l2_atm":   float(m.get("rel_l2_atm",   float("nan"))),
+            "rel_l2_delta": float(m.get("rel_l2_delta", float("nan"))),
+            "rel_l2_gamma": float(m.get("rel_l2_gamma", float("nan"))),
+            "gei":          float(m.get("gei",          float("nan"))),
+        })
+    with open(ablation_dir / "summary.yaml", "w") as f:
+        yaml.dump(summary, f, default_flow_style=False, sort_keys=False, width=float("inf"))
+    logger.info(f"Single-variant {args.variant!r} done — results in {ablation_dir}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1235,6 +1423,30 @@ def main() -> None:
              "for backfilling new metrics (e.g. Gamma) on previously trained "
              "variants without retraining them.",
     )
+    parser.add_argument(
+        "--variant", type=str, default=None, metavar="NAME",
+        help="Run a single variant NAME in a fresh ablation directory "
+             "(skips comparison plots that span variants). Useful for smoke "
+             "tests and quick iteration on a single architecture. NAME must "
+             "match an entry in this script's VARIANTS list.",
+    )
+    parser.add_argument(
+        "--resume", action="store_true", default=False,
+        help="When used with --add-variant or --variant: resume Stage B "
+             "training from <vdir>/models/stage_b_checkpoint.pt instead of "
+             "starting from scratch. The checkpoint includes model, optimizer, "
+             "scheduler, full RNG state and accumulated training history, so "
+             "the resumed run produces results indistinguishable from an "
+             "uninterrupted one (provided --iters-b matches the target).",
+    )
+    parser.add_argument(
+        "--checkpoint-every", type=int, default=0, metavar="K",
+        help="Save a Stage B training checkpoint every K iterations (default "
+             "0 = disabled, only one final checkpoint at the end). Use a "
+             "positive value to cap the cost of an interruption — e.g. "
+             "--checkpoint-every 100 means losing at most ~100 iterations "
+             "of work if the job is killed mid-training.",
+    )
     args = parser.parse_args()
 
     # Exactly one of {train from scratch, load checkpoint, analytical formula}
@@ -1275,8 +1487,18 @@ def main() -> None:
         _run_add_variant(args)
         return
 
+    # ------------------------------------------------------------------
+    # Single-variant mode: train one variant in a fresh ablation directory.
+    # Useful for smoke tests and quick iteration on a single architecture.
+    # ------------------------------------------------------------------
+    if args.variant is not None:
+        _run_single_variant(args)
+        return
+
     if args.reuse_checkpoint and args.add_variant is None:
         parser.error("--reuse-checkpoint only makes sense with --add-variant.")
+    if args.resume and args.add_variant is None and args.variant is None:
+        parser.error("--resume requires --add-variant or --variant.")
 
     # ------------------------------------------------------------------
     # Apply settings to phase3_training globals
@@ -1423,6 +1645,7 @@ def main() -> None:
             sigma_w=args.sigma_w,
             eps_w=args.eps_w,
             use_spatial_weight=variant["use_spatial_weight"],
+            stage_b_checkpoint_every=int(args.checkpoint_every),
         )
         t_variant_elapsed = time.time() - t_variant_start
         logger.info(f"  [{vname}] training done in {t_variant_elapsed:.1f}s")
