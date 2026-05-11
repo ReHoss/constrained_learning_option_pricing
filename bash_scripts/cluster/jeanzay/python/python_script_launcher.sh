@@ -86,7 +86,7 @@ S_BATCH_PARTITION=cpu_p1
 S_BATCH_QOS=qos_cpu-t3
 # Account: depends on your allocation — check `idracct` on Jean Zay
 # Typical forms: <project>@cpu, <project>@v100, <project>@a100, <project>@h100
-S_BATCH_ACCOUNT=ucd32aq@cpu
+S_BATCH_ACCOUNT=akz@cpu
 
 echo "sbatch options:"
 echo "  --job-name=$BASENAME_SCRIPT"

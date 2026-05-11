@@ -151,10 +151,14 @@ rsync -avz jeanzay:/path/to/constrained_learning_option_pricing/data/exp_singula
 
 | Partition | Account string         | Allocation     |
 |-----------|------------------------|----------------|
-| V100      | `ucd32aq@v100`         | 5000 h.gpu     |
-| A100      | `ucd32aq@a100`         | 5000 h.gpu     |
-| H100      | `ucd32aq@h100`         | 1250 h.gpu     |
-| CPU       | `ucd32aq@cpu`          | 26575 h.cpu    |
+| V100      | `akz@v100`             | 5000 h.gpu     |
+| A100      | `akz@a100`             | 5000 h.gpu     |
+| H100      | `akz@h100`             | 1250 h.gpu     |
+| CPU       | `akz@cpu`              | 26575 h.cpu    |
+
+The Jean Zay SLURM account is `<project>@<partition>` where `<project>` is the
+short project name (run `idrproj` to see yours), not the user login. The
+`akz` shorthand maps to project 105646.
 
 Defaults in the launchers target V100; edit `S_BATCH_ACCOUNT` and the QoS
 (`qos_gpu-t3` → 20h, `qos_gpu-dev` → 2h) at the top of the launcher if you

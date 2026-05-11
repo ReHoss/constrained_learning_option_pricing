@@ -106,7 +106,7 @@ S_BATCH_QOS=qos_cpu-t3
 #S_BATCH_QOS=qos_cpu-dev
 
 # --- Account ---
-S_BATCH_ACCOUNT=ucd32aq@cpu
+S_BATCH_ACCOUNT=akz@cpu
 
 # Get last array ID
 N_LAST_ARRAYID=$((N_CONFIGS - 1))

@@ -78,7 +78,7 @@ S_BATCH_TIME=02:00:00
 S_BATCH_QOS=qos_gpu-t3
 # Account: depends on your allocation — check `idracct` on Jean Zay.
 # Forms: <project>@v100, <project>@a100, <project>@h100
-S_BATCH_ACCOUNT=ucd32aq@v100
+S_BATCH_ACCOUNT=akz@v100
 S_BATCH_NODES=1
 S_BATCH_N_TASKS_PER_NODE=1
 # Resume-friendly: SLURM will requeue the job on preemption/time-limit; the
