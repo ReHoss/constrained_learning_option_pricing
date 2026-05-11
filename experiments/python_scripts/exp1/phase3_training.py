@@ -2041,6 +2041,8 @@ def bermudan_problem(
         "etcnn_b_prices": etcnn_b_prices,
         "bt_prices": bt_prices,
         "s_eval_arr": s_eval_arr,
+        # Trained model (for post-hoc metric computation in ablation scripts)
+        "etcnn_b": etcnn_b,
     }
 
 
