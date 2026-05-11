@@ -39,6 +39,7 @@ def load_gt(name: str) -> dict:
 def main() -> None:
     runs = {
         "vpinn":               dict(color="tab:red",    linestyle=":",                lw=2.0),
+        "vpinn_50k":           dict(color="darkred",    linestyle=(0, (5, 1, 1, 1, 1, 1)), lw=2.0),
         "vpinn_lbfgs":         dict(color="tab:pink",   linestyle=(0, (1, 1)),       lw=2.0),
         "vpinn_lbfgs_is_tau":  dict(color="tab:cyan",   linestyle=(0, (3, 1, 1, 1)), lw=2.0),
     }
