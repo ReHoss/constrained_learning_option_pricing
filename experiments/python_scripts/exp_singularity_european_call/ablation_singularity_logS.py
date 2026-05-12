@@ -3523,18 +3523,20 @@ def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> No
         # Canonical replot — recompute GT slices and per-variant figures so
         # any change to _GT_TAU_SLICES or per-variant plotting code is
         # picked up.
+        # CRITICAL: hard-IC ansatz variants must be instantiated via the
+        # wrapping ``HardICAnsatzPINN`` (i.e. ``V = g1·resnet + g2``) rather
+        # than the bare ``PINN`` (just ``resnet``) — both share state_dict
+        # key names because the ansatz contains a resnet submodule with
+        # identical layer naming, so ``load_state_dict`` silently succeeds
+        # against the wrong architecture and every post-hoc metric is then
+        # computed on the unwrapped resnet, NOT the trained function (off
+        # by 7+ orders of magnitude — see commit msg for diagnostic numbers).
+        # The summary.yaml entry omits ``model_type``, so we rebuild the
+        # variant configs from the mode-keyed catalogue and pass those.
+        full_variants_by_name = {v["name"]: v for v in _build_variants(meta["mode"])}
         for res, entry in zip(results, visible_entries):
-            # CRITICAL: pass entry as ``v`` so hard-IC ansatz variants instantiate
-            # the wrapping ``HardICAnsatzPINN`` (i.e. ``V = g1·resnet + g2``)
-            # rather than the bare ``PINN`` (just ``resnet``).  Both architectures
-            # share state_dict key names because the ansatz contains a resnet
-            # submodule with identical layer naming — so without ``v``,
-            # ``load_state_dict`` silently succeeds against the wrong architecture
-            # and every post-hoc metric (PDE residual, weak residual, greeks…)
-            # is computed on the unwrapped resnet, which is NOT the function
-            # that was trained.  The resulting numbers can be wrong by 7+ orders
-            # of magnitude (see commit message for the diagnostic numbers).
-            model = _load_model_for_variant(ablation_dir, entry["name"], v=entry)
+            v_full = full_variants_by_name.get(entry["name"], entry)
+            model = _load_model_for_variant(ablation_dir, entry["name"], v=v_full)
             if model is not None:
                 gt_slices = _compute_gt_slices(model)
                 res["gt_slices"] = gt_slices
@@ -3778,14 +3780,24 @@ def _summary_yaml_lock(ablation_dir: Path):
 
 
 def _summary_entry(v: dict, metrics: dict) -> dict:
-    """Build the summary.yaml entry for one variant."""
-    return {
+    """Build the summary.yaml entry for one variant.
+
+    ``model_type`` is preserved when present so that downstream consumers
+    (``--replot``, ``--add-variant``) can dispatch to the correct
+    architecture in :func:`_load_model_for_variant` without having to
+    rebuild the catalogue first.  Variants that don't set ``model_type``
+    in the catalogue (the bare PINN sweeps) keep behaving as before.
+    """
+    entry = {
         "name": v["name"], "label": v["label"],
         "color": v["color"], "linestyle": _ls_to_yaml(v["linestyle"]), "linewidth": v["linewidth"],
         "sampler_type": v["sampler_type"], "payoff_type": v["payoff_type"],
         "eps": v["eps"], "beta": v["beta"], "sigma_is": v["sigma_is"], "mix": v["mix"],
         **{k: val for k, val in metrics.items() if k != "pde_residual_tau"},
     }
+    if "model_type" in v:
+        entry["model_type"] = v["model_type"]
+    return entry
 
 
 def main() -> None:
