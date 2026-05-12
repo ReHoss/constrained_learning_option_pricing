@@ -712,8 +712,18 @@ def _plot_variant(res: dict, vdir: Path) -> None:
 # Comparison plots
 # ---------------------------------------------------------------------------
 
-def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int) -> None:
-    comp_dir = ablation_dir / "comparison"
+def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
+                     *, output_subdir: str = "comparison") -> None:
+    """Emit every comparison figure under ``ablation_dir / output_subdir``.
+
+    Default ``output_subdir="comparison"`` writes to the canonical folder
+    populated by every full ablation run.  Pass a different name to
+    produce an alternative figure set without overwriting the canonical
+    one — used by the ``--replot --exclude-variant`` workflow to keep
+    only the regularisation winner and drop the noisier soft-penalty
+    siblings, for instance.
+    """
+    comp_dir = ablation_dir / output_subdir
     comp_dir.mkdir(exist_ok=True)
 
     colors     = [r.get("color",     "tab:blue") for r in results]
@@ -965,7 +975,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int) -> N
 # Replot mode
 # ---------------------------------------------------------------------------
 
-def _replot(ablation_dir: Path) -> None:
+def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> None:
     """Regenerate all plots from a saved run directory (no retraining).
 
     Handles the sbatch-array layout: when the run was produced by parallel
@@ -973,7 +983,15 @@ def _replot(ablation_dir: Path) -> None:
     rather than a shared ``summary.yaml`` (to avoid race-overwrites).  This
     helper assembles a combined ``summary.yaml`` on the fly from those files
     and writes it back so subsequent replots run faster.
+
+    When ``extra_exclude`` is non-empty, the function switches to an
+    inspection-only mode: the listed variant names are dropped, per-variant
+    figures are left untouched, and the comparison figures are written to
+    ``comparison_excl_<sorted-names-joined-by-_>/`` so the canonical folder
+    is preserved.  Useful when one regularisation strength clearly wins and
+    we want a clean two-way comparison without losing the full figure set.
     """
+    extra_exclude = list(extra_exclude or [])
     metadata_path = ablation_dir / "metadata.yaml"
     summary_path  = ablation_dir / "summary.yaml"
     if not metadata_path.exists():
@@ -1006,9 +1024,12 @@ def _replot(ablation_dir: Path) -> None:
     iters_b       = metadata.get("iters_b", 0)
     variants_meta = metadata.get("variants", [])
 
+    excluded = set(extra_exclude)
     results = []
     for idx, v_meta in enumerate(variants_meta):
         vname = v_meta["name"]
+        if vname in excluded:
+            continue
         vdir  = ablation_dir / f"variant_{vname}"
         for path in (vdir / "hist_b.npz", vdir / "prices.npz"):
             if not path.exists():
@@ -1024,9 +1045,21 @@ def _replot(ablation_dir: Path) -> None:
         results.append(_load_variant_results(vdir, summary.get(vname, {}), style))
 
     logger.info(f"Loaded {len(results)} variants from {ablation_dir}")
-    _plot_comparison(results, ablation_dir, iters_b)
-    for res in results:
-        _plot_variant(res, ablation_dir / f"variant_{res['name']}")
+
+    if not extra_exclude:
+        output_subdir = "comparison"
+    else:
+        output_subdir = "comparison_excl_" + "_".join(sorted(extra_exclude))
+        logger.info(
+            f"Filtered replot: excluding {sorted(extra_exclude)}; writing "
+            f"comparison figures to {output_subdir}/.  Per-variant figures "
+            f"left untouched."
+        )
+
+    _plot_comparison(results, ablation_dir, iters_b, output_subdir=output_subdir)
+    if not extra_exclude:
+        for res in results:
+            _plot_variant(res, ablation_dir / f"variant_{res['name']}")
     logger.info(f"All plots written to {ablation_dir}/")
 
 
@@ -1059,6 +1092,18 @@ def main() -> None:
              "matches the setup of data/ablation_bermudan/20260511_223436_analyticalA_itersB1000/, "
              "which is the correct reference for an IC-impact control study.  "
              "Mutually exclusive with --load-stage-a.",
+    )
+    parser.add_argument(
+        "--exclude-variant", dest="exclude_variant",
+        action="append", default=[], metavar="NAME",
+        help=("Variant name to exclude from the comparison figures. "
+              "Repeatable.  Only meaningful with --replot: filtered "
+              "figures are written to <DIR>/comparison_excl_<sorted-"
+              "names-joined-by-_>/, leaving the canonical <DIR>/"
+              "comparison/ untouched.  Typical use case: drop the "
+              "underperforming regularisation strengths of the soft-"
+              "penalty sweep to keep a clean hard-vs-best-soft "
+              "comparison."),
     )
     parser.add_argument(
         "--replot", type=str, default=None, metavar="DIR",
@@ -1168,7 +1213,7 @@ def main() -> None:
             handlers=[logging.StreamHandler()],
         )
         logging.getLogger("matplotlib.mathtext").setLevel(logging.WARNING)
-        _replot(Path(args.replot))
+        _replot(Path(args.replot), extra_exclude=args.exclude_variant)
         return
 
     # ── Init-only short-circuit ─────────────────────────────────────────────
