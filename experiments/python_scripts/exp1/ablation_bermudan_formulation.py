@@ -1085,7 +1085,77 @@ def main() -> None:
              "shared dir once on the login node, then passes that path to "
              "each --variant array task via this flag.",
     )
+    parser.add_argument(
+        "--init-only", action="store_true",
+        help="Create the timestamped ablation directory + metadata.yaml + "
+             "configs/<variant>.yaml per variant, then exit *without* "
+             "training.  Designed for SLURM-array workflows orchestrated by "
+             "bash_scripts/cluster/jeanzay/python/experiment_array_launcher.sh"
+             ": the launcher captures the absolute directory path printed on "
+             "the last stdout line and submits one array task per YAML under "
+             "configs/.  Requires --analytical-stage-a because the soft "
+             "variants would otherwise depend on the etcnn_a.pt produced by "
+             "the hard_etcnn variant — a dependency that defeats parallel "
+             "submission.",
+    )
+    parser.add_argument(
+        "--config-dir", type=str, default=None, metavar="DIR",
+        help="Folder containing per-variant YAML configs (one file per array "
+             "task).  Must be used together with --config-name.  Matches the "
+             "convention expected by the generic SLURM-array worker at "
+             "bash_scripts/cluster/jeanzay/python/slurm_job_array/"
+             "job_array_batch_xp.slurm so this script can be plugged into "
+             "the existing Jean Zay launcher without modification.",
+    )
+    parser.add_argument(
+        "--config-name", type=str, default=None, metavar="NAME",
+        help="Basename (without .yaml) of the config file inside --config-dir "
+             "to load.  The YAML must contain at least 'variant_name' and "
+             "'ablation_dir'; effect is equivalent to --variant <variant_name>"
+             " --ablation-dir <ablation_dir> plus any iter / stage-A "
+             "overrides recorded by the init step.",
+    )
     args = parser.parse_args()
+
+    # ── Config-driven entry point (YAML) ────────────────────────────────────
+    # Mirrors what the Jean Zay job-array worker passes:
+    #     python script.py --config-dir DIR --config-name NAME
+    # Translate the YAML into the equivalent --variant / --ablation-dir CLI so
+    # the rest of main() stays untouched.  Done first because it can override
+    # --variant, which the next block validates.
+    if args.config_dir is not None or args.config_name is not None:
+        if args.config_dir is None or args.config_name is None:
+            parser.error("--config-dir and --config-name must be provided together.")
+        config_path = Path(args.config_dir) / f"{args.config_name}.yaml"
+        if not config_path.exists():
+            parser.error(f"Config file does not exist: {config_path}")
+        with open(config_path, encoding="utf-8") as f:
+            cfg_yaml = yaml.safe_load(f) or {}
+        required = ("variant_name", "ablation_dir")
+        missing = [k for k in required if k not in cfg_yaml]
+        if missing:
+            parser.error(f"Config {config_path} is missing required keys: {missing}")
+        args.variant      = cfg_yaml["variant_name"]
+        args.ablation_dir = cfg_yaml["ablation_dir"]
+        # Remaining keys are optional overrides.  Only apply them when the
+        # YAML explicitly carries the field; otherwise keep the argparse
+        # default so command-line overrides on the worker still win.
+        if cfg_yaml.get("iters_a") is not None:
+            args.iters_a = int(cfg_yaml["iters_a"])
+        if cfg_yaml.get("iters_b") is not None:
+            args.iters_b = int(cfg_yaml["iters_b"])
+        if cfg_yaml.get("analytical_stage_a", False):
+            args.analytical_stage_a = True
+        if cfg_yaml.get("load_stage_a") is not None:
+            args.load_stage_a = str(cfg_yaml["load_stage_a"])
+        if cfg_yaml.get("weight_decay") is not None:
+            args.weight_decay = float(cfg_yaml["weight_decay"])
+        if cfg_yaml.get("n_tc") is not None:
+            args.n_tc = int(cfg_yaml["n_tc"])
+        if cfg_yaml.get("n_f") is not None:
+            args.n_f = int(cfg_yaml["n_f"])
+        if "device" in cfg_yaml and args.device == "auto":
+            args.device = cfg_yaml["device"]
     if args.variant is not None:
         names = [v["name"] for v in VARIANTS]
         if args.variant not in names:
@@ -1099,6 +1169,96 @@ def main() -> None:
         )
         logging.getLogger("matplotlib.mathtext").setLevel(logging.WARNING)
         _replot(Path(args.replot))
+        return
+
+    # ── Init-only short-circuit ─────────────────────────────────────────────
+    # Creates the shared ablation directory + metadata.yaml + one
+    # configs/<variant>.yaml per variant (consumed downstream by the worker
+    # via --config-dir / --config-name), prints the absolute path on the
+    # last stdout line, and exits *without* touching any torch tensor.
+    # Compatible with experiment_array_launcher.sh's three-phase contract.
+    if args.init_only:
+        if args.variant is not None:
+            parser.error(
+                "--init-only is incompatible with --variant: one ablation "
+                "directory covers every variant, and each array task picks "
+                "its own --variant via configs/<name>.yaml."
+            )
+        if not args.analytical_stage_a:
+            parser.error(
+                "--init-only requires --analytical-stage-a: the soft_pinn_* "
+                "variants otherwise depend on the etcnn_a.pt produced by the "
+                "hard_etcnn variant, which serialises the array submission "
+                "and defeats the point of parallel job-array execution."
+            )
+        timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+        stage_a_tag = "analyticalA"
+        if args.ablation_dir is not None:
+            ablation_dir = Path(args.ablation_dir)
+        else:
+            ablation_dir = (
+                script_data_dir(__file__)
+                / f"{timestamp}_{stage_a_tag}_itersB{args.iters_b}"
+            )
+        ablation_dir.mkdir(parents=True, exist_ok=True)
+        (ablation_dir / "comparison").mkdir(exist_ok=True)
+        for v in VARIANTS:
+            for sub in ("training_metrics", "pricing", "greeks", "diagnostics", "models"):
+                (ablation_dir / f"variant_{v['name']}" / sub).mkdir(parents=True, exist_ok=True)
+
+        n_tc_resolved = args.n_tc if args.n_tc is not None else p3.N_TC
+        n_f_resolved  = args.n_f  if args.n_f  is not None else p3.N_F
+
+        with open(ablation_dir / "metadata.yaml", "w", encoding="utf-8") as f:
+            yaml.safe_dump({
+                "command":            " ".join(sys.argv),
+                "timestamp":          datetime.now(timezone.utc).isoformat(),
+                "fixed": {
+                    "g2_type":    "bs",
+                    "put_ansatz": False,
+                    "LAMBDA_F":   p3.LAMBDA_F,
+                },
+                "ablation_axes":      ["tc_enforcement_method", "lambda_tc_soft"],
+                "variants": [
+                    {k: vv for k, vv in var.items()
+                     if k not in ("color", "linestyle", "linewidth")}
+                    for var in VARIANTS
+                ],
+                "iters_a":            args.iters_a,
+                "iters_b":            args.iters_b,
+                "weight_decay":       args.weight_decay,
+                "analytical_stage_a": args.analytical_stage_a,
+                "load_stage_a":       args.load_stage_a,
+                "N_TC":               n_tc_resolved,
+                "N_F":                n_f_resolved,
+                "LAMBDA_F":           p3.LAMBDA_F,
+                "SEED":               p3.SEED,
+            }, f, default_flow_style=False, sort_keys=False)
+
+        # configs/<variant>.yaml — one per array task.  Snapshots every CLI
+        # flag that affects the per-task run so the workers reproduce the
+        # user's intent without re-parsing the launcher's arguments.
+        configs_dir = ablation_dir / "configs"
+        configs_dir.mkdir(exist_ok=True)
+        for v in VARIANTS:
+            cfg = {
+                "variant_name":       v["name"],
+                "ablation_dir":       str(ablation_dir.resolve()),
+                "iters_a":            args.iters_a,
+                "iters_b":            args.iters_b,
+                "weight_decay":       args.weight_decay,
+                "analytical_stage_a": args.analytical_stage_a,
+                "load_stage_a":       args.load_stage_a,
+                "n_tc":               args.n_tc,
+                "n_f":                args.n_f,
+                "device":             args.device,
+            }
+            with open(configs_dir / f"{v['name']}.yaml", "w", encoding="utf-8") as f:
+                yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
+
+        # Absolute path on the *last* stdout line — bash launchers capture it
+        # via:  EXPDIR=$(python ... --init-only --analytical-stage-a | tail -n1)
+        print(str(ablation_dir.resolve()))
         return
 
     p3._apply_device_arg(args.device)
