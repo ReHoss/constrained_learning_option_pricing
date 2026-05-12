@@ -458,6 +458,77 @@ def train_stage_b_soft_pinn(
 # Rich metric computation (shared with ablation_bermudan.py)
 # ---------------------------------------------------------------------------
 
+def _compute_slice_evaluations(
+    model: torch.nn.Module,
+    s_eval_arr: np.ndarray,
+    t_slices: tuple[float, ...],
+) -> dict:
+    r"""Evaluate $V_\theta$, $\partial_S V_\theta$, $\partial_{SS} V_\theta$ at
+    multiple time slices on a fixed $S$-grid.
+
+    Used by both training-time (via :func:`compute_metrics_stage_b`) and replot
+    (via :func:`_regenerate_slices_from_saved_model`) so the multi-time price /
+    Greeks figures (``form_prices_by_t.png``, ``form_greeks_by_t.png``) share
+    one source of truth.  Greeks are taken via ``torch.autograd`` rather than
+    finite differences so the prediction curves stay smooth even for the soft-
+    PINN variants whose surfaces can be noisy.
+
+    Args:
+        model:      Trained Stage B network in eval mode.  Caller is
+                    responsible for placing it on the right device.
+        s_eval_arr: 1-D asset-price evaluation grid (numpy).  Reused at every
+                    slice so the columns of the returned arrays line up.
+        t_slices:   Tuple of times in $[0, t_1]$ at which to evaluate.  The
+                    canonical choice is ``(0.0, t_1/2, t_1)``; the ends pin
+                    the Stage-B initial / terminal sides and the midpoint
+                    exposes any backward-time leakage of the $t_1$ kink.
+
+    Returns:
+        Dict with shape ``(len(t_slices), len(s_eval_arr))``:
+        - ``"t_slices"``       — list of evaluation times (length ``n_t``).
+        - ``"price_slices"``   — $V_\theta(S, t_k)$.
+        - ``"delta_slices"``   — $\partial_S V_\theta(S, t_k)$ (autograd).
+        - ``"gamma_slices"``   — $\partial_{SS} V_\theta(S, t_k)$ (autograd).
+    """
+    device = next(model.parameters()).device
+    n_t    = len(t_slices)
+    n_s    = len(s_eval_arr)
+    price_slices = np.zeros((n_t, n_s), dtype=np.float64)
+    delta_slices = np.zeros((n_t, n_s), dtype=np.float64)
+    gamma_slices = np.zeros((n_t, n_s), dtype=np.float64)
+    s_base = torch.tensor(s_eval_arr, dtype=torch.get_default_dtype(), device=device)
+    for k, t_val in enumerate(t_slices):
+        s_d = s_base.detach().clone().requires_grad_(True)
+        t_d = torch.full_like(s_d, float(t_val), requires_grad=True)
+        x_d = torch.stack([s_d, t_d], dim=1)
+        V_d = model(x_d).squeeze()
+        price_slices[k] = V_d.detach().cpu().numpy()
+        try:
+            (delta_d,) = torch.autograd.grad(V_d.sum(), s_d, create_graph=True)
+            (gamma_d,) = torch.autograd.grad(delta_d.sum(), s_d, create_graph=False)
+            delta_slices[k] = delta_d.detach().cpu().numpy()
+            gamma_slices[k] = gamma_d.detach().cpu().numpy()
+        except Exception as exc:
+            logger.warning(
+                f"_compute_slice_evaluations: autograd failed at t={t_val} "
+                f"({exc}); slice filled with NaN."
+            )
+            delta_slices[k] = np.nan
+            gamma_slices[k] = np.nan
+    return {
+        "t_slices":     [float(t) for t in t_slices],
+        "price_slices": price_slices,
+        "delta_slices": delta_slices,
+        "gamma_slices": gamma_slices,
+    }
+
+
+# Canonical Bermudan Stage-B time probes for multi-time comparison figures.
+# Three slices: the Stage-B initial side, midpoint, and the $t=t_1$ terminal
+# side where the analytical $V_{\mathrm{target}}$ reference is known.
+_T_SLICES_BERMUDAN = (0.0, p3.t1 / 2.0, p3.t1)
+
+
 def compute_metrics_stage_b(
     model: torch.nn.Module,
     hist_b: dict,
@@ -576,6 +647,40 @@ def compute_metrics_stage_b(
         logger.warning(f"compute_metrics_stage_b: PDE profile failed ({exc})")
         pde_residuals = [float("nan")] * n_profile
 
+    # --- Multi-time slices for form_prices_by_t.png + form_greeks_by_t.png --
+    # Evaluate V_theta, Delta, Gamma at every probe in _T_SLICES_BERMUDAN on
+    # the same s_eval_arr grid, plus the reference curves where they exist
+    # (BT at t=0, V_target at t=t1 — none in between).  Numerical
+    # finite-difference Greeks on the references match what the existing
+    # form_greeks.png plot uses, so the multi-t version is just a horizontal
+    # tiling of the t=0 column.
+    try:
+        slices = _compute_slice_evaluations(model, s_eval_arr, _T_SLICES_BERMUDAN)
+        ref_price_t0 = np.asarray(bt_prices)
+        ref_delta_t0 = np.gradient(ref_price_t0, s_eval_arr)
+        ref_gamma_t0 = np.gradient(ref_delta_t0, s_eval_arr)
+        if v_target_fn is not None:
+            s_tens     = torch.tensor(s_eval_arr, dtype=torch.get_default_dtype(), device=device)
+            with torch.no_grad():
+                ref_price_t1 = v_target_fn(s_tens).detach().cpu().numpy()
+            ref_delta_t1 = np.gradient(ref_price_t1, s_eval_arr)
+            ref_gamma_t1 = np.gradient(ref_delta_t1, s_eval_arr)
+        else:
+            ref_price_t1 = None
+            ref_delta_t1 = None
+            ref_gamma_t1 = None
+        slices.update({
+            "ref_price_t0": ref_price_t0,
+            "ref_delta_t0": ref_delta_t0,
+            "ref_gamma_t0": ref_gamma_t0,
+            "ref_price_t1": ref_price_t1,
+            "ref_delta_t1": ref_delta_t1,
+            "ref_gamma_t1": ref_gamma_t1,
+        })
+    except Exception as exc:
+        logger.warning(f"compute_metrics_stage_b: slice evaluation failed ({exc})")
+        slices = None
+
     return {
         "rel_l2_bt":     rel_l2_bt,
         "rel_l2_atm":    rel_l2_atm,
@@ -588,6 +693,7 @@ def compute_metrics_stage_b(
             "t":        t_profile_tensor.cpu().tolist(),
             "residual": pde_residuals,
         },
+        "slices":        slices,
     }
 
 
@@ -668,6 +774,23 @@ def _save_variant_results(res: dict, vdir: Path) -> None:
                 "greeks_nn_gamma": np.asarray(greeks["nn_gamma"]),
                 "greeks_bt_gamma": np.asarray(greeks["bt_gamma"]),
             })
+        slices = metrics.get("slices")
+        if slices is not None:
+            payload.update({
+                "slice_t":            np.asarray(slices["t_slices"]),
+                "slice_price":        np.asarray(slices["price_slices"]),
+                "slice_delta":        np.asarray(slices["delta_slices"]),
+                "slice_gamma":        np.asarray(slices["gamma_slices"]),
+                "slice_ref_price_t0": np.asarray(slices["ref_price_t0"]),
+                "slice_ref_delta_t0": np.asarray(slices["ref_delta_t0"]),
+                "slice_ref_gamma_t0": np.asarray(slices["ref_gamma_t0"]),
+            })
+            if slices.get("ref_price_t1") is not None:
+                payload.update({
+                    "slice_ref_price_t1": np.asarray(slices["ref_price_t1"]),
+                    "slice_ref_delta_t1": np.asarray(slices["ref_delta_t1"]),
+                    "slice_ref_gamma_t1": np.asarray(slices["ref_gamma_t1"]),
+                })
         np.savez_compressed(vdir / "metrics.npz", **payload)
 
 
@@ -708,6 +831,29 @@ def _load_variant_results(vdir: Path, summary_entry: dict, style: dict) -> dict:
             }
         else:
             metrics["greeks"] = None
+        if "slice_t" in m.files:
+            slices = {
+                "t_slices":     m["slice_t"].tolist(),
+                "price_slices": m["slice_price"],
+                "delta_slices": m["slice_delta"],
+                "gamma_slices": m["slice_gamma"],
+                "ref_price_t0": m["slice_ref_price_t0"],
+                "ref_delta_t0": m["slice_ref_delta_t0"],
+                "ref_gamma_t0": m["slice_ref_gamma_t0"],
+            }
+            if "slice_ref_price_t1" in m.files:
+                slices.update({
+                    "ref_price_t1": m["slice_ref_price_t1"],
+                    "ref_delta_t1": m["slice_ref_delta_t1"],
+                    "ref_gamma_t1": m["slice_ref_gamma_t1"],
+                })
+            else:
+                slices.update({"ref_price_t1": None,
+                               "ref_delta_t1": None,
+                               "ref_gamma_t1": None})
+            metrics["slices"] = slices
+        else:
+            metrics["slices"] = None
     else:
         metrics = None
     return {
@@ -1068,6 +1214,162 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
             fig.savefig(comp_dir / "form_greeks.png", dpi=150)
             plt.close(fig)
             logger.info("[OK] form_greeks.png")
+
+    # ------------------------------------------------------------------
+    # Plot 8b — Price by time slices (multi-time V(S, t_k))
+    # ------------------------------------------------------------------
+    # Ported from ablation_singularity_logS.py's price_slices.png:  one
+    # column per probed time, all variants overlaid.  BT-tree reference
+    # at t=0 (left column) and analytical V_target at t=t1 (right column);
+    # no analytical reference at intermediate times so we just show the
+    # predicted curves there.  Conceptual companion to form_prices.png
+    # (which is the t=0 column only) — useful to see the kink at s*
+    # appear as t -> t1.
+    slice_results = [
+        res for res in results
+        if res.get("metrics") is not None
+        and res["metrics"].get("slices") is not None
+    ]
+    if slice_results:
+        ref0 = slice_results[0]["metrics"]["slices"]
+        t_slices = ref0["t_slices"]
+        n_t = len(t_slices)
+        s_ax = ref0.get("ref_price_t0").shape and (
+            slice_results[0]["s_eval_arr"]
+        )
+        # ``ref_price_t1`` is the same V_target across every variant — pull
+        # it from the first variant that has it (None if none was saved).
+        ref_t1 = next(
+            (r["metrics"]["slices"].get("ref_price_t1")
+             for r in slice_results
+             if r["metrics"]["slices"].get("ref_price_t1") is not None),
+            None,
+        )
+        ref_delta_t1 = next(
+            (r["metrics"]["slices"].get("ref_delta_t1")
+             for r in slice_results
+             if r["metrics"]["slices"].get("ref_delta_t1") is not None),
+            None,
+        )
+        ref_gamma_t1 = next(
+            (r["metrics"]["slices"].get("ref_gamma_t1")
+             for r in slice_results
+             if r["metrics"]["slices"].get("ref_gamma_t1") is not None),
+            None,
+        )
+        fig, axes = plt.subplots(1, n_t, figsize=(5 * n_t, 5), sharey=True)
+        if n_t == 1:
+            axes = [axes]
+        for k, t_val in enumerate(t_slices):
+            ax = axes[k]
+            # Reference overlays where they exist.
+            if k == 0:
+                ax.plot(s_ax, ref0["ref_price_t0"], "k--", linewidth=1.8,
+                        label=r"$V^{\mathrm{BT}}(S,0)$", zorder=10)
+            elif np.isclose(t_val, p3.t1) and ref_t1 is not None:
+                ax.plot(s_ax, ref_t1, "k--", linewidth=1.8,
+                        label=r"$V_{\mathrm{target}}(S)$  (analytical)",
+                        zorder=10)
+            # Predicted curves, all variants.
+            for res in slice_results:
+                sl = res["metrics"]["slices"]
+                lbl = res.get("label", res.get("name", ""))
+                ax.plot(s_ax, sl["price_slices"][k],
+                        color=res.get("color"),
+                        linestyle=res.get("linestyle", "-"),
+                        linewidth=res.get("linewidth", 1.8),
+                        label=lbl)
+            ax.axvline(p3.K, color="gray", linestyle=":", linewidth=0.8)
+            _add_s_star_line(ax, s_star, with_label=(k == 0))
+            ax.set_xlabel(r"Asset price $S$")
+            if k == 0:
+                ax.set_ylabel(r"$V_\theta(S, t)$")
+            ax.set_title(rf"$t = {t_val:.3f}$")
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=7)
+        fig.suptitle(
+            f"Formulation ablation — Price by time slices\n{_SUPTITLE_PARAMS}",
+            fontsize=10,
+        )
+        fig.tight_layout(rect=[0, 0.08, 1, 1])
+        fig.text(
+            0.5, 0.01,
+            r"References: BT (binomial tree, $N=2000$) at $t=0$;  "
+            r"$V_{\mathrm{target}}(S)=\max(\Phi(S), V^{\mathrm{eur}}(S, t_1))$ "
+            r"at $t=t_1$ (analytical Stage A only).  No analytical reference "
+            r"at intermediate $t$.",
+            ha="center", va="bottom", fontsize=8, bbox=_BOX_STYLE,
+        )
+        fig.savefig(comp_dir / "form_prices_by_t.png", dpi=150)
+        plt.close(fig)
+        logger.info("[OK] form_prices_by_t.png")
+
+    # ------------------------------------------------------------------
+    # Plot 8c — Greeks comparison by time slices (multi-time Delta, Gamma)
+    # ------------------------------------------------------------------
+    # Ported from ablation_singularity_logS.py's greeks_comparison.png
+    # (the multi-tau version produced by _plot_gt_comparison).  Rows:
+    # Delta on top, Gamma on bottom.  Columns: probed times.  BT-FD refs
+    # at t=0, V_target-FD refs at t=t1; intermediate t shows predicted
+    # curves only.
+    if slice_results:
+        fig, axes = plt.subplots(2, n_t, figsize=(5 * n_t, 9), sharex=True)
+        if n_t == 1:
+            axes = axes.reshape(2, 1)
+        for k, t_val in enumerate(t_slices):
+            ax_d, ax_g = axes[0, k], axes[1, k]
+            if k == 0:
+                ax_d.plot(s_ax, ref0["ref_delta_t0"], "k--", linewidth=1.6,
+                          label=r"$\Delta^{\mathrm{BT}}$", zorder=10)
+                ax_g.plot(s_ax, ref0["ref_gamma_t0"], "k--", linewidth=1.6,
+                          label=r"$\Gamma^{\mathrm{BT}}$", zorder=10)
+            elif np.isclose(t_val, p3.t1) and ref_delta_t1 is not None:
+                ax_d.plot(s_ax, ref_delta_t1, "k--", linewidth=1.6,
+                          label=r"$\Delta^{\mathrm{tgt}}$", zorder=10)
+                ax_g.plot(s_ax, ref_gamma_t1, "k--", linewidth=1.6,
+                          label=r"$\Gamma^{\mathrm{tgt}}$", zorder=10)
+            for res in slice_results:
+                sl = res["metrics"]["slices"]
+                lbl = res.get("label", res.get("name", ""))
+                ax_d.plot(s_ax, sl["delta_slices"][k],
+                          color=res.get("color"),
+                          linestyle=res.get("linestyle", "-"),
+                          linewidth=res.get("linewidth", 1.5),
+                          label=lbl)
+                ax_g.plot(s_ax, sl["gamma_slices"][k],
+                          color=res.get("color"),
+                          linestyle=res.get("linestyle", "-"),
+                          linewidth=res.get("linewidth", 1.5),
+                          label=lbl)
+            ax_d.axvline(p3.K, color="gray", linestyle=":", linewidth=0.8)
+            ax_g.axvline(p3.K, color="gray", linestyle=":", linewidth=0.8)
+            _add_s_star_line(ax_d, s_star, with_label=(k == 0))
+            _add_s_star_line(ax_g, s_star, with_label=False)
+            ax_d.set_title(rf"$t = {t_val:.3f}$")
+            ax_d.grid(True, alpha=0.3)
+            ax_g.set_xlabel(r"Asset price $S$")
+            ax_g.grid(True, alpha=0.3)
+            if k == 0:
+                ax_d.set_ylabel(r"$\Delta = \partial V/\partial S$")
+                ax_g.set_ylabel(r"$\Gamma = \partial^2 V/\partial S^2$")
+            ax_d.legend(fontsize=7)
+            ax_g.legend(fontsize=7)
+        fig.suptitle(
+            f"Formulation ablation — Greeks by time slices\n{_SUPTITLE_PARAMS}",
+            fontsize=10,
+        )
+        fig.tight_layout(rect=[0, 0.06, 1, 1])
+        fig.text(
+            0.5, 0.01,
+            r"$\Delta, \Gamma$ via autograd on $V_\theta$.  References at "
+            r"$t=0$: finite differences on $V^{\mathrm{BT}}$.  References at "
+            r"$t=t_1$: finite differences on $V_{\mathrm{target}}$ "
+            r"(analytical Stage A only).",
+            ha="center", va="bottom", fontsize=8, bbox=_BOX_STYLE,
+        )
+        fig.savefig(comp_dir / "form_greeks_by_t.png", dpi=150)
+        plt.close(fig)
+        logger.info("[OK] form_greeks_by_t.png")
 
     # ------------------------------------------------------------------
     # Plot 9 — Rich summary metrics bar chart
