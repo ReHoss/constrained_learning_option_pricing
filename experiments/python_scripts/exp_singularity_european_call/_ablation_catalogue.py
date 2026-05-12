@@ -61,13 +61,27 @@ _COLORS     = ["tab:blue", "tab:orange", "tab:green", "tab:red",
                "tab:purple", "tab:brown", "tab:pink", "tab:gray",
                "tab:olive", "tab:cyan", "steelblue", "coral"]
 
-# ── Variants excluded from comparison figures (data is still kept) ──────────
+# ── Variants excluded from the ablation pipeline ────────────────────────────
+# Despite the historical name, this set now gates both *training* and
+# *plotting*: variants listed here are skipped by the per-task YAML writer in
+# ``handle_init_only_cli`` (so SLURM array launchers do not waste GPU on them)
+# and filtered out of every comparison figure by ``_plot_comparison`` /
+# ``_replot``.  Catalogue entries themselves are preserved so the
+# hyperparameters and the rationale for the exclusion stay reviewable and
+# can be re-activated by simply removing the name from this set.
 _PLOT_EXCLUDED_VARIANTS: set[str] = {
     "vpinn_lbfgs_is_tau",  # importance-sampling τ→0 biased variant — removed
                            # from plots pending a fair comparison study
     "vpinn_lbfgs",         # stochastic-batch L-BFGS — superseded by
                            # vpinn_lbfgs_full_batch which is strictly better
                            # on all metrics (rel_L2, delta, gamma, GEI)
+    "engd",                # strong-form ENGD — Gram matrix singular on this
+                           # problem; needs more regularisation before it can
+                           # be revived (kept in the catalogue for the future
+                           # fix attempt, but excluded from active ablations)
+    "vpinn_engd",          # weak-form ENGD — same singular-Gram issue as the
+                           # strong-form counterpart; excluded for the same
+                           # reason
 }
 
 
@@ -122,10 +136,11 @@ def _build_variants(mode: str) -> list[dict]:
         eps=0.0, beta=None, sigma_is=None, mix=0.0,
         # default_num_iterations: every variant declares its own natural
         # training budget so that the CLI no longer needs --num-iterations
-        # for production runs.  Adam strong-form: 20_000 is the standard
-        # budget used by the original `compare-boundary-singularity-...`
-        # study; below ~2_000 the loss is still in rapid descent.
-        default_num_iterations=20000,
+        # for production runs.  Adam strong-form: 100_000 is the budget
+        # the comparison-boundary-singularity ablation runs at (aligned
+        # with the hard-IC ablation for cross-comparability); below
+        # ~2_000 the loss is still in rapid descent.
+        default_num_iterations=100000,
         color="#0d47a1", linestyle="-", linewidth=2.0,
     )
 
@@ -135,12 +150,12 @@ def _build_variants(mode: str) -> list[dict]:
             dict(name="truncated", label=r"$\varepsilon$-trunc. ($\varepsilon=1\%T$)",
                  sampler_type="truncated", payoff_type="exact",
                  eps=0.01*T, beta=None, sigma_is=None, mix=0.0,
-                 default_num_iterations=20000,
+                 default_num_iterations=100000,
                  color="#1976d2", linestyle="-", linewidth=2.0),
             dict(name="smooth", label=r"Smooth ($\beta=100$)",
                  sampler_type="naive", payoff_type="smooth",
                  eps=0.0, beta=100, sigma_is=None, mix=0.0,
-                 default_num_iterations=20000,
+                 default_num_iterations=100000,
                  color="#42a5f5", linestyle="-", linewidth=2.0),
             dict(name="vpinn", label="VPINN (weak form)",
                  sampler_type="vpinn", payoff_type="exact",
@@ -150,7 +165,7 @@ def _build_variants(mode: str) -> list[dict]:
                  #   PDE contributes ~50% of the gradient (was 24% with lam_f=20)
                  # eps=0.0: no temporal truncation — train on full [0,T] including singularity
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
-                 default_num_iterations=20000,
+                 default_num_iterations=100000,
                  color="#b71c1c", linestyle="-", linewidth=2.0),
             dict(name="vpinn_engd", label="VPINN + ENGD (nat. grad.)",
                  sampler_type="vpinn_engd", payoff_type="exact",
@@ -219,24 +234,11 @@ def _build_variants(mode: str) -> list[dict]:
                  # — Fixed batch: the same biased sample is reused for every outer
                  #   L-BFGS step → deterministic objective → valid secant condition.
                  # — Full convergence observed at ~266 steps on the uniform variant;
-                 #   400 steps is a safe cap here.
+                 #   500 steps aligns with the uniform sibling's safe cap.
                  n_tau=512, K_test=20, n_quad=100, lam_f=200.0,
                  is_tau_alpha=0.3,
-                 default_num_iterations=400,
+                 default_num_iterations=500,
                  color="#7b1fa2", linestyle="-", linewidth=2.0),
-            dict(name="vpinn_lbfgs_is_tau_full_batch_lam_tc3",
-                 label=r"VPINN + L-BFGS (IS $\tau\to0$, fixed batch, $\lambda_{tc}=3$)",
-                 sampler_type="vpinn_lbfgs_is_tau_full_batch", payoff_type="exact",
-                 eps=0.001 * T, beta=None, sigma_is=None, mix=0.0,
-                 # Same as vpinn_lbfgs_is_tau_full_batch but with λ_tc=3 instead of 1.
-                 # Motivation: IS τ→0 concentrates points near the singularity and
-                 # creates tension between the PDE residual and the IC at τ=0,
-                 # causing L_ic to be ~2× higher than the uniform fixed-batch variant.
-                 # Increasing λ_tc re-weights the IC to compensate.
-                 n_tau=512, K_test=20, n_quad=100, lam_f=200.0, lam_tc=3.0,
-                 is_tau_alpha=0.3,
-                 default_num_iterations=400,
-                 color="#ab47bc", linestyle="-", linewidth=2.0),
         ]
 
     if mode == "hard-ic-ansatz-european-call":
