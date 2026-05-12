@@ -223,6 +223,88 @@ def _build_analytical_vtarget():
     return v_target_fn, (s_dense.cpu().numpy(), v_t1_vals.cpu().numpy())
 
 
+def _compute_s_star_bermudan_analytical() -> float:
+    r"""Locate the exercise boundary $s^\star$ at $t=t_1$ in analytical Stage A mode.
+
+    $s^\star$ is the unique asset price where the put payoff meets the
+    Black-Scholes European hold value, so the Bermudan terminal target at
+    $t_1$ -- $V_{\mathrm{target}}(s) = \max(\Phi(s), V^{\mathrm{eur}}(s,t_1))$ --
+    switches from one branch to the other:
+
+    .. math::
+        K - s^\star \; = \; V^{\mathrm{eur}}_{\mathrm{BS}}(s^\star,\,K,\,r,\,\sigma,\,T-t_1).
+
+    The LHS decreases linearly from $K$ at $s=0$ down to $0$ at $s=K$ while the
+    RHS is a positive smooth function strictly below $K-s$ on $(0,K)$, so the
+    equation has a single root, located by bisection on $[10^{-6},\,K]$.
+
+    Returns:
+        s_star: Exercise-boundary asset price, in $(0, K)$.  Used as a visual
+        reference (vertical line) on every $S$-axis comparison figure.
+    """
+    from learning_option_pricing.pricing.terminal import black_scholes_put
+
+    tau = float(p3.T - p3.t1)
+    K_  = float(p3.K)
+    r_  = float(p3.r)
+    sg_ = float(p3.sigma)
+
+    def _diff(s_val: float) -> float:
+        s_t   = torch.tensor([s_val], dtype=torch.get_default_dtype())
+        tau_t = torch.tensor([tau],   dtype=torch.get_default_dtype())
+        eur   = float(black_scholes_put(s_t, K_, r_, sg_, tau_t).item())
+        return (K_ - s_val) - eur
+
+    a, b = 1e-6, K_
+    for _ in range(80):
+        if abs(b - a) < 1e-8:
+            break
+        mid = 0.5 * (a + b)
+        if _diff(a) * _diff(mid) < 0:
+            b = mid
+        else:
+            a = mid
+    return 0.5 * (a + b)
+
+
+def _add_s_star_line(ax, s_star, *, with_label: bool = True) -> None:
+    r"""Draw the exercise-boundary vertical line at $S = s^\star$ on an $S$-axis plot.
+
+    $s^\star$ is the corner of the intermediate terminal payoff at $t_1$:
+
+    .. math::
+        V_{\mathrm{target}}(s) = \max(\Phi(s),\, V^{\mathrm{eur}}(s, t_1)),
+
+    where the two branches of the $\max$ meet -- the only kink of the Bermudan
+    value function on the Stage-B time interval, and a useful visual cue when
+    comparing prices / errors / Greeks at $t=0$.  Silently no-ops when
+    ``s_star`` is missing, NaN, or non-finite (so the helper is safe to call
+    unconditionally from every $S$-axis plot, including in ``--replot`` mode
+    on older folders that pre-date the metadata field).
+
+    Args:
+        ax:         Matplotlib axis to draw on.
+        s_star:     Exercise-boundary asset price.  ``None``, ``"nan"`` and
+                    non-finite floats are treated as "missing" and skipped.
+        with_label: When ``True`` (default) attach a legend label of the form
+                    ``"$s^\\star \\approx VALUE$ (exercise boundary at $t_1$)"``;
+                    pass ``False`` on the second axis of a paired figure
+                    (e.g. Greeks) to avoid the duplicate legend entry.
+    """
+    if s_star is None or s_star == "nan":
+        return
+    try:
+        s_star_f = float(s_star)
+    except (TypeError, ValueError):
+        return
+    if not np.isfinite(s_star_f):
+        return
+    label = (rf"$s^\star \approx {s_star_f:.2f}$ (exercise boundary at $t_1$)"
+             if with_label else None)
+    ax.axvline(s_star_f, color="tab:green", linestyle="-.", linewidth=1.0,
+               label=label)
+
+
 def _load_etcnn_a_and_build_vtarget(etcnn_a_path: Path):
     """Load a saved etcnn_a checkpoint and return a callable V_target(s) at t=t1.
 
@@ -713,7 +795,8 @@ def _plot_variant(res: dict, vdir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
-                     *, output_subdir: str = "comparison") -> None:
+                     *, output_subdir: str = "comparison",
+                     s_star: float | None = None) -> None:
     """Emit every comparison figure under ``ablation_dir / output_subdir``.
 
     Default ``output_subdir="comparison"`` writes to the canonical folder
@@ -722,6 +805,18 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
     one — used by the ``--replot --exclude-variant`` workflow to keep
     only the regularisation winner and drop the noisier soft-penalty
     siblings, for instance.
+
+    Args:
+        results:        Per-variant result dicts (curves, histories, metrics).
+        ablation_dir:   Run directory.  Plots are written under
+                        ``ablation_dir / output_subdir / *.png``.
+        iters_b:        Stage B iteration budget (for figure titles).
+        output_subdir:  Sub-folder name (default ``"comparison"``).
+        s_star:         Exercise-boundary asset price at $t_1$.  When provided,
+                        each $S$-axis figure (prices, error vs BT, Greeks) gets
+                        a vertical reference line drawn by
+                        :func:`_add_s_star_line`.  Pass ``None`` to suppress
+                        (e.g. older folders pre-dating the metadata field).
     """
     comp_dir = ablation_dir / output_subdir
     comp_dir.mkdir(exist_ok=True)
@@ -821,6 +916,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
             continue
         ax.plot(s_arr, prices, label=r"$V_\theta(S,0)$ — " + labels[i],
                 color=colors[i], linestyle=linestyles[i], linewidth=linewidths[i])
+    _add_s_star_line(ax, s_star)
     ax.set_xlabel("Asset price $S$")
     ax.set_ylabel("Price at $t=0$")
     ax.set_title(r"$V_\theta(S,0)$ vs $V^{\mathrm{BT}}(S,0)$  —  all variants")
@@ -848,6 +944,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
         ax.plot(s_arr, err,
                 label=rf"{labels[i]}  ($\mathrm{{MAE}}={mae:.2e}$)",
                 color=colors[i], linestyle=linestyles[i], linewidth=linewidths[i])
+    _add_s_star_line(ax, s_star)
     ax.set_xlabel("Asset price $S$")
     ax.set_ylabel(r"$|V_\theta(S,0) - V^{\mathrm{BT}}(S,0)|$")
     ax.set_title(r"Pointwise error vs $V^{\mathrm{BT}}$ at $t=0$")
@@ -951,6 +1048,8 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
                           label=rf"{lbl}  ($\varepsilon_\Gamma={eps_g:.2e}$)")
             ax_d.axvline(p3.K, color="gray", linestyle=":", linewidth=0.8)
             ax_g.axvline(p3.K, color="gray", linestyle=":", linewidth=0.8)
+            _add_s_star_line(ax_d, s_star)
+            _add_s_star_line(ax_g, s_star, with_label=False)
             ax_d.set_xlabel(r"Asset price $S$")
             ax_g.set_xlabel(r"Asset price $S$")
             ax_d.set_ylabel(r"$\Delta = \partial V/\partial S$")
@@ -1075,6 +1174,37 @@ def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> No
     iters_b       = metadata.get("iters_b", 0)
     variants_meta = metadata.get("variants", [])
 
+    # Recover the exercise boundary $s^\star$ at $t_1$.  Newer runs record it
+    # in ``metadata.yaml`` at training time; older folders predate the field
+    # and we recompute it on the fly when the run used analytical Stage A
+    # (the only mode that does not require a saved Stage A network on disk).
+    # Trained-A runs without a recorded ``s_star`` are left without a line
+    # rather than reloading the network here.
+    s_star: float | None = metadata.get("s_star")
+    if s_star is None and bool(metadata.get("analytical_stage_a", False)):
+        s_star = _compute_s_star_bermudan_analytical()
+        logger.info(
+            f"metadata.yaml had no s_star; recomputed analytically: "
+            f"s_star={s_star:.4f}"
+        )
+    elif s_star is None:
+        # Heuristic for very old analytical runs that did not record the flag
+        # explicitly: the folder name carries ``analyticalA`` in those cases.
+        if "analyticalA" in ablation_dir.name:
+            s_star = _compute_s_star_bermudan_analytical()
+            logger.info(
+                f"metadata.yaml had no s_star and no analytical_stage_a flag, "
+                f"but the run directory name ({ablation_dir.name!r}) carries "
+                f"the analyticalA tag; recomputed analytically: "
+                f"s_star={s_star:.4f}"
+            )
+        else:
+            logger.warning(
+                "metadata.yaml has no s_star and the run does not appear to "
+                "be analytical-Stage-A; the exercise-boundary vertical line "
+                "will be omitted from S-axis plots."
+            )
+
     excluded = set(extra_exclude)
     results = []
     for idx, v_meta in enumerate(variants_meta):
@@ -1107,7 +1237,8 @@ def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> No
             f"left untouched."
         )
 
-    _plot_comparison(results, ablation_dir, iters_b, output_subdir=output_subdir)
+    _plot_comparison(results, ablation_dir, iters_b,
+                     output_subdir=output_subdir, s_star=s_star)
     if not extra_exclude:
         for res in results:
             _plot_variant(res, ablation_dir / f"variant_{res['name']}")
@@ -1333,6 +1464,12 @@ def main() -> None:
         n_tc_resolved = args.n_tc if args.n_tc is not None else p3.N_TC
         n_f_resolved  = args.n_f  if args.n_f  is not None else p3.N_F
 
+        # Exercise boundary at $t_1$.  --init-only is gated on
+        # --analytical-stage-a (see the parser.error above), so the analytical
+        # bisection is always applicable here and we can record s_star in
+        # metadata.yaml up-front for every array task to pick up.
+        s_star_init = _compute_s_star_bermudan_analytical()
+
         with open(ablation_dir / "metadata.yaml", "w", encoding="utf-8") as f:
             yaml.safe_dump({
                 "command":            " ".join(sys.argv),
@@ -1357,6 +1494,7 @@ def main() -> None:
                 "N_F":                n_f_resolved,
                 "LAMBDA_F":           p3.LAMBDA_F,
                 "SEED":               p3.SEED,
+                "s_star":             float(s_star_init),
             }, f, default_flow_style=False, sort_keys=False)
 
         # configs/<variant>.yaml — one per array task.  Snapshots every CLI
@@ -1450,30 +1588,6 @@ def main() -> None:
     logger.info(f"  output:   {ablation_dir}")
     logger.info(f"  log:      {log_path}")
 
-    with open(ablation_dir / "metadata.yaml", "w") as f:
-        yaml.dump({
-            "command":   " ".join(sys.argv),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "fixed": {
-                "g2_type":    "bs",
-                "put_ansatz": False,
-                "LAMBDA_F":   p3.LAMBDA_F,
-            },
-            "ablation_axes": ["tc_enforcement_method", "lambda_tc_soft"],
-            "variants": [
-                {k: v for k, v in var.items()
-                 if k not in ("color", "linestyle", "linewidth")}
-                for var in VARIANTS
-            ],
-            "iters_a":      args.iters_a,
-            "iters_b":      args.iters_b,
-            "weight_decay": args.weight_decay,
-            "N_TC":         p3.N_TC,
-            "N_F":          p3.N_F,
-            "LAMBDA_F":     p3.LAMBDA_F,
-            "SEED":         p3.SEED,
-        }, f, default_flow_style=False, sort_keys=False, width=float("inf"))
-
     results:         list[dict] = []
     load_etcnn_a_path: Path | None = None
     v_target_fn = None
@@ -1495,6 +1609,67 @@ def main() -> None:
             raise FileNotFoundError(f"--load-stage-a: not found: {load_etcnn_a_path}")
         logger.info(f"Stage A: reusing pre-trained model from {load_etcnn_a_path}")
         v_target_fn, _ = _load_etcnn_a_and_build_vtarget(load_etcnn_a_path)
+
+    # Exercise boundary $s^\star$ at $t_1$.  Computed once Stage A is set up so
+    # every variant's plots can carry the same vertical reference line.
+    # - analytical Stage A: closed-form bisection on $\Phi - V^{\mathrm{eur}}_{\mathrm{BS}}$.
+    # - loaded Stage A: use the network's hold value via
+    #   :func:`learning_option_pricing.pricing.singularity.find_exercise_boundary`.
+    # - first-time-trained Stage A (the hard_etcnn variant trains its own A
+    #   from scratch and there is no model on disk yet):  s_star is recomputed
+    #   from that model right after it is saved, see the variant loop below.
+    s_star_value: float | None = None
+    if args.analytical_stage_a:
+        s_star_value = _compute_s_star_bermudan_analytical()
+        logger.info(f"Stage A exercise boundary: s_star = {s_star_value:.4f} "
+                    f"(analytical bisection)")
+    elif load_etcnn_a_path is not None:
+        from learning_option_pricing.pricing.singularity import find_exercise_boundary
+        from learning_option_pricing.models.etcnn import AmericanPutETCNN
+        _etcnn_a = AmericanPutETCNN(
+            K=p3.K, r=p3.r, sigma=p3.sigma, T=p3.T,
+            normalize_input=True, g2_type="bs",
+        )
+        _etcnn_a.load_state_dict(torch.load(load_etcnn_a_path, map_location=p3.DEVICE))
+        _etcnn_a.eval().to(p3.DEVICE)
+        s_star_value = find_exercise_boundary(
+            _etcnn_a, K=p3.K, t1=p3.t1,
+            s_lo=float(max(1e-3, p3.S_TRAIN_LO)), s_hi=float(p3.K),
+            device=p3.DEVICE,
+        )
+        logger.info(f"Stage A exercise boundary: s_star = {s_star_value:.4f} "
+                    f"(loaded ETCNN_A network)")
+
+    # metadata.yaml is written here (post Stage A setup) so it can record the
+    # resolved s_star.  Any crash during Stage A is still recoverable from the
+    # ablation log file, so the slight delay relative to the previous early
+    # write is acceptable.
+    with open(ablation_dir / "metadata.yaml", "w") as f:
+        yaml.dump({
+            "command":   " ".join(sys.argv),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "fixed": {
+                "g2_type":    "bs",
+                "put_ansatz": False,
+                "LAMBDA_F":   p3.LAMBDA_F,
+            },
+            "ablation_axes": ["tc_enforcement_method", "lambda_tc_soft"],
+            "variants": [
+                {k: v for k, v in var.items()
+                 if k not in ("color", "linestyle", "linewidth")}
+                for var in VARIANTS
+            ],
+            "iters_a":            args.iters_a,
+            "iters_b":            args.iters_b,
+            "weight_decay":       args.weight_decay,
+            "analytical_stage_a": args.analytical_stage_a,
+            "load_stage_a":       args.load_stage_a,
+            "N_TC":               p3.N_TC,
+            "N_F":                p3.N_F,
+            "LAMBDA_F":           p3.LAMBDA_F,
+            "SEED":               p3.SEED,
+            "s_star": (float(s_star_value) if s_star_value is not None else None),
+        }, f, default_flow_style=False, sort_keys=False, width=float("inf"))
 
     t_ablation_start = time.time()
 
@@ -1559,6 +1734,38 @@ def main() -> None:
                 load_etcnn_a_path = vdir / "models" / "etcnn_a.pt"
                 logger.info(f"  Stage A saved — will be shared with soft variants: {load_etcnn_a_path}")
                 v_target_fn, _ = _load_etcnn_a_and_build_vtarget(load_etcnn_a_path)
+
+                # Stage A was trained from scratch by this variant; locate the
+                # exercise boundary now and back-fill ``s_star`` in
+                # metadata.yaml so the comparison plots (and any later
+                # --replot) draw the vertical reference line.
+                if s_star_value is None:
+                    from learning_option_pricing.pricing.singularity import (
+                        find_exercise_boundary,
+                    )
+                    from learning_option_pricing.models.etcnn import AmericanPutETCNN
+                    _etcnn_a_reload = AmericanPutETCNN(
+                        K=p3.K, r=p3.r, sigma=p3.sigma, T=p3.T,
+                        normalize_input=True, g2_type="bs",
+                    )
+                    _etcnn_a_reload.load_state_dict(
+                        torch.load(load_etcnn_a_path, map_location=p3.DEVICE)
+                    )
+                    _etcnn_a_reload.eval().to(p3.DEVICE)
+                    s_star_value = find_exercise_boundary(
+                        _etcnn_a_reload, K=p3.K, t1=p3.t1,
+                        s_lo=float(max(1e-3, p3.S_TRAIN_LO)), s_hi=float(p3.K),
+                        device=p3.DEVICE,
+                    )
+                    logger.info(f"  Stage A exercise boundary: s_star = "
+                                f"{s_star_value:.4f}  (from freshly trained ETCNN_A)")
+                    meta_path = ablation_dir / "metadata.yaml"
+                    with open(meta_path) as _f:
+                        _meta = yaml.safe_load(_f) or {}
+                    _meta["s_star"] = float(s_star_value)
+                    with open(meta_path, "w") as _f:
+                        yaml.dump(_meta, _f, default_flow_style=False,
+                                  sort_keys=False, width=float("inf"))
 
         else:
             # -----------------------------------------------------------
@@ -1668,7 +1875,8 @@ def main() -> None:
     if args.variant is None:
         logger.info("")
         logger.info("Generating comparison plots ...")
-        _plot_comparison(results, ablation_dir, args.iters_b)
+        _plot_comparison(results, ablation_dir, args.iters_b,
+                         s_star=s_star_value)
     else:
         logger.info(
             f"  [single-variant mode] skipping cross-variant comparison plots. "
