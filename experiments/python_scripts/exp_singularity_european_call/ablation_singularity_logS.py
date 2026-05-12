@@ -2604,9 +2604,19 @@ def _plot_gt_per_variant(res: dict, vdir: Path) -> None:
 _PLOT_EXCLUDED_VARIANTS = _cat._PLOT_EXCLUDED_VARIANTS
 
 
-def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: str):
+def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: str,
+                     *, output_subdir: str = "comparison"):
+    """Generate the comparison figures for ``results`` under ``ablation_dir``.
+
+    The default ``output_subdir="comparison"`` writes to the canonical
+    location populated by every full ablation run.  Pass a different name
+    (e.g. ``comparison_excl_hard_ic_smooth``) to produce an alternative
+    figure set without overwriting the canonical one — used by the
+    ``--replot --exclude-variant`` workflow to inspect what the comparison
+    looks like once a pathological run is dropped.
+    """
     results = [r for r in results if r.get("name") not in _PLOT_EXCLUDED_VARIANTS]
-    comp_dir = ablation_dir / "comparison"
+    comp_dir = ablation_dir / output_subdir
     comp_dir.mkdir(exist_ok=True)
     colors     = [r["color"]     for r in results]
     linestyles = [r["linestyle"] for r in results]
@@ -3311,33 +3321,67 @@ def _load_model_for_variant(ablation_dir: Path, variant_name: str,
     return None
 
 
-def _replot(ablation_dir: Path) -> None:
+def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> None:
+    """Regenerate plots for an existing ablation directory.
+
+    Default behaviour (``extra_exclude`` is None or empty) regenerates every
+    per-variant figure, recomputes ground-truth Greek slices from the saved
+    model, and rewrites the canonical ``comparison/`` folder — the workflow
+    used after a run completes (e.g. in the SLURM FINALIZE phase) or when
+    plotting code has changed.
+
+    When ``extra_exclude`` is non-empty the function switches to an
+    inspection-only mode: per-variant figures and ``gt_comparison.npz`` are
+    left untouched, the listed variant names are dropped on top of the
+    catalogue-wide ``_PLOT_EXCLUDED_VARIANTS``, and the comparison figures
+    are written to ``comparison_excl_<sorted-names-joined-by-_>/`` so the
+    canonical folder is preserved.  Useful for inspecting how the ablation
+    reads once a pathological variant is removed, without losing the full
+    figure set.
+    """
+    extra_exclude = list(extra_exclude or [])
+    excluded = set(_PLOT_EXCLUDED_VARIANTS) | set(extra_exclude)
+
     with open(ablation_dir / "summary.yaml", encoding="utf-8") as f:
         summary = yaml.safe_load(f)
     with open(ablation_dir / "metadata.yaml", encoding="utf-8") as f:
         meta = yaml.safe_load(f)
     visible_entries = [e for e in summary["variants"]
-                       if e["name"] not in _PLOT_EXCLUDED_VARIANTS]
+                       if e["name"] not in excluded]
     results = [_load_variant(ablation_dir / f"variant_{e['name']}", e)
                for e in visible_entries]
 
-    # Always recompute GT slices from the saved model so that changes to
-    # _GT_TAU_SLICES (e.g. adding a near-singularity slice) are picked up.
-    for res, entry in zip(results, visible_entries):
-        model = _load_model_for_variant(ablation_dir, entry["name"])
-        if model is not None:
-            gt_slices = _compute_gt_slices(model)
-            res["gt_slices"] = gt_slices
-            np.savez_compressed(
-                ablation_dir / f"variant_{entry['name']}" / "gt_comparison.npz",
-                **gt_slices,
-            )
-            logger.info(f"GT slices recomputed for variant {entry['name']}")
-        else:
-            logger.warning(f"No model found for variant {entry['name']} — GT plots skipped")
+    if not extra_exclude:
+        # Canonical replot — recompute GT slices and per-variant figures so
+        # any change to _GT_TAU_SLICES or per-variant plotting code is
+        # picked up.
+        for res, entry in zip(results, visible_entries):
+            model = _load_model_for_variant(ablation_dir, entry["name"])
+            if model is not None:
+                gt_slices = _compute_gt_slices(model)
+                res["gt_slices"] = gt_slices
+                np.savez_compressed(
+                    ablation_dir / f"variant_{entry['name']}" / "gt_comparison.npz",
+                    **gt_slices,
+                )
+                logger.info(f"GT slices recomputed for variant {entry['name']}")
+            else:
+                logger.warning(f"No model found for variant {entry['name']} — GT plots skipped")
+        for res, entry in zip(results, visible_entries):
+            _plot_variant(res, ablation_dir / f"variant_{entry['name']}")
+        output_subdir = "comparison"
+    else:
+        # Filtered replot — comparison figures only, never overwrite the
+        # canonical artefacts.  The subdir name encodes the exclusion list
+        # so the user can keep multiple filtered views side by side.
+        output_subdir = "comparison_excl_" + "_".join(sorted(extra_exclude))
+        logger.info(
+            f"Filtered replot: excluding {sorted(extra_exclude)} on top of "
+            f"the catalogue-wide exclusion list; writing comparison figures "
+            f"to {output_subdir}/.  Per-variant figures and gt_comparison.npz "
+            f"left untouched."
+        )
 
-    for res, entry in zip(results, visible_entries):
-        _plot_variant(res, ablation_dir / f"variant_{entry['name']}")
     # Older metadata may still carry the legacy ``iters`` field; new runs
     # write ``num_iterations`` (which can be null when each variant uses its
     # own default).  Fall back to 0 so ``_plot_comparison`` always receives
@@ -3346,7 +3390,8 @@ def _replot(ablation_dir: Path) -> None:
         meta.get("num_iterations")
         if "num_iterations" in meta else meta.get("iters", 0)
     ) or 0
-    _plot_comparison(results, ablation_dir, iters_for_title, meta["mode"])
+    _plot_comparison(results, ablation_dir, iters_for_title, meta["mode"],
+                     output_subdir=output_subdir)
 
 
 # ---------------------------------------------------------------------------
@@ -3597,6 +3642,20 @@ def main() -> None:
     parser.add_argument("--n-f",    type=int, default=None)
     parser.add_argument("--replot", type=str, default=None, metavar="DIR",
                         help="Regenerate all plots from saved data in DIR")
+    parser.add_argument("--exclude-variant", dest="exclude_variant",
+                        action="append", default=[], metavar="NAME",
+                        help=("Variant name to exclude from the comparison "
+                              "figures. Repeatable (pass multiple times to "
+                              "exclude several variants).  Only meaningful "
+                              "alongside --replot: filtered figures are "
+                              "written to "
+                              "<DIR>/comparison_excl_<sorted-names-joined-by-_>/, "
+                              "leaving the canonical <DIR>/comparison/ "
+                              "untouched.  Use it for inspection-only "
+                              "regenerations (e.g. \"what does the ablation "
+                              "look like if I drop a divergent run?\") "
+                              "without rewriting per-variant figures or "
+                              "ground-truth slices."))
     parser.add_argument("--add-variant", type=str, default=None,
                         metavar="NAME:DIR",
                         help="Train variant NAME and append results to existing ablation DIR")
@@ -3681,7 +3740,7 @@ def main() -> None:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s",
                             datefmt="%H:%M:%S")
         logging.getLogger("matplotlib.mathtext").setLevel(logging.WARNING)
-        _replot(Path(args.replot))
+        _replot(Path(args.replot), extra_exclude=args.exclude_variant)
         return
 
     # ── Add a single variant to an existing run ───────────────────────────────
