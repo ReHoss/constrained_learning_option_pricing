@@ -192,7 +192,7 @@ Decoupling $g_2$ was found empirically to break the backward-time diffusion: wit
 The standard `forward` path (used for $\mathcal{L}_{tc}$) remains completely unchanged and includes all components:
 
 $$
-\tilde{u}_\theta(s, t_k) = v(s, t_k) + g_1(s, t_k) \cdot u_\theta(s, t_k) + g_2(s,  t_k)
+V_\theta (s, t_k) = v(s, t_k) + g_1(s, t_k) \cdot u_\theta(s, t_k) + g_2(s,  t_k)
 $$
 
 **Computing $c$ analytically.** The scaling constant is determined by the hold-value delta at the exercise boundary:
