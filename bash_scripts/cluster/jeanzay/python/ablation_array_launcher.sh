@@ -31,6 +31,11 @@
 #     # Smoke test → use --debug so the run lands under _debug_<ts>_...
 #     bash ... --mode hard-ic-ansatz-european-call --debug
 #
+#     # Variance estimate → repeat the same ablation under fresh master seeds.
+#     bash ... --mode hard-ic-ansatz-european-call --seed 0
+#     bash ... --mode hard-ic-ansatz-european-call --seed 1
+#     bash ... --mode hard-ic-ansatz-european-call --seed 2
+#
 # Scope: this launcher owns SLURM-deployment concerns only (account, qos,
 # wall-clock, GPU count, project paths, debug marker).  Training
 # hyperparameters live in the catalogue — every variant declares its own
@@ -58,6 +63,7 @@ S_BATCH_ACCOUNT="akz@v100"
 S_BATCH_CPU_PER_TASK=10
 S_BATCH_GPUS=1                       # one GPU per array task
 DEBUG=0                              # mark run as test (folder prefixed `_debug_`)
+SEED=0                               # ablation-wide master seed (shared across every variant)
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
 while (( $# )); do
@@ -70,6 +76,7 @@ while (( $# )); do
         --venv-name)         V_ENV_NAME="$2";            shift 2 ;;
         --name-project)      NAME_PROJECT="$2";          shift 2 ;;
         --debug)             DEBUG=1;                    shift 1 ;;
+        --seed)              SEED="$2";                  shift 2 ;;
         -h|--help)
             sed -n '2,32p' "$0"; exit 0 ;;
         *)
@@ -103,6 +110,7 @@ echo "Python:       $PATH_PYTHON_SCRIPT"
 echo "Venv:         $PATH_VENV_BIN"
 echo "Worker:       $PATH_WORKER_SLURM"
 echo "Mode:         $MODE  (each variant uses its catalogue default_num_iterations)"
+echo "Master seed:  $SEED  (shared across every variant — bump for a fully decorrelated repeat)"
 echo
 
 # ── Activate venv on the login node (for --init-only and YAML generation) ───
@@ -120,6 +128,7 @@ echo "Phase 1: --init-only (login node)..."
 EXPDIR="$(python "$PATH_PYTHON_SCRIPT" \
             --mode "$MODE" --init-only \
             $DEBUG_FLAG \
+            --seed "$SEED" \
             --device cpu 2>/dev/null | tail -n1)"
 
 if [[ ! -d "$EXPDIR" ]]; then

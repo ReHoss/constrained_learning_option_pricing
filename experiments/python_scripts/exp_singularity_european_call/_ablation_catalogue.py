@@ -410,6 +410,10 @@ def handle_init_only_cli() -> None:
                         help=("Global override for every variant's "
                               "default_num_iterations. Omit to let each "
                               "variant use its own natural budget."))
+    parser.add_argument("--seed", dest="seed", type=int, default=0,
+                        help=("Ablation-wide master seed (default 0). "
+                              "Persisted to metadata.yaml so subsequent "
+                              "--add-variant jobs reuse exactly this value."))
     parser.add_argument("--variant", default=None)
     parser.add_argument("--n-tc", dest="n_tc", type=int, default=None)
     parser.add_argument("--n-f",  dest="n_f",  type=int, default=None)
@@ -477,6 +481,7 @@ def handle_init_only_cli() -> None:
         f"num_iterations={args.num_iterations!r} "
         f"(None = per-variant default_num_iterations)"
     )
+    logger.info(f"master_seed={args.seed}  (shared across every variant of this ablation)")
     logger.info(f"output: {ablation_dir}")
 
     # ``metadata.yaml`` — shared with the main-script version.  ``num_iterations``
@@ -488,6 +493,7 @@ def handle_init_only_cli() -> None:
             "cmdline":         sys.argv,
             "mode":            args.mode,
             "num_iterations":  args.num_iterations,
+            "master_seed":     args.seed,
             "coords":          "logS",
             "device":          args.device,
             "n_tc":            n_tc,

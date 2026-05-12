@@ -542,17 +542,20 @@ def _log_environment() -> None:
 
 def _log_variant_config(v: dict, effective_iters: int,
                         model: torch.nn.Module,
+                        master_seed: int,
                         init_seed: int, sampler_seed: int) -> None:
     """Log the full configuration of a variant before training starts.
 
     Logs every key in the variant dict, the effective iteration count, the
-    model parameter count, and the RNG seeds used — so the log file alone is
-    sufficient to reproduce or audit a run without consulting the source code.
+    model parameter count, the ablation-wide master seed, and the derived
+    per-role seeds — so the log file alone is sufficient to reproduce or
+    audit a run without consulting the source code.
     """
     n_params = sum(p.numel() for p in model.parameters())
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"  effective_iters : {effective_iters}")
     logger.info(f"  model_parameters: {n_params:,} total  ({n_trainable:,} trainable)")
+    logger.info(f"  master_seed     : {master_seed}")
     logger.info(f"  init_seed       : {init_seed}")
     logger.info(f"  sampler_seed    : {sampler_seed}")
     skip_keys = {"color", "linestyle", "linewidth", "label"}
@@ -3350,20 +3353,25 @@ def _replot(ablation_dir: Path) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-_INIT_SEED_OFFSET    = 0x5EED_1117   # arbitrary disambiguation between roles
-_SAMPLER_SEED_OFFSET = 0x5A11_9100
+def _derive_seed(master_seed: int, role_tag: str) -> int:
+    """Deterministic 63-bit seed derived from a master seed and a role tag.
 
+    The master seed is the single source of randomness for the whole run; it
+    is supplied by the user via the ``--seed`` CLI flag (default 0) and shared
+    across every variant of an ablation, so that two variants with identical
+    hyperparameters produce identical initial weights and identical sampler
+    trajectories — the only differences observable between variants reflect
+    the methodological change, not RNG noise.
 
-def _variant_seed(variant_name: str, salt: int) -> int:
-    """Deterministic 64-bit seed derived from a variant name and a role salt.
-
-    Built from a stable hash so that two runs with the same variant produce
-    the same initial model weights and the same sampler trajectory, while
-    different variants are decorrelated by construction.
+    Per-role decorrelation (model init vs. sampler vs. evaluation, …) is
+    obtained by hashing the role tag and XORing it into the master seed.
+    The role tag is internal plumbing — it must never carry presentation
+    metadata such as the variant's display name, label, color, or iteration
+    budget, otherwise reproducibility breaks across cosmetic variant edits.
     """
     import hashlib
-    h = hashlib.blake2b(variant_name.encode("utf-8"), digest_size=8).digest()
-    raw = int.from_bytes(h, "big") ^ (salt & ((1 << 64) - 1))
+    h = hashlib.blake2b(role_tag.encode("utf-8"), digest_size=8).digest()
+    raw = int.from_bytes(h, "big") ^ (master_seed & ((1 << 64) - 1))
     # torch.Generator.manual_seed expects a positive 64-bit int
     return raw & ((1 << 63) - 1)
 
@@ -3374,6 +3382,7 @@ def _train_one_variant(
     n_f: int,
     n_tc: int,
     total_iters: int | None,
+    master_seed: int,
     resume: bool = False,
 ) -> dict:
     """Build, train, evaluate, and save one variant; return the result dict.
@@ -3398,9 +3407,14 @@ def _train_one_variant(
        which is brittle (cross-library pollution, non-thread-safe) and
        opaque (no inspectable seed).
 
-    The two seeds are derived from the variant name through different salts
-    so different variants — and the two roles within a variant — are
-    decorrelated.
+    Both per-role seeds are derived from ``master_seed`` (the ablation-wide
+    seed supplied via ``--seed``) through different role tags, so the two
+    roles are decorrelated *within* a variant while every variant of the
+    ablation sees the same per-role seed at fixed ``master_seed``.  This is
+    the seeding policy required by ``CLAUDE.md``: variants sharing the same
+    hyperparameters produce the same initial weights and the same sampler
+    trajectory regardless of cosmetic differences (name, label, iteration
+    budget).  For variance estimates, sweep ``--seed`` over several values.
     """
     # Effective iteration count: each variant declares its own natural budget
     # via ``default_num_iterations``; the user can override the whole ablation
@@ -3415,8 +3429,8 @@ def _train_one_variant(
 
     # Deterministic model init (only matters for from-scratch runs; on resume
     # the weights are loaded from the checkpoint).
-    init_seed    = _variant_seed(v["name"], _INIT_SEED_OFFSET)
-    sampler_seed = _variant_seed(v["name"], _SAMPLER_SEED_OFFSET)
+    init_seed    = _derive_seed(master_seed, "init")
+    sampler_seed = _derive_seed(master_seed, "sampler")
     torch.manual_seed(init_seed)
 
     # Dedicated sampler RNG, propagated explicitly — independent of global state.
@@ -3428,7 +3442,7 @@ def _train_one_variant(
     payoff_fn  = _build_payoff(v)
     ckpt_path  = vdir / "checkpoint.pt"
 
-    _log_variant_config(v, effective_iters, model, init_seed, sampler_seed)
+    _log_variant_config(v, effective_iters, model, master_seed, init_seed, sampler_seed)
 
     if v["sampler_type"] == "vpinn":
         vpinn_module = _build_vpinn_loss(v)
@@ -3563,6 +3577,15 @@ def main() -> None:
                               "declared in the catalogue — recommended for "
                               "real ablations.  Useful for smoke tests "
                               "(combine with --debug)."))
+    parser.add_argument("--seed", dest="seed", type=int, default=0,
+                        help=("Ablation-wide master seed (default 0). Every "
+                              "variant of the ablation uses the same master "
+                              "seed; per-role RNGs (model init, sampler, …) "
+                              "are derived deterministically from it via "
+                              "role-tagged salts (see _derive_seed). Bump "
+                              "--seed to obtain a fresh, fully decorrelated "
+                              "repeat of the whole ablation (variance "
+                              "estimates: sweep --seed 0,1,2,…)."))
     parser.add_argument("--mode",   type=str,
                         default="compare-boundary-singularity-european-call",
                         choices=["compare-boundary-singularity-european-call",
@@ -3646,6 +3669,12 @@ def main() -> None:
             args.device = cfg_yaml["device"]
         if cfg_yaml.get("resume", False):
             args.resume = True
+        # ``master_seed`` is the only legitimate override path for the
+        # ablation-wide seed in the YAML — kept optional so existing config
+        # files without it keep working (they fall back to the metadata.yaml
+        # of the ablation directory, see --add-variant below).
+        if "master_seed" in cfg_yaml and cfg_yaml["master_seed"] is not None:
+            args.seed = int(cfg_yaml["master_seed"])
 
     # ── Replot only ───────────────────────────────────────────────────────────
     if args.replot is not None:
@@ -3701,8 +3730,17 @@ def main() -> None:
         num_iterations_override = args.num_iterations
         if num_iterations_override is None:
             num_iterations_override = meta.get("num_iterations")
+        # ``master_seed`` is an ablation-wide property recorded by the
+        # init-only step into ``metadata.yaml``; every --add-variant job
+        # for the same ablation directory must reuse exactly that value so
+        # variants stay comparable.  Pre-existing ablations created before
+        # the master-seed mechanism existed do not carry the field — we
+        # fall back to 0 there for forward-compatibility, but new runs
+        # always have it explicitly persisted.
+        master_seed = int(meta.get("master_seed", 0))
         res = _train_one_variant(
-            v, vdir, n_f, n_tc, num_iterations_override, resume=args.resume,
+            v, vdir, n_f, n_tc, num_iterations_override, master_seed,
+            resume=args.resume,
         )
         _plot_variant(res, vdir)
 
@@ -3804,6 +3842,7 @@ def main() -> None:
     logger.info(f"sigma={sigma}  r={r}  K={K}  T={T}")
     logger.info(f"x_lo={X_LO:.3f}  x_hi={X_HI:.3f}  x_atm={X_ATM:.3f}")
     logger.info(f"x_eval_lo={X_EVAL_LO:.3f}  x_eval_hi={X_EVAL_HI:.3f}")
+    logger.info(f"master_seed={args.seed}  (shared across every variant of this ablation)")
     logger.info(f"output: {ablation_dir}")
 
     with open(ablation_dir / "metadata.yaml", "w", encoding="utf-8") as f:
@@ -3811,6 +3850,7 @@ def main() -> None:
             "cmdline":         sys.argv,
             "mode":            args.mode,
             "num_iterations":  args.num_iterations,
+            "master_seed":     args.seed,
             "coords":          "logS",
             "device":          str(p3.DEVICE),
             "n_tc":            n_tc,
@@ -3845,7 +3885,7 @@ def main() -> None:
         vdir = ablation_dir / f"variant_{v['name']}"
         logger.info(f"\n{'='*60}\n  Variant: {v['name']} — {v['label']}\n{'='*60}")
 
-        res = _train_one_variant(v, vdir, n_f, n_tc, args.num_iterations)
+        res = _train_one_variant(v, vdir, n_f, n_tc, args.num_iterations, args.seed)
         _plot_variant(res, vdir)
         results.append(res)
 
