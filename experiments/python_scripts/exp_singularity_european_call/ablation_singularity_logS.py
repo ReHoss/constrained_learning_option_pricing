@@ -2209,12 +2209,18 @@ def _compute_residual_spectrum_profile(
     This is a *diagnostic-only* measurement: results live in
     ``comparison_diagnostics/`` (NOT in the canonical comparison folder).
 
-    Returns a dict carrying three flat arrays so it can be unpacked into
+    Returns a dict carrying five flat arrays so it can be unpacked into
     ``gt_comparison.npz`` via ``**spectrum``:
 
       * ``residual_spectrum_tau``      shape (n_tau,)
       * ``residual_spectrum_k_idx``    shape (K_max,)
       * ``residual_spectrum_F_hat_sq`` shape (n_tau, K_max)
+      * ``residual_spectrum_x_nodes``  shape (n_quad,) — Gauss-Legendre nodes
+      * ``residual_spectrum_F_x``      shape (n_tau, n_quad) — the *physical-
+        space* residual ``F[V](x, T-τ)`` evaluated at those nodes (NOT squared,
+        so the sign at the kink is visible).  Plotted as the bottom row of
+        ``residual_spectrum.png`` so the reader can see *where* in $x$ the
+        spectral mass comes from.
     """
     device = p3.DEVICE
     model.eval()
@@ -2229,7 +2235,8 @@ def _compute_residual_spectrum_profile(
         k_idx.unsqueeze(1) * math.pi * (x_nodes - X_LO).unsqueeze(0) / L
     )
 
-    F_hat_sq_all = []
+    F_hat_sq_all: list = []
+    F_x_all:      list = []
     for tau_val in _DIAGNOSTIC_TAU_SLICES:
         t_val = T - tau_val
         x_in  = x_nodes.detach().clone().requires_grad_(True)
@@ -2238,6 +2245,7 @@ def _compute_residual_spectrum_profile(
             V = model(torch.stack([x_in, t_in], dim=1)).squeeze()
             F_pde = bsm_operator_logS(V, x_in, t_in, r, sigma)
         F_det = F_pde.detach()  # (n_quad,)
+        F_x_all.append(F_det.cpu().numpy())
         # F̂_k = Σ_q w_q · φ_k(x_q) · F(x_q),   shape (K_max,)
         F_hat = (phi * (weights * F_det).unsqueeze(0)).sum(dim=1)
         F_hat_sq_all.append(F_hat.pow(2).cpu().numpy())
@@ -2246,6 +2254,8 @@ def _compute_residual_spectrum_profile(
         "residual_spectrum_tau":      np.asarray(_DIAGNOSTIC_TAU_SLICES, dtype=float),
         "residual_spectrum_k_idx":    k_idx.cpu().numpy().astype(int),
         "residual_spectrum_F_hat_sq": np.asarray(F_hat_sq_all),
+        "residual_spectrum_x_nodes":  x_nodes.cpu().numpy(),
+        "residual_spectrum_F_x":      np.asarray(F_x_all),
     }
 
 
@@ -2492,16 +2502,20 @@ _FORMULA_IC_QUAD = "\n".join([
     r" — consistent $L^2$ penalization, no extra random samples.",
 ])
 _FORMULA_RESIDUAL_SPECTRUM = "\n".join([
-    r"$|\hat{\mathcal{F}}_k(\tau)|^2 = \left("
+    r"Top row (spectral):  $|\hat{\mathcal{F}}_k(\tau)|^2 = \left("
     r"\int_{X_{lo}}^{X_{hi}}\!"
     r"\sin\!\left(\frac{k\pi(x-X_{lo})}{X_{hi}-X_{lo}}\right)\,"
     r"\mathcal{F}[\hat V](x,\,T-\tau)\,dx"
     r"\right)^{\!2}$",
+    r"Bottom row (physical):  $\mathcal{F}[\hat V](x,\,T-\tau)$ evaluated at the same Gauss-Legendre"
+    r" nodes $\{x_q\}$ (sign preserved, symlog $y$).",
     _FORMULA_OP,
-    r"Integration over the FULL domain $x\in[X_{lo},X_{hi}]$ by Gauss-Legendre quadrature ($n_{quad}=1024$).",
+    r"Top-row integral and bottom-row pointwise samples are over the FULL domain"
+    r" $x\in[X_{lo},X_{hi}]$ via Gauss-Legendre quadrature ($n_{quad}=1024$).",
     r"With the C$^0$ hard-IC ansatz ($g_2$ has a kink at $x=\ln K$), $\partial_{xx}\hat V$ contains a near-Dirac at $\ln K$,"
     r" whose sine coefficient is $\sin(k\pi\alpha)$ with $\alpha=(\ln K-X_{lo})/(X_{hi}-X_{lo})$"
-    r" — gives the $\sin^2(k\pi\alpha)$ oscillation envelope on top of a smooth resnet baseline.",
+    r" — gives the $\sin^2(k\pi\alpha)$ oscillation envelope (top row) on top of a smooth resnet baseline,"
+    r" and a localised spike at $x=\ln K$ visible directly in the bottom row.",
 ])
 _FORMULA_DX_NORM = "\n".join([
     r"$\mathrm{RMS}_\tau(\partial_x\hat{V})"
@@ -3627,11 +3641,24 @@ def _plot_diagnostics(results: list[dict], ablation_dir: Path) -> None:
     k_idx    = np.asarray(first_gt["residual_spectrum_k_idx"])
     n_tau    = len(tau_arr)
 
-    fig, axes = plt.subplots(1, n_tau, figsize=(5 * n_tau, 5), sharey=True)
-    if n_tau == 1:
-        axes = [axes]
+    # Physical-space residual row: only emit when *every* selected variant
+    # carries the new fields (older ``gt_comparison.npz`` files predate them).
+    # The check is done up-front so the figure layout matches what is plotted.
+    have_physical = all(
+        "residual_spectrum_F_x" in r["gt_slices"]
+        and "residual_spectrum_x_nodes" in r["gt_slices"]
+        for r in valid
+    )
+    n_rows = 2 if have_physical else 1
+
+    fig, axes = plt.subplots(
+        n_rows, n_tau,
+        figsize=(5 * n_tau, 5 * n_rows),
+        squeeze=False,
+    )
+    # ── Row 0 — spectral view: |F̂_k(τ)|² vs k ─────────────────────────────
     for j, tau_val in enumerate(tau_arr):
-        ax = axes[j]
+        ax = axes[0, j]
         for r in valid:
             gt = r["gt_slices"]
             spec = np.asarray(gt["residual_spectrum_F_hat_sq"])[j]
@@ -3649,15 +3676,52 @@ def _plot_diagnostics(results: list[dict], ablation_dir: Path) -> None:
         ax.grid(True, alpha=0.3, which="both")
         if j == n_tau - 1:
             ax.legend(fontsize=7, loc="best")
-    fig.suptitle(
+
+    # ── Row 1 — physical-space view: F[V](x, T-τ) vs x ─────────────────────
+    # Plotted with symlog y so both the broad-band floor *and* the near-Dirac
+    # spike at x = ln K stay visible without one swamping the other; signs
+    # are preserved (the residual flips around the kink under hard-IC).
+    if have_physical:
+        x_nodes_arr = np.asarray(first_gt["residual_spectrum_x_nodes"])
+        # Pick a symlog threshold from the data so the linear band sits just
+        # above numerical noise instead of being fixed at an arbitrary value.
+        abs_max = max(
+            float(np.max(np.abs(np.asarray(r["gt_slices"]["residual_spectrum_F_x"]))))
+            for r in valid
+        )
+        linthresh = max(abs_max * 1e-4, 1e-12) if abs_max > 0 else 1e-6
+        for j, tau_val in enumerate(tau_arr):
+            ax = axes[1, j]
+            for r in valid:
+                gt = r["gt_slices"]
+                F_x = np.asarray(gt["residual_spectrum_F_x"])[j]
+                ax.plot(x_nodes_arr, F_x,
+                        label=r["label"], color=r["color"],
+                        linestyle=r["linestyle"], linewidth=r["linewidth"])
+            ax.axhline(0.0, color="black", linewidth=0.6, alpha=0.5)
+            ax.axvline(X_ATM, color="black", linestyle=":", linewidth=1.0,
+                       label=rf"$x=\ln K \approx {X_ATM:.2f}$")
+            ax.set_xlabel(r"$x = \ln S$")
+            if j == 0:
+                ax.set_ylabel(r"$\mathcal{F}[\hat V](x,\,T-\tau)$")
+            ax.set_yscale("symlog", linthresh=linthresh)
+            ax.grid(True, alpha=0.3, which="both")
+            if j == n_tau - 1:
+                ax.legend(fontsize=7, loc="best")
+
+    suptitle_lines = [
+        r"Diagnostic: PDE residual $\mathcal{F}[\hat V]$ — spectral (top) "
+        r"and physical-space (bottom) views",
+        r"Top: $|\hat{\mathcal{F}}_k(\tau)|^2$ vs sine mode index $k$ "
+        r"(flat $\Rightarrow$ near-Dirac $\partial_{xx}V$ at the kink).  "
+        r"Bottom: $\mathcal{F}[\hat V](x,\,T-\tau)$ vs $x$ — locates the spectral mass.",
+    ] if have_physical else [
         r"Diagnostic: Fourier sine spectrum of $\mathcal{F}[\hat V]$, "
-        r"integrated over the FULL spatial domain $x\in[X_{lo},X_{hi}]$"
-        "\n"
+        r"integrated over the FULL spatial domain $x\in[X_{lo},X_{hi}]$",
         r"Flat baseline $\Rightarrow$ near-Dirac $\partial_{xx}V$ at the kink; "
-        r"$\sin^2(k\pi\alpha)$ envelope $\Rightarrow$ Dirac position $\ln K$ relative to domain"
-        "\n" + _SUPTITLE,
-        fontsize=9,
-    )
+        r"$\sin^2(k\pi\alpha)$ envelope $\Rightarrow$ Dirac position $\ln K$ relative to domain",
+    ]
+    fig.suptitle("\n".join(suptitle_lines) + "\n" + _SUPTITLE, fontsize=9)
     fig.tight_layout()
     _add_formula_box(fig, _FORMULA_RESIDUAL_SPECTRUM, bottom_margin=0.20)
     fig.savefig(diag_dir / "residual_spectrum.png", dpi=150, bbox_inches="tight")
