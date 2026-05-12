@@ -2491,6 +2491,18 @@ _FORMULA_IC_QUAD = "\n".join([
     r"Uses Gauss-Legendre nodes $\{x_q,w_q\}$ (same as PDE residual)"
     r" — consistent $L^2$ penalization, no extra random samples.",
 ])
+_FORMULA_RESIDUAL_SPECTRUM = "\n".join([
+    r"$|\hat{\mathcal{F}}_k(\tau)|^2 = \left("
+    r"\int_{X_{lo}}^{X_{hi}}\!"
+    r"\sin\!\left(\frac{k\pi(x-X_{lo})}{X_{hi}-X_{lo}}\right)\,"
+    r"\mathcal{F}[\hat V](x,\,T-\tau)\,dx"
+    r"\right)^{\!2}$",
+    _FORMULA_OP,
+    r"Integration over the FULL domain $x\in[X_{lo},X_{hi}]$ by Gauss-Legendre quadrature ($n_{quad}=1024$).",
+    r"With the C$^0$ hard-IC ansatz ($g_2$ has a kink at $x=\ln K$), $\partial_{xx}\hat V$ contains a near-Dirac at $\ln K$,"
+    r" whose sine coefficient is $\sin(k\pi\alpha)$ with $\alpha=(\ln K-X_{lo})/(X_{hi}-X_{lo})$"
+    r" — gives the $\sin^2(k\pi\alpha)$ oscillation envelope on top of a smooth resnet baseline.",
+])
 _FORMULA_DX_NORM = "\n".join([
     r"$\mathrm{RMS}_\tau(\partial_x\hat{V})"
     r"=\left(\frac{1}{N}\sum_{i=1}^N|\partial_x\hat{V}(x_i,\,T-\tau)|^2\right)^{1/2}$"
@@ -3638,12 +3650,16 @@ def _plot_diagnostics(results: list[dict], ablation_dir: Path) -> None:
         if j == n_tau - 1:
             ax.legend(fontsize=7, loc="best")
     fig.suptitle(
-        r"Diagnostic: Fourier sine spectrum of $\mathcal{F}[\hat V]$"
-        r"  —  flat spectrum $\Rightarrow$ near-Dirac $\partial_{xx} V$ at the kink"
+        r"Diagnostic: Fourier sine spectrum of $\mathcal{F}[\hat V]$, "
+        r"integrated over the FULL spatial domain $x\in[X_{lo},X_{hi}]$"
+        "\n"
+        r"Flat baseline $\Rightarrow$ near-Dirac $\partial_{xx}V$ at the kink; "
+        r"$\sin^2(k\pi\alpha)$ envelope $\Rightarrow$ Dirac position $\ln K$ relative to domain"
         "\n" + _SUPTITLE,
         fontsize=9,
     )
     fig.tight_layout()
+    _add_formula_box(fig, _FORMULA_RESIDUAL_SPECTRUM, bottom_margin=0.20)
     fig.savefig(diag_dir / "residual_spectrum.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Diagnostic plot saved → {diag_dir}/residual_spectrum.png")
