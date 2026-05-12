@@ -191,6 +191,38 @@ def _build_soft_pinn() -> PINN:
 # Load Stage A and compute Bermudean TC target at t=t1
 # ---------------------------------------------------------------------------
 
+def _build_analytical_vtarget():
+    """Build V_target(s) at t=t1 using the EXACT Black-Scholes formula.
+
+    Companion to :func:`_load_etcnn_a_and_build_vtarget` for runs that use
+    ``--analytical-stage-a``.  V_target(s) = max(payoff(s), V_BS_eur(s, t1))
+    is constructed without training any Stage A network — Stage A is the
+    closed-form European put with remaining maturity T - t1.
+
+    Returns:
+        v_target_fn:    Callable querying V_target at arbitrary asset prices.
+        v_target_dense: (s_dense, vtarget_dense) numpy arrays for diagnostics.
+    """
+    from learning_option_pricing.models.etcnn import AnalyticalEuropeanPut
+    etcnn_a = AnalyticalEuropeanPut(K=p3.K, r=p3.r, sigma=p3.sigma, T=p3.T)
+    etcnn_a.to(p3.DEVICE).eval()
+
+    s_dense  = torch.linspace(p3.S_TRAIN_LO - 10, p3.S_TRAIN_HI + 10, 2000, device=p3.DEVICE)
+    t1_dense = torch.full_like(s_dense, p3.t1)
+    x_t1     = torch.stack([s_dense, t1_dense], dim=1)
+    with torch.no_grad():
+        hold_val = etcnn_a(x_t1).squeeze()
+    exercise_val = p3.payoff_put(s_dense, p3.K)
+    v_t1_vals    = torch.maximum(exercise_val, hold_val)
+
+    v_interp = p3.PchipInterpolator(s_dense.cpu(), v_t1_vals.cpu())
+
+    def v_target_fn(s_batch: torch.Tensor) -> torch.Tensor:
+        return v_interp(s_batch)
+
+    return v_target_fn, (s_dense.cpu().numpy(), v_t1_vals.cpu().numpy())
+
+
 def _load_etcnn_a_and_build_vtarget(etcnn_a_path: Path):
     """Load a saved etcnn_a checkpoint and return a callable V_target(s) at t=t1.
 
@@ -381,7 +413,11 @@ def compute_metrics_stage_b(
         np.linalg.norm(err[atm_mask]) / (np.linalg.norm(bt_prices[atm_mask]) + 1e-10)
     )
 
-    # --- Delta comparison ---------------------------------------------------
+    # --- Delta and Gamma comparison ----------------------------------------
+    # Reference Greeks come from finite differences on the binomial-tree price
+    # curve.  Gamma is the second FD of BT prices and is noisy near the kink,
+    # but the relative L² ratio is still informative when comparing variants
+    # under the same reference.
     try:
         s_d = torch.tensor(
             s_eval_arr, dtype=torch.get_default_dtype(), device=device
@@ -389,16 +425,32 @@ def compute_metrics_stage_b(
         t_d = torch.zeros(len(s_eval_arr), device=device, requires_grad=True)
         x_d = torch.stack([s_d, t_d], dim=1)
         V_d = model(x_d).squeeze()
-        (nn_delta,) = torch.autograd.grad(V_d.sum(), s_d, create_graph=False)
+        (nn_delta,) = torch.autograd.grad(V_d.sum(), s_d, create_graph=True)
+        (nn_gamma,) = torch.autograd.grad(nn_delta.sum(), s_d, create_graph=False)
         nn_delta_np  = nn_delta.detach().cpu().numpy()
+        nn_gamma_np  = nn_gamma.detach().cpu().numpy()
         bt_delta_np  = np.gradient(bt_prices, s_eval_arr)
-        delta_err    = nn_delta_np - bt_delta_np
+        bt_gamma_np  = np.gradient(bt_delta_np, s_eval_arr)
         rel_l2_delta = float(
-            np.linalg.norm(delta_err) / (np.linalg.norm(bt_delta_np) + 1e-10)
+            np.linalg.norm(nn_delta_np - bt_delta_np)
+            / (np.linalg.norm(bt_delta_np) + 1e-10)
         )
+        rel_l2_gamma = float(
+            np.linalg.norm(nn_gamma_np - bt_gamma_np)
+            / (np.linalg.norm(bt_gamma_np) + 1e-10)
+        )
+        greeks_curves = {
+            "s":        np.asarray(s_eval_arr),
+            "nn_delta": nn_delta_np,
+            "bt_delta": bt_delta_np,
+            "nn_gamma": nn_gamma_np,
+            "bt_gamma": bt_gamma_np,
+        }
     except Exception as exc:
-        logger.warning(f"compute_metrics_stage_b: Delta failed ({exc})")
+        logger.warning(f"compute_metrics_stage_b: Greeks failed ({exc})")
         rel_l2_delta = float("nan")
+        rel_l2_gamma = float("nan")
+        greeks_curves = None
 
     # --- GEI ---------------------------------------------------------------
     norms = np.array(hist_b.get("grad_norm", []))
@@ -446,8 +498,10 @@ def compute_metrics_stage_b(
         "rel_l2_bt":     rel_l2_bt,
         "rel_l2_atm":    rel_l2_atm,
         "rel_l2_delta":  rel_l2_delta,
+        "rel_l2_gamma":  rel_l2_gamma,
         "gei":           gei,
         "tc_mae":        tc_mae,
+        "greeks":        greeks_curves,
         "pde_residual_t": {
             "t":        t_profile_tensor.cpu().tolist(),
             "residual": pde_residuals,
@@ -513,16 +567,26 @@ def _save_variant_results(res: dict, vdir: Path) -> None:
     )
     metrics = res.get("metrics")
     if metrics is not None:
-        np.savez_compressed(
-            vdir / "metrics.npz",
-            rel_l2_bt=np.array([metrics["rel_l2_bt"]]),
-            rel_l2_atm=np.array([metrics["rel_l2_atm"]]),
-            rel_l2_delta=np.array([metrics["rel_l2_delta"]]),
-            gei=np.array([metrics["gei"]]),
-            tc_mae=np.array([metrics["tc_mae"]]),
-            pde_t=np.array(metrics["pde_residual_t"]["t"]),
-            pde_residual=np.array(metrics["pde_residual_t"]["residual"]),
-        )
+        payload = {
+            "rel_l2_bt":    np.array([metrics["rel_l2_bt"]]),
+            "rel_l2_atm":   np.array([metrics["rel_l2_atm"]]),
+            "rel_l2_delta": np.array([metrics["rel_l2_delta"]]),
+            "rel_l2_gamma": np.array([metrics.get("rel_l2_gamma", float("nan"))]),
+            "gei":          np.array([metrics["gei"]]),
+            "tc_mae":       np.array([metrics["tc_mae"]]),
+            "pde_t":        np.array(metrics["pde_residual_t"]["t"]),
+            "pde_residual": np.array(metrics["pde_residual_t"]["residual"]),
+        }
+        greeks = metrics.get("greeks")
+        if greeks is not None:
+            payload.update({
+                "greeks_s":        np.asarray(greeks["s"]),
+                "greeks_nn_delta": np.asarray(greeks["nn_delta"]),
+                "greeks_bt_delta": np.asarray(greeks["bt_delta"]),
+                "greeks_nn_gamma": np.asarray(greeks["nn_gamma"]),
+                "greeks_bt_gamma": np.asarray(greeks["bt_gamma"]),
+            })
+        np.savez_compressed(vdir / "metrics.npz", **payload)
 
 
 def _load_variant_results(vdir: Path, summary_entry: dict, style: dict) -> dict:
@@ -544,13 +608,24 @@ def _load_variant_results(vdir: Path, summary_entry: dict, style: dict) -> dict:
             "rel_l2_bt":     float(m["rel_l2_bt"][0]),
             "rel_l2_atm":    float(m["rel_l2_atm"][0]),
             "rel_l2_delta":  float(m["rel_l2_delta"][0]),
+            "rel_l2_gamma":  float(m["rel_l2_gamma"][0]) if "rel_l2_gamma" in m.files else float("nan"),
             "gei":           float(m["gei"][0]),
-            "tc_mae":        float(m["tc_mae"][0]) if "tc_mae" in m else float("nan"),
+            "tc_mae":        float(m["tc_mae"][0]) if "tc_mae" in m.files else float("nan"),
             "pde_residual_t": {
                 "t":        m["pde_t"].tolist(),
                 "residual": m["pde_residual"].tolist(),
             },
         }
+        if "greeks_s" in m.files:
+            metrics["greeks"] = {
+                "s":        m["greeks_s"],
+                "nn_delta": m["greeks_nn_delta"],
+                "bt_delta": m["greeks_bt_delta"],
+                "nn_gamma": m["greeks_nn_gamma"],
+                "bt_gamma": m["greeks_bt_gamma"],
+            }
+        else:
+            metrics["greeks"] = None
     else:
         metrics = None
     return {
@@ -950,6 +1025,15 @@ def main() -> None:
         help="Path to a pre-trained etcnn_a.pt to skip Stage A training.",
     )
     parser.add_argument(
+        "--analytical-stage-a", action="store_true", default=False,
+        help="Use the exact Black-Scholes European put as Stage A (no NN trained "
+             "for Stage A).  V_target(s) = max(payoff(s), BS_eur_put(s, K, r, σ, T-t1)) "
+             "is then built from the analytical formula and shared by every variant — "
+             "matches the setup of data/ablation_bermudan/20260511_223436_analyticalA_itersB1000/, "
+             "which is the correct reference for an IC-impact control study.  "
+             "Mutually exclusive with --load-stage-a.",
+    )
+    parser.add_argument(
         "--replot", type=str, default=None, metavar="DIR",
         help="Regenerate all plots from an existing run directory (no retraining).",
     )
@@ -970,16 +1054,25 @@ def main() -> None:
     if args.n_f is not None:
         p3.N_F = args.n_f
 
-    timestamp    = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    if args.analytical_stage_a:
+        stage_a_tag = "analyticalA"
+    elif args.load_stage_a is not None:
+        stage_a_tag = "loadedA"
+    else:
+        stage_a_tag = f"itersA{args.iters_a}"
     ablation_dir = (
         script_data_dir(__file__)
-        / f"{timestamp}_itersA{args.iters_a}_itersB{args.iters_b}"
+        / f"{timestamp}_{stage_a_tag}_itersB{args.iters_b}"
     )
     ablation_dir.mkdir(parents=True, exist_ok=True)
     (ablation_dir / "comparison").mkdir(exist_ok=True)
     for v in VARIANTS:
         vdir = ablation_dir / f"variant_{v['name']}"
-        for sub in ("training_metrics", "models"):
+        # Same subfolder set as ablation_bermudan.py so ``bermudan_problem``
+        # can save its plots into the expected locations (pricing/, greeks/,
+        # diagnostics/) without throwing FileNotFoundError.
+        for sub in ("training_metrics", "pricing", "greeks", "diagnostics", "models"):
             (vdir / sub).mkdir(parents=True, exist_ok=True)
 
     log_path = ablation_dir / "ablation.log"
@@ -1036,7 +1129,13 @@ def main() -> None:
     load_etcnn_a_path: Path | None = None
     v_target_fn = None
 
-    if args.load_stage_a is not None:
+    if args.load_stage_a is not None and args.analytical_stage_a:
+        parser.error("--load-stage-a and --analytical-stage-a are mutually exclusive.")
+
+    if args.analytical_stage_a:
+        logger.info("Stage A: analytical Black-Scholes formula (no Stage A training).")
+        v_target_fn, _ = _build_analytical_vtarget()
+    elif args.load_stage_a is not None:
         requested = Path(args.load_stage_a)
         if requested.is_dir():
             candidate = requested / "models" / "etcnn_a.pt"
@@ -1073,6 +1172,7 @@ def main() -> None:
                 put_ansatz=False,
                 weight_decay=args.weight_decay,
                 load_etcnn_a=load_etcnn_a_path,
+                analytic_a=args.analytical_stage_a,
                 g2_type="bs",
                 bypass_v=False,
                 use_spatial_weight=False,
@@ -1088,8 +1188,15 @@ def main() -> None:
             # Save model for reference
             torch.save(model_b.state_dict(), vdir / "models" / "stage_b_model.pt")
 
-            # Extract etcnn_a path for subsequent soft variants
-            if load_etcnn_a_path is None:
+            # Extract etcnn_a path for subsequent soft variants — only when
+            # Stage A was actually trained as a NN.  In ``--analytical-stage-a``
+            # mode there is no etcnn_a.pt to load (it is the closed-form BS
+            # formula); the ``v_target_fn`` was built up-front from the
+            # analytical formula and is shared by all variants directly.
+            if (
+                not args.analytical_stage_a
+                and load_etcnn_a_path is None
+            ):
                 load_etcnn_a_path = vdir / "models" / "etcnn_a.pt"
                 logger.info(f"  Stage A saved — will be shared with soft variants: {load_etcnn_a_path}")
                 v_target_fn, _ = _load_etcnn_a_and_build_vtarget(load_etcnn_a_path)
@@ -1140,6 +1247,7 @@ def main() -> None:
             f"rel_L2={metrics['rel_l2_bt']:.4e}  "
             f"rel_L2_ATM={metrics['rel_l2_atm']:.4e}  "
             f"rel_L2_Delta={metrics['rel_l2_delta']:.4e}  "
+            f"rel_L2_Gamma={metrics.get('rel_l2_gamma', float('nan')):.4e}  "
             f"GEI={metrics['gei']:.2f}  "
             f"TC_MAE={metrics['tc_mae']:.4e}"
         )
@@ -1174,6 +1282,7 @@ def main() -> None:
             "rel_l2_bt":    float(res["rel_l2_bt"]),
             "rel_l2_atm":   float(m.get("rel_l2_atm",   float("nan"))),
             "rel_l2_delta": float(m.get("rel_l2_delta", float("nan"))),
+            "rel_l2_gamma": float(m.get("rel_l2_gamma", float("nan"))),
             "gei":          float(m.get("gei",          float("nan"))),
             "tc_mae":       float(m.get("tc_mae",       float("nan"))),
         }
