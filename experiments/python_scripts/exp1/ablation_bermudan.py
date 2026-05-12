@@ -69,7 +69,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import phase3_training as p3
 from phase3_training import bermudan_problem
+from learning_option_pricing.solvers.binomial_tree import bermuda_put_binomial_tree
 from learning_option_pricing.utils.run_context import script_data_dir
+
+
+# Time slices used for Greeks-vs-BT comparison.  Mirrors the
+# ``_GT_TAU_SLICES`` constant in ablation_singularity_logS but expressed as
+# absolute Stage B times in [0, t1] rather than time-to-maturity.  The final
+# slice deliberately sits very close to t1 to expose how each variant
+# behaves near the C0 kink in the intermediate terminal condition.
+# Resolved at module load via lambda to defer access to ``p3.t1`` (which
+# is the canonical t1 value from phase3_training).
+def _build_greeks_t_slices() -> list[float]:
+    t1 = float(p3.t1)
+    return [
+        0.0,
+        0.25 * t1,
+        0.50 * t1,
+        0.75 * t1,
+        t1 * (1.0 - 0.02),   # near-singularity: t ≈ t1 from below
+    ]
 
 logger = logging.getLogger(__name__)
 
@@ -347,6 +366,60 @@ def compute_metrics_stage_b(
         logger.warning(f"compute_metrics_stage_b: PDE profile computation failed ({exc}).")
         pde_residuals = [float("nan")] * n_profile
 
+    # --- Multi-slice Greeks (mirrors ablation_singularity_logS pattern) -------
+    # Compute Delta and Gamma at several t-slices in [0, t1] and compare to the
+    # binomial-tree reference at each slice.  This exposes the near-singularity
+    # behaviour as t → t1 (where V(·, t) has a sharper kink at s*).
+    # We reuse the same S evaluation grid as for the t=0 metrics.
+    greeks_slices: dict | None = None
+    try:
+        t_slices = _build_greeks_t_slices()
+        n_t = len(t_slices)
+        n_s = len(s_eval_arr)
+        nn_d  = np.full((n_t, n_s), np.nan)
+        nn_g  = np.full((n_t, n_s), np.nan)
+        bt_d  = np.full((n_t, n_s), np.nan)
+        bt_g  = np.full((n_t, n_s), np.nan)
+        for i, t_val in enumerate(t_slices):
+            s_d = torch.tensor(
+                s_eval_arr, dtype=torch.get_default_dtype(), device=device
+            ).requires_grad_(True)
+            t_d = torch.full((n_s,), float(t_val), device=device, requires_grad=True)
+            V_d = model(torch.stack([s_d, t_d], dim=1)).squeeze()
+            (d_nn,)  = torch.autograd.grad(V_d.sum(), s_d, create_graph=True)
+            (g_nn,)  = torch.autograd.grad(d_nn.sum(), s_d, create_graph=False)
+            nn_d[i, :] = d_nn.detach().cpu().numpy()
+            nn_g[i, :] = g_nn.detach().cpu().numpy()
+
+            # BT reference at t > 0: run a Bermudan BT with remaining maturity
+            # T-t and a single exercise date at t1-t (or no exercise dates if
+            # t >= t1, which puts us past the kink in pure-European territory).
+            t_rem  = float(p3.T) - float(t_val)
+            t1_rem = float(p3.t1) - float(t_val)
+            exer_dates = [t1_rem] if t1_rem > 0.0 else []
+            bt_prices_t = np.array([
+                bermuda_put_binomial_tree(
+                    float(s), float(p3.K), float(p3.r), float(p3.sigma),
+                    t_rem, exer_dates, N=2000,
+                )
+                for s in s_eval_arr
+            ])
+            bt_d[i, :] = np.gradient(bt_prices_t, s_eval_arr)
+            bt_g[i, :] = np.gradient(bt_d[i, :], s_eval_arr)
+        greeks_slices = {
+            "t":        np.asarray(t_slices, dtype=float),
+            "s":        np.asarray(s_eval_arr, dtype=float),
+            "nn_delta": nn_d,
+            "nn_gamma": nn_g,
+            "bt_delta": bt_d,
+            "bt_gamma": bt_g,
+        }
+    except Exception as exc:
+        logger.warning(
+            f"compute_metrics_stage_b: multi-slice greeks computation failed ({exc})."
+        )
+        greeks_slices = None
+
     return {
         "rel_l2_bt":     rel_l2_bt,
         "rel_l2_atm":    rel_l2_atm,
@@ -357,7 +430,8 @@ def compute_metrics_stage_b(
             "t":        t_profile_tensor.cpu().tolist(),
             "residual": pde_residuals,
         },
-        "greeks":        greeks_curves,
+        "greeks":         greeks_curves,
+        "greeks_slices":  greeks_slices,
     }
 
 
@@ -406,6 +480,16 @@ def _save_variant_results(res: dict, vdir: Path) -> None:
                 "greeks_nn_gamma": np.asarray(greeks["nn_gamma"]),
                 "greeks_bt_gamma": np.asarray(greeks["bt_gamma"]),
             })
+        slices = metrics.get("greeks_slices")
+        if slices is not None:
+            npz_payload.update({
+                "greeks_slices_t":        np.asarray(slices["t"]),
+                "greeks_slices_s":        np.asarray(slices["s"]),
+                "greeks_slices_nn_delta": np.asarray(slices["nn_delta"]),
+                "greeks_slices_nn_gamma": np.asarray(slices["nn_gamma"]),
+                "greeks_slices_bt_delta": np.asarray(slices["bt_delta"]),
+                "greeks_slices_bt_gamma": np.asarray(slices["bt_gamma"]),
+            })
         np.savez_compressed(vdir / "metrics.npz", **npz_payload)
 
 
@@ -447,6 +531,17 @@ def _load_variant_results(vdir: Path, summary_entry: dict, style: dict) -> dict:
             }
         else:
             metrics["greeks"] = None
+        if "greeks_slices_t" in m.files:
+            metrics["greeks_slices"] = {
+                "t":        m["greeks_slices_t"],
+                "s":        m["greeks_slices_s"],
+                "nn_delta": m["greeks_slices_nn_delta"],
+                "nn_gamma": m["greeks_slices_nn_gamma"],
+                "bt_delta": m["greeks_slices_bt_delta"],
+                "bt_gamma": m["greeks_slices_bt_gamma"],
+            }
+        else:
+            metrics["greeks_slices"] = None
     else:
         metrics = None
     return {
@@ -826,6 +921,64 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int) -> N
         fig.savefig(comp_dir / "abl_greeks.png", dpi=150)
         plt.close(fig)
         logger.info("[OK] abl_greeks.png")
+
+    # ------------------------------------------------------------------
+    # Plot 6c — Greeks at multiple t-slices in [0, t1]
+    # 2 rows (Delta, Gamma) × n_t columns (one per slice).  Mirrors the
+    # `greeks_comparison.png` produced by ablation_singularity_logS so
+    # readers can compare both ablations on an equal footing.
+    # ------------------------------------------------------------------
+    has_greek_slices = [
+        (res.get("metrics") is not None
+         and res["metrics"].get("greeks_slices") is not None)
+        for res in results
+    ]
+    if any(has_greek_slices):
+        ref_idx = next(i for i, ok in enumerate(has_greek_slices) if ok)
+        gs_ref  = results[ref_idx]["metrics"]["greeks_slices"]
+        t_arr   = np.asarray(gs_ref["t"])
+        s_arr   = np.asarray(gs_ref["s"])
+        n_t     = len(t_arr)
+        fig, axes = plt.subplots(2, n_t, figsize=(4.8 * n_t, 9), sharex=True)
+        if n_t == 1:
+            axes = axes.reshape(2, 1)
+        for j, t_val in enumerate(t_arr):
+            ax_d, ax_g = axes[0, j], axes[1, j]
+            ax_d.plot(s_arr, gs_ref["bt_delta"][j], "k--", linewidth=1.5,
+                      label=r"$\Delta^{\mathrm{BT}}$ (reference)", zorder=10)
+            ax_g.plot(s_arr, gs_ref["bt_gamma"][j], "k--", linewidth=1.5,
+                      label=r"$\Gamma^{\mathrm{BT}}$ (reference, noisy)", zorder=10)
+            for i, (res, ok) in enumerate(zip(results, has_greek_slices)):
+                if not ok:
+                    continue
+                gs = res["metrics"]["greeks_slices"]
+                ax_d.plot(np.asarray(gs["s"]), np.asarray(gs["nn_delta"])[j],
+                          color=colors[i], linestyle=linestyles[i], linewidth=linewidths[i],
+                          label=labels[i])
+                ax_g.plot(np.asarray(gs["s"]), np.asarray(gs["nn_gamma"])[j],
+                          color=colors[i], linestyle=linestyles[i], linewidth=linewidths[i],
+                          label=labels[i])
+            ax_d.axvline(p3.K, color="grey", linestyle=":", linewidth=0.8)
+            ax_g.axvline(p3.K, color="grey", linestyle=":", linewidth=0.8)
+            ax_d.set_title(rf"$t = {float(t_val):.3f}$  (Stage B)")
+            ax_d.set_ylabel(r"$\Delta$")
+            ax_g.set_xlabel("Asset price $S$")
+            ax_g.set_ylabel(r"$\Gamma$")
+            ax_d.grid(True, alpha=0.3)
+            ax_g.grid(True, alpha=0.3)
+            if j == n_t - 1:
+                ax_d.legend(fontsize=7, loc="best")
+                ax_g.legend(fontsize=7, loc="best")
+        fig.suptitle(
+            f"Ablation — Greeks at multiple $t$-slices in $[0,\\,t_1]$\n"
+            f"{_SUPTITLE_PARAMS}  |  last slice $t\\to t_1^-$ probes the kink",
+            fontsize=10,
+        )
+        fig.tight_layout(rect=[0, 0.10, 1, 1])
+        _add_formula_box(fig, _FORMULA_GREEKS, bottom_margin=0.12)
+        fig.savefig(comp_dir / "abl_greeks_slices.png", dpi=150)
+        plt.close(fig)
+        logger.info("[OK] abl_greeks_slices.png")
 
     # ------------------------------------------------------------------
     # Plot 7 — Summary metrics bar chart
