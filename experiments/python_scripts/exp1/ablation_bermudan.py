@@ -190,12 +190,18 @@ _FORMULA_GRAD = "\n".join([
     r"Total loss:  $\mathcal{L}^{(B)} = \lambda_f\,\mathcal{L}_f^{(B)} + \lambda_{tc}\,\mathcal{L}_{tc}^{(B)}"
     rf"$   with $\lambda_f={p3.LAMBDA_F}$,  $\lambda_{{tc}}={p3.LAMBDA_TC}$ (hard $\Rightarrow$ $\mathcal{{L}}_{{tc}}\approx 0$)",
 ])
+_FORMULA_NN = "\n".join([
+    r"Backbone $u_\theta:\mathbb{R}^2\to\mathbb{R}$:  $u_\theta(S,t) = W_{\text{out}}\,(\mathrm{Block}_M\circ\cdots\circ\mathrm{Block}_1)(\tanh(W_{\text{in}}\,[S/K,\,t]+b_{\text{in}})) + b_{\text{out}}$",
+    r"Residual block: $\mathrm{Block}_m(h) = h + \tanh(W^{(m)}_2\,\tanh(W^{(m)}_1\,h + b^{(m)}_1) + b^{(m)}_2)$"
+    r"   with $M=4$ blocks of $L=2$ layers, width $n=50$, input normalisation $S\mapsto S/K$",
+])
 _FORMULA_ANSATZ = "\n".join([
     r"Baseline:      $\tilde{u}^{(B)}_\theta(S, t) = (t_1-t)\,u_\theta(S,t) + V^{\mathrm{Berm}}_{\bar{\theta}}(S,t_1)$",
     r"$+$put-ansatz: $\tilde{u}^{(B)}_\theta(S, t) = v(S,t) + (t_1-t)\,u_\theta(S,t) + g_2(S)$",
     r"where $v(S,t)$ is the fictitious European put and $g_2(S)=V^{\mathrm{Berm}}_{\bar{\theta}}(S,t_1)-v(S,t_1)$ is the $C^1$ residual",
     r"$+$bypass$_v$: $v$ is dropped from the PDE residual to prevent derivative cancellation near $s^*$",
     r"$+$spatial weight: $w(S)=1-(1-\varepsilon_w)\exp(-(S-s^*)^2/(2\sigma_w^2))$ applied to PDE loss",
+    _FORMULA_NN,
 ])
 _FORMULA_METRICS = "\n".join([
     r"$\varepsilon_{L^2} = \|\tilde{u}^{(B)}_\theta(\cdot,0) - V^{\mathrm{BT}}(\cdot,0)\|_2\,/\,\|V^{\mathrm{BT}}(\cdot,0)\|_2$  (grid $S\in[60,120]$)",
@@ -801,8 +807,8 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int) -> N
     ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
     fig.suptitle(f"Ablation — Pricing comparison at $t=0$\n{_SUPTITLE_PARAMS}", fontsize=10)
-    fig.tight_layout(rect=[0, 0.20, 1, 1])
-    _add_formula_box(fig, _FORMULA_ANSATZ, bottom_margin=0.22)
+    fig.tight_layout(rect=[0, 0.32, 1, 1])
+    _add_formula_box(fig, _FORMULA_ANSATZ, bottom_margin=0.34)
     fig.savefig(comp_dir / "abl_prices.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] abl_prices.png")
@@ -834,8 +840,8 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int) -> N
         f"Ablation — Pointwise error vs $V^{{\\mathrm{{BT}}}}$ at $t=0$\n{_SUPTITLE_PARAMS}",
         fontsize=10,
     )
-    fig.tight_layout(rect=[0, 0.20, 1, 1])
-    _add_formula_box(fig, _FORMULA_ANSATZ, bottom_margin=0.22)
+    fig.tight_layout(rect=[0, 0.32, 1, 1])
+    _add_formula_box(fig, _FORMULA_ANSATZ, bottom_margin=0.34)
     fig.savefig(comp_dir / "abl_error_vs_bt.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] abl_error_vs_bt.png")
