@@ -6,10 +6,10 @@ This module is intentionally **kept free of any torch import** so that
    can run on a login node (or any cheap CPU) in a fraction of a second,
    instead of paying the multi-second ``import torch`` cost on Lustre, and
 
-2. the SLURM array launcher
-   (``bash_scripts/cluster/jeanzay/python/ablation_array_launcher.sh``) can
-   enumerate the variant list to write one YAML config per task without
-   loading torch either.
+2. the generic SLURM array launcher
+   (``bash_scripts/cluster/jeanzay/python/experiment_array_launcher.sh``) can
+   delegate the per-task YAML generation to ``--init-only`` on the login
+   node without loading torch either.
 
 What's in here:
 * The BSM / domain / sampling constants used by the variant catalogue.
@@ -507,9 +507,35 @@ def handle_init_only_cli() -> None:
     with open(ablation_dir / "summary.yaml", "w", encoding="utf-8") as f:
         yaml.safe_dump({"variants": []}, f, allow_unicode=True)
 
+    # ``configs/`` — one YAML per active variant, consumed downstream by the
+    # generic SLURM-array worker via ``--config-dir / --config-name``.  Writing
+    # them here (instead of in the bash launcher) lets every orchestrator that
+    # respects the experiment-launcher contract (i.e. "run --init-only on the
+    # login node, then array-launch each YAML it produced under configs/")
+    # work against this script without embedding catalogue-specific Python.
+    configs_dir = ablation_dir / "configs"
+    configs_dir.mkdir(exist_ok=True)
+    n_configs_written = 0
+    for v in variants:
+        if v["name"] in _PLOT_EXCLUDED_VARIANTS:
+            continue
+        cfg = {
+            "mode":            args.mode,
+            "variant_name":    v["name"],
+            "ablation_dir":    str(ablation_dir.resolve()),
+            # ``null`` instructs the worker to use the variant's catalogue
+            # ``default_num_iterations``; edit the YAML between init and
+            # array submission to override on the cluster.
+            "num_iterations":  None,
+        }
+        with open(configs_dir / f"{v['name']}.yaml", "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True)
+        n_configs_written += 1
+
     logger.info(
-        "--init-only: created ablation dir, metadata.yaml, and empty "
-        "summary.yaml. No variant trained."
+        "--init-only: created ablation dir, metadata.yaml, empty "
+        f"summary.yaml, and {n_configs_written} per-variant configs under "
+        f"{configs_dir.name}/.  No variant trained."
     )
     # Path on the *last* stdout line — bash launchers capture it via tail.
     print(str(ablation_dir.resolve()))
