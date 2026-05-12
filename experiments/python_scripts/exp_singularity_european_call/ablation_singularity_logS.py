@@ -2025,6 +2025,139 @@ def _compute_weak_residual_profile(model: torch.nn.Module) -> np.ndarray:
     return np.array(vals)
 
 
+def _compute_strong_residual_domain_profile(
+    model: torch.nn.Module, n_x: int = 200,
+) -> np.ndarray:
+    """Strong-form PDE residual MEAN over the FULL spatial domain at each τ.
+
+    Companion to :func:`_compute_weak_residual_profile`: the weak-form
+    residual integrates over the whole spatial domain [X_LO, X_HI], so
+    a fair strong-form comparison must do the same — not just probe a
+    single ATM point.  Returns mean_x |F[V̂](x, T-τ)| for each τ in
+    ``_WEAK_RES_TAU`` (the same τ grid as the weak-form profile), using
+    ``n_x`` evenly spaced collocation points across [X_LO, X_HI].
+    """
+    device = p3.DEVICE
+    model.eval()
+    vals = []
+    for tau_val in _WEAK_RES_TAU:
+        t_val = T - tau_val
+        x_p = torch.linspace(X_LO, X_HI, n_x, device=device).requires_grad_(True)
+        t_p = torch.full((n_x,), t_val, device=device).requires_grad_(True)
+        with torch.enable_grad():
+            V_p = model(torch.stack([x_p, t_p], dim=1)).squeeze()
+            F_p = bsm_operator_logS(V_p, x_p, t_p, r, sigma)
+        vals.append(F_p.detach().abs().mean().item())
+    return np.array(vals)
+
+
+class _VPINNLossForwardLogS_ATM(torch.nn.Module):
+    r"""Weak-form PDE residual with a single LOCALIZED test function at x = ln K.
+
+    Companion to :class:`_VPINNLossForwardLogS`: that class uses 20 global
+    sine modes spanning the whole domain, so it measures a "globally
+    integrated" weak residual.  This variant replaces the basis with a
+    single Gaussian bump centred at ``x_atm = ln K`` with bandwidth ``h``,
+    L² -normalised over [X_LO, X_HI].  The result is a localized weak
+    residual that probes the kink/ATM region only, providing the fair
+    weak-form analog of the at-ATM strong-form residual.
+
+    Bandwidth ``h`` is chosen small enough that the boundary terms from
+    integration-by-parts are negligible (Gaussian tail ≪ machine epsilon
+    at the domain boundaries).
+    """
+
+    phi_w:   torch.Tensor
+    dphi_w:  torch.Tensor
+    x_nodes: torch.Tensor
+    weights: torch.Tensor
+
+    def __init__(
+        self,
+        sigma: float,
+        r: float,
+        x_lo: float,
+        x_hi: float,
+        x_atm: float,
+        h: float = 0.1,
+        n_quad: int = 200,
+    ):
+        super().__init__()
+        self.sigma = sigma
+        self.r     = r
+        self.mu    = r - 0.5 * sigma**2
+        self.x_atm = x_atm
+        self.h     = h
+
+        quad    = GaussLegendreQuadrature(n_quad, x_lo, x_hi, dtype=torch.float32)
+        x_nodes = quad.nodes
+        weights = quad.weights
+
+        # Localized test function: Gaussian bump centred at x_atm, std h.
+        # Normalised so that ‖phi‖_{L²([X_LO,X_HI])} ≈ 1 (under quadrature),
+        # i.e. its overall scale is comparable to one of the unit-norm sine
+        # modes used in the global basis.
+        dx       = x_nodes - x_atm
+        phi      = torch.exp(-0.5 * (dx / h) ** 2)
+        norm_sq  = (phi.pow(2) * weights).sum().clamp_min(1e-30)
+        phi      = phi / norm_sq.sqrt()
+        dphi     = -(dx / h**2) * phi
+
+        self.register_buffer("phi_w",   phi  * weights)
+        self.register_buffer("dphi_w",  dphi * weights)
+        self.register_buffer("x_nodes", x_nodes)
+        self.register_buffer("weights", weights)
+
+    def forward(self, model: torch.nn.Module, t_batch: torch.Tensor) -> torch.Tensor:
+        N_t = t_batch.shape[0]
+        N_q = self.x_nodes.shape[0]
+        x_rep = self.x_nodes.unsqueeze(0).expand(N_t, N_q).reshape(-1, 1)
+        t_rep = t_batch.unsqueeze(1).expand(N_t, N_q).reshape(-1, 1)
+        x_rep = x_rep.detach().requires_grad_(True)
+        t_rep = t_rep.detach().requires_grad_(True)
+        V = model(torch.cat([x_rep, t_rep], dim=1))
+        dV_dt, dV_dx = torch.autograd.grad(
+            V, [t_rep, x_rep],
+            grad_outputs=torch.ones_like(V),
+            create_graph=True,
+        )
+        V_vals = V.squeeze(1).reshape(N_t, N_q)
+        V_t    = dV_dt.squeeze(1).reshape(N_t, N_q)
+        V_x    = dV_dx.squeeze(1).reshape(N_t, N_q)
+        f_phi  = V_t + self.mu * V_x - self.r * V_vals
+        f_dphi = -(self.sigma**2 / 2.0) * V_x
+        # Single test function → R is a scalar per τ (sum of quadrature
+        # weighted integrand contributions).
+        R = (f_phi * self.phi_w).sum(dim=1) + (f_dphi * self.dphi_w).sum(dim=1)
+        return R.pow(2).mean()
+
+
+def _compute_weak_residual_atm_profile(
+    model: torch.nn.Module, h: float = 0.1,
+) -> np.ndarray:
+    """Weak-form PDE residual using a localized Gaussian-bump test function at ATM.
+
+    Mirrors :func:`_compute_weak_residual_profile` but with a single test
+    function centred at ``x = ln K`` instead of 20 global sine modes.
+    Returns one value per τ in ``_WEAK_RES_TAU``.  ``h`` controls the
+    bandwidth of the bump (default 0.1, i.e. ~5% of a typical
+    [X_LO, X_HI] span).
+    """
+    device = p3.DEVICE
+    vpinn_eval = _VPINNLossForwardLogS_ATM(
+        sigma, r, X_LO, X_HI, X_ATM, h=h, n_quad=200,
+    ).to(device)
+    model.eval()
+    vals = []
+    for tau_val in _WEAK_RES_TAU:
+        t_val = T - tau_val
+        t_batch = torch.tensor([t_val], device=device)
+        with torch.enable_grad():
+            lf = vpinn_eval(model, t_batch).item()
+        vals.append(lf)
+    return np.array(vals)
+
+
 def _compute_gt_slices(model: torch.nn.Module) -> dict:
     """Compute price and greek slices vs Black-Scholes for ground-truth comparison."""
     device = p3.DEVICE
@@ -2109,8 +2242,13 @@ def _compute_gt_slices(model: torch.nn.Module) -> dict:
         "d2x_pred_spatial":   np.array(d2x_pred_sp),
         "dx_ref_spatial":     np.array(dx_ref_sp),
         "d2x_ref_spatial":    np.array(d2x_ref_sp),
-        "weak_residual_tau":  np.array(_WEAK_RES_TAU),
-        "weak_residual":      _compute_weak_residual_profile(model),
+        "weak_residual_tau":         np.array(_WEAK_RES_TAU),
+        "weak_residual":             _compute_weak_residual_profile(model),
+        # Companion measures for the fair 2x2 strong-vs-weak comparison:
+        # both forms evaluated on (a) the full domain and (b) at ATM only.
+        # All four use the same τ grid (_WEAK_RES_TAU) for direct overlay.
+        "strong_residual_domain":    _compute_strong_residual_domain_profile(model),
+        "weak_residual_atm":         _compute_weak_residual_atm_profile(model),
     }
 
 
@@ -3056,31 +3194,71 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
         fig.savefig(comp_dir / "deriv_spatial_comparison.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
 
-    # Weak-form residual profile — fair comparison for all variants
+    # Strong vs weak residual comparison — 2x2 fair-comparison layout.
+    # The original 1x2 layout was misleading: the strong-form panel was
+    # evaluated at a SINGLE spatial point (x = ln K), while the weak-form
+    # panel integrated over the WHOLE domain.  Putting them side by side
+    # invited reading them as "the same quantity in two forms" — they were
+    # not.  The 2x2 layout below disentangles the two axes of comparison:
+    #   * columns        = formulation  (strong  |  weak)
+    #   * rows           = spatial support of the residual measure
+    #                      top row     = full domain integration
+    #                      bottom row  = localized at ATM (x = ln K)
+    # Each panel within a row uses the SAME spatial support across the
+    # two formulations, so the strong vs weak read is now apples-to-apples.
     valid_wr = [r for r in results
                 if r.get("gt_slices") and "weak_residual" in (r["gt_slices"] or {})]
     if valid_wr:
-        fig, (ax_strong, ax_weak) = plt.subplots(1, 2, figsize=(12, 5))
+        fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+        ax_dom_strong, ax_dom_weak = axes[0, 0], axes[0, 1]
+        ax_atm_strong, ax_atm_weak = axes[1, 0], axes[1, 1]
         for res in valid_wr:
             kw = dict(label=res["label"], color=res["color"],
                       linestyle=res["linestyle"], linewidth=res["linewidth"],
                       marker="o", markersize=4)
-            pde = res["metrics"]["pde_residual_tau"]
-            ax_strong.semilogy(pde["tau"], pde["residual"], **kw)
             gt = res["gt_slices"]
-            ax_weak.semilogy(gt["weak_residual_tau"], gt["weak_residual"], **kw)
+            # Row 0 — full-domain support
+            if "strong_residual_domain" in gt:
+                ax_dom_strong.semilogy(
+                    gt["weak_residual_tau"], gt["strong_residual_domain"], **kw,
+                )
+            ax_dom_weak.semilogy(
+                gt["weak_residual_tau"], gt["weak_residual"], **kw,
+            )
+            # Row 1 — at-ATM support
+            pde = res["metrics"]["pde_residual_tau"]
+            ax_atm_strong.semilogy(pde["tau"], pde["residual"], **kw)
+            if "weak_residual_atm" in gt:
+                ax_atm_weak.semilogy(
+                    gt["weak_residual_tau"], gt["weak_residual_atm"], **kw,
+                )
+
         for ax, title in [
-            (ax_strong, r"Strong-form residual $|\mathcal{F}[\hat{V}]|$ along $x=\ln K$"),
-            (ax_weak,   r"Weak-form residual $\mathcal{L}_f^{var}(\hat{V},\tau)$  [all variants, same metric]"),
+            (ax_dom_strong,
+             r"Strong, full-domain: $\langle |\mathcal{F}[\hat V](\cdot,\tau)| \rangle_{x\in[X_{lo},X_{hi}]}$"),
+            (ax_dom_weak,
+             r"Weak, full-domain: $\frac{1}{K}\sum_k\!\left(\!\int \varphi_k\,\mathcal{F}[\hat V]\,dx\!\right)^2$  ($K{=}20$ sine modes)"),
+            (ax_atm_strong,
+             r"Strong, at ATM: $|\mathcal{F}[\hat V](x{=}\ln K,\tau)|$"),
+            (ax_atm_weak,
+             r"Weak, at ATM: $\left(\int \varphi_{\rm bump}\,\mathcal{F}[\hat V]\,dx\right)^2$  (Gaussian bump at $\ln K$)"),
         ]:
-            ax.set_xlabel(r"$\tau$"); ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
-            ax.set_title(title, fontsize=9)
-        ax_strong.set_ylabel(r"$|\mathcal{F}[\hat{V}]|$")
-        ax_weak.set_ylabel(r"$\mathcal{L}_f^{var}$")
-        fig.suptitle(r"Residual comparison — strong vs weak form  |  " + _SUPTITLE, fontsize=9)
+            ax.set_xlabel(r"$\tau$")
+            ax.legend(fontsize=7, loc="best")
+            ax.grid(True, alpha=0.3)
+            ax.set_title(title, fontsize=8.5)
+        ax_dom_strong.set_ylabel(r"$\langle |\mathcal{F}[\hat V]| \rangle$")
+        ax_dom_weak.set_ylabel(r"$\mathcal{L}_f^{var}$")
+        ax_atm_strong.set_ylabel(r"$|\mathcal{F}[\hat V]|_{x=\ln K}$")
+        ax_atm_weak.set_ylabel(r"$\mathcal{L}_f^{var,\,\mathrm{ATM}}$")
+        fig.suptitle(
+            r"Residual comparison — strong vs weak $\times$ full-domain vs ATM  |  "
+            + _SUPTITLE,
+            fontsize=9,
+        )
         fig.tight_layout()
         _apply_outside_legend(fig)
-        _add_formula_box(fig, _FORMULA_WEAK_RES, bottom_margin=0.14)
+        _add_formula_box(fig, _FORMULA_WEAK_RES, bottom_margin=0.12)
         fig.savefig(comp_dir / "weak_residual_comparison.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
 
