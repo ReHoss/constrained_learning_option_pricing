@@ -921,19 +921,70 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
             logger.info("[OK] form_tc_error_at_t1.png")
 
     # ------------------------------------------------------------------
-    # Plot 8 — Rich summary metrics bar chart
+    # Plot 8 — Greeks comparison (Δ and Γ vs S, all variants overlaid)
+    # ------------------------------------------------------------------
+    if any(has_metrics):
+        greek_results = [
+            res for res in results
+            if res.get("metrics") is not None
+            and res["metrics"].get("greeks") is not None
+        ]
+        if greek_results:
+            fig, (ax_d, ax_g) = plt.subplots(1, 2, figsize=(14, 6))
+            # BT reference from the first variant that has it (same for all).
+            ref = greek_results[0]["metrics"]["greeks"]
+            ax_d.plot(ref["s"], ref["bt_delta"], "k--", linewidth=1.6,
+                      label=r"$\Delta^{\mathrm{BT}}$", zorder=10)
+            ax_g.plot(ref["s"], ref["bt_gamma"], "k--", linewidth=1.6,
+                      label=r"$\Gamma^{\mathrm{BT}}$", zorder=10)
+            for res in greek_results:
+                g       = res["metrics"]["greeks"]
+                lbl     = res.get("label", res.get("name", ""))
+                col     = res.get("color")
+                ls      = res.get("linestyle", "-")
+                lw      = res.get("linewidth", 1.8)
+                eps_d   = float(res["metrics"].get("rel_l2_delta", float("nan")))
+                eps_g   = float(res["metrics"].get("rel_l2_gamma", float("nan")))
+                ax_d.plot(g["s"], g["nn_delta"], color=col, linestyle=ls, linewidth=lw,
+                          label=rf"{lbl}  ($\varepsilon_\Delta={eps_d:.2e}$)")
+                ax_g.plot(g["s"], g["nn_gamma"], color=col, linestyle=ls, linewidth=lw,
+                          label=rf"{lbl}  ($\varepsilon_\Gamma={eps_g:.2e}$)")
+            ax_d.axvline(p3.K, color="gray", linestyle=":", linewidth=0.8)
+            ax_g.axvline(p3.K, color="gray", linestyle=":", linewidth=0.8)
+            ax_d.set_xlabel(r"Asset price $S$")
+            ax_g.set_xlabel(r"Asset price $S$")
+            ax_d.set_ylabel(r"$\Delta = \partial V/\partial S$")
+            ax_g.set_ylabel(r"$\Gamma = \partial^2 V/\partial S^2$")
+            ax_d.set_title(r"Delta at $t=0$  (vs BT reference)")
+            ax_g.set_title(r"Gamma at $t=0$  (vs BT reference)")
+            ax_d.legend(fontsize=8); ax_d.grid(True, alpha=0.3)
+            ax_g.legend(fontsize=8); ax_g.grid(True, alpha=0.3)
+            fig.suptitle(f"Formulation ablation — Greeks vs BT\n{_SUPTITLE_PARAMS}", fontsize=10)
+            fig.tight_layout(rect=[0, 0.08, 1, 1])
+            fig.text(0.5, 0.01,
+                     r"$\Delta$ via autograd: $\partial V_\theta/\partial S$. "
+                     r"$\Gamma$ via autograd: $\partial^2 V_\theta/\partial S^2$. "
+                     r"BT references via finite differences on $V^{\mathrm{BT}}(S,0)$.",
+                     ha="center", va="bottom", fontsize=8, bbox=_BOX_STYLE)
+            fig.savefig(comp_dir / "form_greeks.png", dpi=150)
+            plt.close(fig)
+            logger.info("[OK] form_greeks.png")
+
+    # ------------------------------------------------------------------
+    # Plot 9 — Rich summary metrics bar chart
     # ------------------------------------------------------------------
     n_variants = len(results)
     x          = np.arange(n_variants)
     vnames     = [r.get("name", f"v{i}") for i, r in enumerate(results)]
 
     if any(has_metrics):
-        metric_keys   = ["mae_bt", "rel_l2_bt", "rel_l2_atm", "rel_l2_delta", "gei"]
+        metric_keys   = ["mae_bt", "rel_l2_bt", "rel_l2_atm", "rel_l2_delta", "rel_l2_gamma", "gei"]
         metric_labels = [
             r"MAE vs $V^{\mathrm{BT}}$",
             r"$\varepsilon_{L^2}$ (global)",
             r"$\varepsilon_{L^2}^{\mathrm{ATM}}$",
             r"$\varepsilon_{\Delta}$",
+            r"$\varepsilon_{\Gamma}$",
             r"GEI",
         ]
 
@@ -1121,6 +1172,15 @@ def main() -> None:
              "its variant_<name>/ subfolder to assemble the comparison.",
     )
     parser.add_argument(
+        "--debug", action="store_true",
+        help="Mark this run as a test/smoke run.  The timestamped ablation "
+             "directory is prefixed with '_debug_' so test runs are visually "
+             "separated from real ones in `ls` (leading underscore sorts "
+             "after digits in C/UTF-8 locale, so debug runs land at the bottom) "
+             "and can be wiped in bulk with: "
+             "find data -type d -name '_debug_*' -prune -exec rm -rf {} +",
+    )
+    parser.add_argument(
         "--ablation-dir", type=str, default=None, metavar="DIR",
         help="Override the auto-generated timestamped output directory and "
              "write into DIR instead.  Required when every task of an sbatch "
@@ -1207,6 +1267,24 @@ def main() -> None:
             parser.error(f"--variant {args.variant!r} not in VARIANTS catalogue. "
                          f"Available: {names}")
 
+    # Smoke-test guard: any run with an iteration budget far below the real-run
+    # value (typical real-run is --iters-b 2000) MUST be tagged with --debug so
+    # the output folder lands under `_debug_…/` and is swept by
+    # `find data -type d -name '_debug_*' -prune -exec rm -rf {} +`.  Threshold
+    # is ~10% of the real-run budget; raise --iters-b above it for real runs,
+    # or pass --debug for smoke tests / code-path checks.  Skipped for --replot
+    # since no training happens in that mode.
+    SMOKE_TEST_ITERS_B_THRESHOLD = 200
+    if (args.replot is None
+            and args.iters_b < SMOKE_TEST_ITERS_B_THRESHOLD
+            and not args.debug):
+        parser.error(
+            f"--iters-b {args.iters_b} is below the smoke-test threshold "
+            f"({SMOKE_TEST_ITERS_B_THRESHOLD}).  Pass --debug to flag this as "
+            f"a smoke run (output folder gets the `_debug_` prefix), or raise "
+            f"--iters-b above the threshold for a real run."
+        )
+
     if args.replot is not None:
         logging.basicConfig(
             level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S",
@@ -1238,12 +1316,13 @@ def main() -> None:
             )
         timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
         stage_a_tag = "analyticalA"
+        debug_prefix = "_debug_" if args.debug else ""
         if args.ablation_dir is not None:
             ablation_dir = Path(args.ablation_dir)
         else:
             ablation_dir = (
                 script_data_dir(__file__)
-                / f"{timestamp}_{stage_a_tag}_itersB{args.iters_b}"
+                / f"{debug_prefix}{timestamp}_{stage_a_tag}_itersB{args.iters_b}"
             )
         ablation_dir.mkdir(parents=True, exist_ok=True)
         (ablation_dir / "comparison").mkdir(exist_ok=True)
@@ -1319,13 +1398,14 @@ def main() -> None:
         stage_a_tag = "loadedA"
     else:
         stage_a_tag = f"itersA{args.iters_a}"
+    debug_prefix = "_debug_" if args.debug else ""
     if args.ablation_dir is not None:
         ablation_dir = Path(args.ablation_dir)
     else:
         variant_suffix = f"_variant_{args.variant}" if args.variant is not None else ""
         ablation_dir = (
             script_data_dir(__file__)
-            / f"{timestamp}_{stage_a_tag}_itersB{args.iters_b}{variant_suffix}"
+            / f"{debug_prefix}{timestamp}_{stage_a_tag}_itersB{args.iters_b}{variant_suffix}"
         )
     ablation_dir.mkdir(parents=True, exist_ok=True)
     (ablation_dir / "comparison").mkdir(exist_ok=True)

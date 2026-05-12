@@ -4171,6 +4171,30 @@ def main() -> None:
         if "master_seed" in cfg_yaml and cfg_yaml["master_seed"] is not None:
             args.seed = int(cfg_yaml["master_seed"])
 
+    # Smoke-test guard: when --num-iterations is set explicitly to a value far
+    # below the real-run budget (typical real-run is 30000 — see the docstring
+    # examples at the top of this file), the run MUST carry --debug so the
+    # output folder gets the `_debug_` prefix and is swept by
+    # `find data -type d -name '_debug_*' -prune -exec rm -rf {} +`.  The
+    # threshold is intentionally generous; raise --num-iterations above it or
+    # drop the flag (each variant then uses its catalogue-declared budget) for
+    # a real run.  Skipped for --replot (no training) and when --num-iterations
+    # is None (variants use their own budgets, including the canonical 30k
+    # real-run path).
+    SMOKE_TEST_NUM_ITERATIONS_THRESHOLD = 1000
+    if (args.replot is None
+            and args.num_iterations is not None
+            and args.num_iterations < SMOKE_TEST_NUM_ITERATIONS_THRESHOLD
+            and not args.debug):
+        raise SystemExit(
+            f"--num-iterations {args.num_iterations} is below the smoke-test "
+            f"threshold ({SMOKE_TEST_NUM_ITERATIONS_THRESHOLD}).  Pass --debug "
+            f"to flag this as a smoke run (output folder gets the `_debug_` "
+            f"prefix), or raise --num-iterations above the threshold (or omit "
+            f"it entirely so each variant uses its catalogue budget) for a "
+            f"real run."
+        )
+
     # ── Replot only ───────────────────────────────────────────────────────────
     if args.replot is not None:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s",
