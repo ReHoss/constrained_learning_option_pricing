@@ -966,13 +966,40 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int) -> N
 # ---------------------------------------------------------------------------
 
 def _replot(ablation_dir: Path) -> None:
-    """Regenerate all plots from a saved run directory (no retraining)."""
+    """Regenerate all plots from a saved run directory (no retraining).
+
+    Handles the sbatch-array layout: when the run was produced by parallel
+    ``--variant NAME`` tasks, each task writes its own ``summary_<name>.yaml``
+    rather than a shared ``summary.yaml`` (to avoid race-overwrites).  This
+    helper assembles a combined ``summary.yaml`` on the fly from those files
+    and writes it back so subsequent replots run faster.
+    """
     metadata_path = ablation_dir / "metadata.yaml"
     summary_path  = ablation_dir / "summary.yaml"
     if not metadata_path.exists():
         raise FileNotFoundError(f"metadata.yaml not found in {ablation_dir}")
     with open(metadata_path) as f:
         metadata = yaml.safe_load(f)
+    if not summary_path.exists():
+        # Assemble from per-variant ``summary_<name>.yaml`` files written by
+        # parallel sbatch-array tasks.
+        per_variant_files = sorted(ablation_dir.glob("summary_*.yaml"))
+        if not per_variant_files:
+            raise FileNotFoundError(
+                f"Neither summary.yaml nor any summary_*.yaml found in "
+                f"{ablation_dir}.  Has every array task completed?"
+            )
+        merged: dict = {}
+        for pv in per_variant_files:
+            with open(pv) as f:
+                merged.update(yaml.safe_load(f) or {})
+        with open(summary_path, "w") as f:
+            yaml.dump(merged, f, default_flow_style=False, sort_keys=False,
+                      width=float("inf"))
+        logger.info(
+            f"Assembled summary.yaml from {len(per_variant_files)} per-variant files "
+            f"({[p.name for p in per_variant_files]})."
+        )
     with open(summary_path) as f:
         summary = yaml.safe_load(f)
 
@@ -1037,7 +1064,33 @@ def main() -> None:
         "--replot", type=str, default=None, metavar="DIR",
         help="Regenerate all plots from an existing run directory (no retraining).",
     )
+    parser.add_argument(
+        "--variant", type=str, default=None, metavar="NAME",
+        help="Run a single variant by NAME (one entry of the VARIANTS "
+             "catalogue).  Required for sbatch job arrays — every array task "
+             "picks its own NAME from $SLURM_ARRAY_TASK_ID.  In "
+             "--analytical-stage-a mode the variants are independent, so the "
+             "array tasks have no inter-task dependency.  Cross-variant "
+             "comparison plots are SKIPPED when --variant is set; run "
+             "``--replot <shared-run-dir>`` once every task has populated "
+             "its variant_<name>/ subfolder to assemble the comparison.",
+    )
+    parser.add_argument(
+        "--ablation-dir", type=str, default=None, metavar="DIR",
+        help="Override the auto-generated timestamped output directory and "
+             "write into DIR instead.  Required when every task of an sbatch "
+             "job array must land under the SAME parent (otherwise each task "
+             "picks a different ``datetime.now()`` second and the parent "
+             "folders fragment).  Typical pattern: the launcher creates a "
+             "shared dir once on the login node, then passes that path to "
+             "each --variant array task via this flag.",
+    )
     args = parser.parse_args()
+    if args.variant is not None:
+        names = [v["name"] for v in VARIANTS]
+        if args.variant not in names:
+            parser.error(f"--variant {args.variant!r} not in VARIANTS catalogue. "
+                         f"Available: {names}")
 
     if args.replot is not None:
         logging.basicConfig(
@@ -1061,13 +1114,24 @@ def main() -> None:
         stage_a_tag = "loadedA"
     else:
         stage_a_tag = f"itersA{args.iters_a}"
-    ablation_dir = (
-        script_data_dir(__file__)
-        / f"{timestamp}_{stage_a_tag}_itersB{args.iters_b}"
-    )
+    if args.ablation_dir is not None:
+        ablation_dir = Path(args.ablation_dir)
+    else:
+        variant_suffix = f"_variant_{args.variant}" if args.variant is not None else ""
+        ablation_dir = (
+            script_data_dir(__file__)
+            / f"{timestamp}_{stage_a_tag}_itersB{args.iters_b}{variant_suffix}"
+        )
     ablation_dir.mkdir(parents=True, exist_ok=True)
     (ablation_dir / "comparison").mkdir(exist_ok=True)
-    for v in VARIANTS:
+    # When --variant NAME is set, only create the subfolders for the named
+    # variant — other tasks of the array own the other variants' folders.
+    variants_to_create = (
+        [v for v in VARIANTS if v["name"] == args.variant]
+        if args.variant is not None
+        else VARIANTS
+    )
+    for v in variants_to_create:
         vdir = ablation_dir / f"variant_{v['name']}"
         # Same subfolder set as ablation_bermudan.py so ``bermudan_problem``
         # can save its plots into the expected locations (pricing/, greeks/,
@@ -1149,7 +1213,17 @@ def main() -> None:
 
     t_ablation_start = time.time()
 
-    for idx, variant in enumerate(VARIANTS):
+    # In --variant NAME mode, restrict the loop to the named variant only.
+    # The catalogue is the source of truth for the variant config so multiple
+    # array tasks pulling --variant from $SLURM_ARRAY_TASK_ID get identical
+    # hyperparameters to a single-process run.
+    variants_to_run = (
+        [v for v in VARIANTS if v["name"] == args.variant]
+        if args.variant is not None
+        else VARIANTS
+    )
+
+    for idx, variant in enumerate(variants_to_run):
         vname    = variant["name"]
         vdir     = ablation_dir / f"variant_{vname}"
         tc_type  = variant["tc_type"]
@@ -1286,16 +1360,36 @@ def main() -> None:
             "gei":          float(m.get("gei",          float("nan"))),
             "tc_mae":       float(m.get("tc_mae",       float("nan"))),
         }
-    with open(ablation_dir / "summary.yaml", "w") as f:
+    # In --variant NAME mode write a per-variant summary file so 4 parallel
+    # array tasks don't race-overwrite the shared summary.yaml.  A follow-up
+    # ``--replot <shared-dir>`` step assembles the combined summary.yaml from
+    # the metrics.npz of every variant subfolder.
+    summary_path = (
+        ablation_dir / f"summary_{args.variant}.yaml"
+        if args.variant is not None
+        else ablation_dir / "summary.yaml"
+    )
+    with open(summary_path, "w") as f:
         yaml.dump(summary, f, default_flow_style=False, sort_keys=False,
                   width=float("inf"))
 
     # ------------------------------------------------------------------
     # Comparison plots
     # ------------------------------------------------------------------
-    logger.info("")
-    logger.info("Generating comparison plots ...")
-    _plot_comparison(results, ablation_dir, args.iters_b)
+    # Cross-variant comparison only makes sense once every variant has run.
+    # In --variant NAME mode (one array task per variant) we skip this and
+    # leave the comparison to a follow-up ``--replot <run>`` pass once every
+    # task has populated its variant_<name>/ subfolder under <run>.
+    if args.variant is None:
+        logger.info("")
+        logger.info("Generating comparison plots ...")
+        _plot_comparison(results, ablation_dir, args.iters_b)
+    else:
+        logger.info(
+            f"  [single-variant mode] skipping cross-variant comparison plots. "
+            f"Once every array task has finished, run "
+            f"`--replot {ablation_dir}` from the SHARED run directory to assemble them."
+        )
 
     # ------------------------------------------------------------------
     # Final summary
