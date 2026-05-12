@@ -3524,7 +3524,17 @@ def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> No
         # any change to _GT_TAU_SLICES or per-variant plotting code is
         # picked up.
         for res, entry in zip(results, visible_entries):
-            model = _load_model_for_variant(ablation_dir, entry["name"])
+            # CRITICAL: pass entry as ``v`` so hard-IC ansatz variants instantiate
+            # the wrapping ``HardICAnsatzPINN`` (i.e. ``V = g1·resnet + g2``)
+            # rather than the bare ``PINN`` (just ``resnet``).  Both architectures
+            # share state_dict key names because the ansatz contains a resnet
+            # submodule with identical layer naming — so without ``v``,
+            # ``load_state_dict`` silently succeeds against the wrong architecture
+            # and every post-hoc metric (PDE residual, weak residual, greeks…)
+            # is computed on the unwrapped resnet, which is NOT the function
+            # that was trained.  The resulting numbers can be wrong by 7+ orders
+            # of magnitude (see commit message for the diagnostic numbers).
+            model = _load_model_for_variant(ablation_dir, entry["name"], v=entry)
             if model is not None:
                 gt_slices = _compute_gt_slices(model)
                 res["gt_slices"] = gt_slices
