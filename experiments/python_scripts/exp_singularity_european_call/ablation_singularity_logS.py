@@ -2844,15 +2844,15 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
     fig.suptitle(
         _SUPTITLE
         + "\nThe two formulations carry DIFFERENT norms and are split into separate rows."
-        + "  See pde_residual_by_tau.png for a single-norm strong-form comparison.",
+        + "  See weak_residual_comparison.png for a strong-vs-weak post-hoc comparison.",
         fontsize=9,
     )
     lf_formula_cmp = "\n".join([
         _FORMULA_LF,
         _FORMULA_LF_VPINN,
         r"Note: the two formulations are NOT directly comparable on a shared axis"
-        r" (different norms). pde_residual_by_tau.png evaluates the same strong-form"
-        r" residual on every trained model for a fair comparison.",
+        r" (different norms). weak_residual_comparison.png evaluates strong and weak"
+        r" residuals on the same trained models, at both full-domain and ATM support.",
     ])
     _savefig(fig, "loss_pde.png", lf_formula_cmp, bottom=0.20, legend_outside=True)
 
@@ -2868,23 +2868,13 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
     fig.suptitle(_SUPTITLE, fontsize=10)
     _savefig(fig, "grad_norm.png", _FORMULA_GRAD, legend_outside=True)
 
-    # PDE residual profile — FAIR comparison (strong-form residual, post-training)
-    fig, ax = plt.subplots(figsize=(10, 6))
-    for i, res in enumerate(results):
-        pde = res["metrics"]["pde_residual_tau"]
-        ax.semilogy(pde["tau"], pde["residual"],
-                    label=labels[i], color=colors[i],
-                    linestyle=linestyles[i], linewidth=linewidths[i], marker="o", ms=3)
-    ax.axvline(0.0, color="k", linestyle=":", linewidth=0.8, label=r"$\tau=0$ (singular)")
-    ax.set_xlabel(r"$\tau = T - t$")
-    ax.set_ylabel(r"$\mathbb{E}_{x=\ln K}[|\mathcal{F}[\hat{V}]|]$")
-    pde_title = r"Mean strong-form PDE residual along $x=\ln K$ vs $\tau$"
-    if has_vpinn:
-        pde_title += "\n[Fair comparison — strong-form $\\mathcal{F}[\\hat{V}]$ evaluated post-training for all variants]"
-    ax.set_title(pde_title, fontsize=9)
-    ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
-    fig.suptitle(_SUPTITLE, fontsize=10)
-    _savefig(fig, "pde_residual_by_tau.png", _FORMULA_PDE_TAU, legend_outside=True)
+    # NOTE: a stand-alone "pde_residual_by_tau.png" (strong-form residual at ATM
+    # vs τ, single panel) used to live here.  It is now subsumed by the bottom-
+    # left panel of weak_residual_comparison.png, which plots the exact same
+    # quantity inside the 2x2 strong/weak × full-domain/ATM grid and therefore
+    # offers a fair comparison context.  Keeping a second copy in isolation was
+    # redundant and reinforced the "single-axis" reading the 2x2 plot was
+    # explicitly designed to discourage.
 
     # Fair-vs-unfair overview (side-by-side panel for quick reference)
     if has_vpinn:
