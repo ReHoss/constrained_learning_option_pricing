@@ -2158,6 +2158,97 @@ def _compute_weak_residual_atm_profile(
     return np.array(vals)
 
 
+# Diagnostic-only constants — kept separate from the canonical τ-grids
+# so they can be tuned without touching the canonical comparison plots.
+_DIAGNOSTIC_TAU_SLICES = [0.05 * T, T / 2, 0.98 * T]
+_DIAGNOSTIC_K_MAX      = 200
+_DIAGNOSTIC_N_QUAD     = 1024
+
+
+def _compute_residual_spectrum_profile(
+    model: torch.nn.Module,
+    K_max: int = _DIAGNOSTIC_K_MAX,
+    n_quad: int = _DIAGNOSTIC_N_QUAD,
+) -> dict:
+    r"""Project the strong-form PDE residual onto the sine basis at multiple τ.
+
+    For each $\tau \in$ ``_DIAGNOSTIC_TAU_SLICES`` this computes the squared
+    Fourier sine coefficients
+
+    .. math::
+
+        |\hat{\mathcal{F}}_k(\tau)|^2 \;=\;
+        \left(\int_{X_{lo}}^{X_{hi}}\!\sin\!\left(\tfrac{k\pi(x-X_{lo})}{L}\right)
+        \mathcal{F}[\hat V](x, T-\tau)\,dx\right)^{\!2}, \quad k = 1, \ldots, K_{\max}
+
+    using Gauss-Legendre quadrature with ``n_quad`` nodes.
+
+    Purpose: exposes the spatial-frequency structure of the trained network's
+    residual.  Empirically (hard-IC ansatz, hard_ic_vpinn vs hard_ic_naive):
+
+      * VPINN: spectrum is roughly FLAT at $|\hat{\mathcal{F}}_k|^2 \sim O(1)$
+        across all $k$ — i.e. broadband, low-and-high alike.  Initially we
+        expected a "cliff" at $k = K_{\rm test}^{\rm train}$ (the idea being
+        that VPINN only minimises against the first $K_{\rm test}$ sine modes
+        and ignores higher ones), but the data falsifies that prediction.
+        The flat spectrum is consistent with a near-Dirac contribution to
+        $\partial_{xx} V$ at $x = \ln K$: the hard-IC ansatz
+        $V = g_1\,\mathrm{resnet} + g_2$ with $g_2 = (\mathrm{e}^x - K)^+$
+        is $C^0$ only — the kink in $g_2$ propagates into $V$ at every $t$,
+        and a Dirac in $\partial_{xx} V$ has a flat Fourier spectrum.
+        The weak form sidesteps this via IBP (it never touches
+        $\partial_{xx} V$), so VPINN can train successfully despite the
+        underlying strong-form residual being broadband-large.
+
+      * Strong-form PINN (naive / truncated / smooth): spectrum is flat AND
+        small ($\sim 10^{-6}$) across all $k$, because minimising the
+        pointwise $|\mathcal{F}[V]|^2$ forces the network to fight the
+        Dirac contribution explicitly — at the cost of distorting the
+        global solution (rel_L2 = 0.18 vs VPINN's 0.026).
+
+    This is a *diagnostic-only* measurement: results live in
+    ``comparison_diagnostics/`` (NOT in the canonical comparison folder).
+
+    Returns a dict carrying three flat arrays so it can be unpacked into
+    ``gt_comparison.npz`` via ``**spectrum``:
+
+      * ``residual_spectrum_tau``      shape (n_tau,)
+      * ``residual_spectrum_k_idx``    shape (K_max,)
+      * ``residual_spectrum_F_hat_sq`` shape (n_tau, K_max)
+    """
+    device = p3.DEVICE
+    model.eval()
+
+    quad    = GaussLegendreQuadrature(n_quad, X_LO, X_HI, dtype=torch.float32)
+    x_nodes = quad.nodes.to(device)
+    weights = quad.weights.to(device)
+    L       = X_HI - X_LO
+    k_idx   = torch.arange(1, K_max + 1, dtype=torch.float32, device=device)
+    # phi[k-1, q] = sin(k π (x_q - X_LO) / L)  — shape (K_max, n_quad)
+    phi = torch.sin(
+        k_idx.unsqueeze(1) * math.pi * (x_nodes - X_LO).unsqueeze(0) / L
+    )
+
+    F_hat_sq_all = []
+    for tau_val in _DIAGNOSTIC_TAU_SLICES:
+        t_val = T - tau_val
+        x_in  = x_nodes.detach().clone().requires_grad_(True)
+        t_in  = torch.full_like(x_in, t_val).requires_grad_(True)
+        with torch.enable_grad():
+            V = model(torch.stack([x_in, t_in], dim=1)).squeeze()
+            F_pde = bsm_operator_logS(V, x_in, t_in, r, sigma)
+        F_det = F_pde.detach()  # (n_quad,)
+        # F̂_k = Σ_q w_q · φ_k(x_q) · F(x_q),   shape (K_max,)
+        F_hat = (phi * (weights * F_det).unsqueeze(0)).sum(dim=1)
+        F_hat_sq_all.append(F_hat.pow(2).cpu().numpy())
+
+    return {
+        "residual_spectrum_tau":      np.asarray(_DIAGNOSTIC_TAU_SLICES, dtype=float),
+        "residual_spectrum_k_idx":    k_idx.cpu().numpy().astype(int),
+        "residual_spectrum_F_hat_sq": np.asarray(F_hat_sq_all),
+    }
+
+
 def _compute_gt_slices(model: torch.nn.Module) -> dict:
     """Compute price and greek slices vs Black-Scholes for ground-truth comparison."""
     device = p3.DEVICE
@@ -2249,6 +2340,9 @@ def _compute_gt_slices(model: torch.nn.Module) -> dict:
         # All four use the same τ grid (_WEAK_RES_TAU) for direct overlay.
         "strong_residual_domain":    _compute_strong_residual_domain_profile(model),
         "weak_residual_atm":         _compute_weak_residual_atm_profile(model),
+        # Diagnostic-only — see _compute_residual_spectrum_profile.  Plotted
+        # by _plot_diagnostics into the comparison_diagnostics/ subfolder.
+        **_compute_residual_spectrum_profile(model),
     }
 
 
@@ -3489,6 +3583,72 @@ def _load_model_for_variant(ablation_dir: Path, variant_name: str,
     return None
 
 
+def _plot_diagnostics(results: list[dict], ablation_dir: Path) -> None:
+    """Investigation-only plots, written into a sibling ``comparison_diagnostics/``
+    folder so they do NOT contaminate the canonical ``comparison/`` set.
+
+    Per the CLAUDE.md folder-organisation rule: any plot that probes a specific
+    hypothesis (rather than reporting the canonical ablation result) lives in
+    its own subfolder.  This keeps the canonical set citation-ready and makes
+    it trivial to drop a diagnostic via ``rm -rf comparison_diagnostics/``.
+
+    Currently produces:
+
+    * ``residual_spectrum.png`` — squared Fourier sine coefficients
+      $|\\hat{\\mathcal{F}}_k(\\tau)|^2$ of the strong-form PDE residual, plotted
+      on log-y as a function of mode index $k$, one panel per τ slice in
+      ``_DIAGNOSTIC_TAU_SLICES``.  A vertical line at $k=20$ marks the VPINN
+      training basis size.  Variants whose residual spectrum sits at floor
+      for $k \\le 20$ but jumps sharply for $k > 20$ are the ones VPINN
+      "couldn't see" during training.
+    """
+    diag_dir = ablation_dir / "comparison_diagnostics"
+    valid = [r for r in results
+             if r.get("gt_slices") is not None
+             and "residual_spectrum_F_hat_sq" in (r["gt_slices"] or {})]
+    if not valid:
+        return
+    diag_dir.mkdir(exist_ok=True)
+
+    first_gt = valid[0]["gt_slices"]
+    tau_arr  = np.asarray(first_gt["residual_spectrum_tau"])
+    k_idx    = np.asarray(first_gt["residual_spectrum_k_idx"])
+    n_tau    = len(tau_arr)
+
+    fig, axes = plt.subplots(1, n_tau, figsize=(5 * n_tau, 5), sharey=True)
+    if n_tau == 1:
+        axes = [axes]
+    for j, tau_val in enumerate(tau_arr):
+        ax = axes[j]
+        for r in valid:
+            gt = r["gt_slices"]
+            spec = np.asarray(gt["residual_spectrum_F_hat_sq"])[j]
+            # Floor tiny / non-positive values for log display
+            spec_plot = np.maximum(spec, 1e-30)
+            ax.semilogy(k_idx, spec_plot,
+                        label=r["label"], color=r["color"],
+                        linestyle=r["linestyle"], linewidth=r["linewidth"])
+        ax.axvline(20, color="black", linestyle=":", linewidth=1.0,
+                   label=r"$K_{\rm test}^{\rm train}=20$")
+        ax.set_xlabel(r"sine mode index $k$")
+        if j == 0:
+            ax.set_ylabel(r"$|\hat{\mathcal{F}}_k(\tau)|^2$")
+        ax.set_title(rf"$\tau = {float(tau_val):.3f}$", fontsize=10)
+        ax.grid(True, alpha=0.3, which="both")
+        if j == n_tau - 1:
+            ax.legend(fontsize=7, loc="best")
+    fig.suptitle(
+        r"Diagnostic: Fourier sine spectrum of $\mathcal{F}[\hat V]$"
+        r"  —  flat spectrum $\Rightarrow$ near-Dirac $\partial_{xx} V$ at the kink"
+        "\n" + _SUPTITLE,
+        fontsize=9,
+    )
+    fig.tight_layout()
+    fig.savefig(diag_dir / "residual_spectrum.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Diagnostic plot saved → {diag_dir}/residual_spectrum.png")
+
+
 def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> None:
     """Regenerate plots for an existing ablation directory.
 
@@ -3572,6 +3732,12 @@ def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> No
     ) or 0
     _plot_comparison(results, ablation_dir, iters_for_title, meta["mode"],
                      output_subdir=output_subdir)
+
+    # Diagnostics live in their own sibling folder so the canonical
+    # ``comparison/`` set stays clean.  Only emitted on canonical replots —
+    # filtered ``--exclude-variant`` views deliberately do not touch them.
+    if not extra_exclude:
+        _plot_diagnostics(results, ablation_dir)
 
 
 # ---------------------------------------------------------------------------
