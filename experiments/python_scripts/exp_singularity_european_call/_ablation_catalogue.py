@@ -293,7 +293,12 @@ def _build_variants(mode: str) -> list[dict]:
                  sampler_type="naive", payoff_type="smooth_t",
                  eps=0.0, beta=None,
                  default_num_iterations=100000,
-                 color="#6a1b9a", linestyle="-", linewidth=2.0,
+                 # Teal — distinct from the three blues (naive / truncated /
+                 # smooth), from the VPINN-family purple #7b1fa2 (vpinn_lbfgs
+                 # _is_tau_full_batch — which an earlier draft of this entry
+                 # using #6a1b9a collided with), and from the dark-red /
+                 # orange VPINN entries.
+                 color="#00897b", linestyle="-", linewidth=2.0,
                  **_hard_ic_common),
             # ── Weak-form (VPINN) variants ──────────────────────────────
             dict(name="hard_ic_vpinn",
