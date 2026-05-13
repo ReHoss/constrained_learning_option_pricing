@@ -177,13 +177,19 @@ echo
 # specific experiment parameters.
 EXPDIR_BASENAME="$(basename "$EXPDIR")"
 
+# All slurm-* stdout/stderr files for this run land in a dedicated subfolder
+# so the top of the ablation directory only carries canonical artefacts
+# (configs/, metadata.yaml, per-variant subdirs, comparison/, ...).
+SLURM_LOG_DIR="$EXPDIR/slurm"
+mkdir -p "$SLURM_LOG_DIR"
+
 # ── Phase 2: submit the array (reuses the existing generic worker) ──────────
 echo "Phase 2: sbatch --array=0-$N_LAST_ARRAYID ($N_CONFIGS GPU tasks)..."
 TRAIN_JOB_ID=$(sbatch --parsable \
     --job-name="xp_${EXPDIR_BASENAME}" \
     --array=0-${N_LAST_ARRAYID} \
-    --output="$EXPDIR/slurm-TRAIN-%A_%a.out" \
-    --error="$EXPDIR/slurm-TRAIN-%A_%a.err" \
+    --output="$SLURM_LOG_DIR/slurm-TRAIN-%A_%a.out" \
+    --error="$SLURM_LOG_DIR/slurm-TRAIN-%A_%a.err" \
     --export=NAME_PROJECT="$NAME_PROJECT",PATH_PYTHON_SCRIPT="$PATH_PYTHON_SCRIPT",PATH_FOLDER_CONFIGS="$PATH_FOLDER_CONFIGS",WORKDIR="$WORKDIR",V_ENV_NAME="$V_ENV_NAME" \
     --cpus-per-task="$S_BATCH_CPU_PER_TASK" \
     --time="$S_BATCH_TIME" \
@@ -208,8 +214,8 @@ if [[ -n "$FINALIZE_ARGS" ]]; then
     FINALIZE_JOB_ID=$(sbatch --parsable \
         --job-name="xp_${EXPDIR_BASENAME}_finalize" \
         --dependency="afterok:${TRAIN_JOB_ID}" \
-        --output="$EXPDIR/slurm-FINALIZE.out" \
-        --error="$EXPDIR/slurm-FINALIZE.err" \
+        --output="$SLURM_LOG_DIR/slurm-FINALIZE.out" \
+        --error="$SLURM_LOG_DIR/slurm-FINALIZE.err" \
         --cpus-per-task=4 \
         --time="$S_BATCH_TIME_FINALIZE" \
         --qos="$S_BATCH_QOS" \
@@ -244,10 +250,10 @@ cat <<EOF_SUMMARY
 
   Watch progress:
     squeue -u "\$USER"
-    tail -f $EXPDIR/slurm-TRAIN-${TRAIN_JOB_ID}_0.out
+    tail -f $SLURM_LOG_DIR/slurm-TRAIN-${TRAIN_JOB_ID}_0.out
 EOF_SUMMARY
 if [[ -n "$FINALIZE_JOB_ID" ]]; then
-    echo "    tail -f $EXPDIR/slurm-FINALIZE.out"
+    echo "    tail -f $SLURM_LOG_DIR/slurm-FINALIZE.out"
 fi
 cat <<EOF_SUMMARY
 ──────────────────────────────────────────────────────────────────────
