@@ -2601,6 +2601,12 @@ def _build_payoff(cfg: dict):
         return payoff_exact_logS
     if cfg["payoff_type"] == "smooth":
         return make_payoff_smooth_logS(cfg["beta"])
+    if cfg["payoff_type"] == "smooth_t":
+        # ``smooth_t`` smooths the ansatz $g_2(x, t)$ in time, not the IC
+        # *target*: at $t = T$ the ansatz collapses to the exact payoff,
+        # so any IC-loss computation (only used when ``lam_tc>0``) must
+        # still reference $(e^x - K)^+$.
+        return payoff_exact_logS
     raise ValueError(f"Unknown payoff_type: {cfg['payoff_type']!r}")
 
 
@@ -2611,10 +2617,10 @@ def _build_pinn() -> PINN:
 
 def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
                                beta: float | None = None) -> ETCNN:
-    r"""Hard-IC ansatz: $V(x,t) = \frac{T-t}{T}\,\mathrm{NN}(x,t) + g_2(x)$.
+    r"""Hard-IC ansatz: $V(x,t) = \frac{T-t}{T}\,\mathrm{NN}(x,t) + g_2(x, t)$.
 
     The linear ramp $g_1(t) = (T-t)/T$ vanishes at maturity, completely
-    suppressing the network output at $t = T$, so $V(\cdot, T) = g_2(\cdot)$
+    suppressing the network output at $t = T$, so $V(\cdot, T) = g_2(\cdot, T)$
     holds by construction.  No $\mathcal{L}_{ic}$ soft penalty is required:
     setting ``lam_tc=0`` on the variant skips the (already-zero) IC loss
     computation entirely.
@@ -2622,14 +2628,21 @@ def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
     Parameters
     ----------
     payoff_type :
-        ``"exact"`` (default) sets $g_2(x) = (e^x - K)^+$ — the exact
-        European-call payoff with a kink at $x = \ln K$.  ``"smooth"`` sets
-        $g_2(x) = \mathrm{softplus}(e^x - K, \beta) - \log 2 / \beta$, the
-        $C^\infty$ approximation used by the ``smooth`` variant; pick its
-        sharpness via ``beta`` (default $\beta = 100$).
+        ``"exact"`` (default) sets $g_2(x, t) = (e^x - K)^+$ — the exact
+        European-call payoff with a kink at $x = \ln K$.  Time-constant.
+        ``"smooth"`` sets $g_2(x, t) = \mathrm{softplus}(e^x - K, \beta) -
+        \log 2 / \beta$, the $C^\infty$ spatial smoothing of the payoff
+        (still time-constant); pick its sharpness via ``beta``.
+        ``"smooth_t"`` sets $g_2(S, t) = \tfrac{1}{2}\bigl(S - K + \sqrt{S^2
+        + K^2 - 2 S K e^{-r(T-t)}}\bigr)$ with $S = e^x$ — the Zhang–Guo–Lu
+        (2026) discounted-strike ansatz.  Recovers $(e^x - K)^+$ exactly at
+        $t = T$ and is $C^\infty$ on $(x, t)$ for $t < T$, so the only kink
+        of the network output lives at the single boundary point
+        $(x, t) = (\ln K, T)$.  ``beta`` ignored.
     beta :
         Sharpness parameter for ``payoff_type="smooth"``.  Ignored for
-        ``"exact"``.  Must be provided when ``payoff_type="smooth"``.
+        ``"exact"`` and ``"smooth_t"``.  Must be provided when
+        ``payoff_type="smooth"``.
 
     Backbone is identical to :func:`_build_pinn` (ResNet d_in=2, d_out=1,
     n=50, M=4, L=2) to keep the parameter count comparable.
@@ -2651,6 +2664,25 @@ def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
 
         def g2(x_in: torch.Tensor, t_in: torch.Tensor) -> torch.Tensor:
             return F.softplus(x_in.exp() - K, beta=beta_val) - log2 / beta_val
+    elif payoff_type == "smooth_t":
+        # Zhang-Guo-Lu (2026) discounted-strike formula.  Working in log-S
+        # coordinates: x = ln(S), so S = e^x.  The radicand
+        #     S^2 + K^2 - 2 S K e^{-r(T-t)}
+        # rearranges to (S - K)^2 + 2 S K (1 - e^{-r(T-t)}), which is the
+        # original kink-squared term plus a strictly positive smoothing
+        # correction that vanishes at t = T (i.e. T - t = 0).
+        K_const = float(K)
+        r_const = float(r)
+        T_const = float(T)
+
+        def g2(x_in: torch.Tensor, t_in: torch.Tensor) -> torch.Tensor:
+            S = x_in.exp()
+            discounted_strike_factor = torch.exp(-r_const * (T_const - t_in))
+            discriminant = (
+                S * S + K_const * K_const
+                - 2.0 * S * K_const * discounted_strike_factor
+            )
+            return 0.5 * (S - K_const + torch.sqrt(discriminant))
     else:
         raise ValueError(
             f"_build_hard_ic_ansatz_pinn: unknown payoff_type {payoff_type!r}"

@@ -283,6 +283,18 @@ def _build_variants(mode: str) -> list[dict]:
                  default_num_iterations=100000,
                  color="#42a5f5", linestyle="-", linewidth=2.0,
                  **_hard_ic_common),
+            dict(name="hard_ic_smooth_t",
+                 # Zhang-Guo-Lu (2026) discounted-strike ansatz: g_2 stays
+                 # equal to the exact payoff (e^x - K)^+ at t = T but is
+                 # C^infinity on (x, t) for t < T, so the network only has
+                 # to compensate a *single* boundary kink at (ln K, T)
+                 # rather than the full t-constant kink line x = ln K.
+                 label=r"Hard-IC ansatz — Smooth-in-$t$ $g_2$ (discounted strike)",
+                 sampler_type="naive", payoff_type="smooth_t",
+                 eps=0.0, beta=None,
+                 default_num_iterations=100000,
+                 color="#6a1b9a", linestyle="-", linewidth=2.0,
+                 **_hard_ic_common),
             # ── Weak-form (VPINN) variants ──────────────────────────────
             dict(name="hard_ic_vpinn",
                  label="Hard-IC ansatz — VPINN (weak form, Adam)",
