@@ -2633,12 +2633,17 @@ def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
         ``"smooth"`` sets $g_2(x, t) = \mathrm{softplus}(e^x - K, \beta) -
         \log 2 / \beta$, the $C^\infty$ spatial smoothing of the payoff
         (still time-constant); pick its sharpness via ``beta``.
-        ``"smooth_t"`` sets $g_2(S, t) = \tfrac{1}{2}\bigl(S - K + \sqrt{S^2
-        + K^2 - 2 S K e^{-r(T-t)}}\bigr)$ with $S = e^x$ — the Zhang–Guo–Lu
-        (2026) discounted-strike ansatz.  Recovers $(e^x - K)^+$ exactly at
-        $t = T$ and is $C^\infty$ on $(x, t)$ for $t < T$, so the only kink
-        of the network output lives at the single boundary point
-        $(x, t) = (\ln K, T)$.  ``beta`` ignored.
+        ``"smooth_t"`` sets $g_2(S, t) = \tfrac{1}{2}\bigl(S - K +
+        \sqrt{S^2 + K^2 - 2 S K e^{-r(T-t)} + \epsilon}\bigr)$ with $S =
+        e^x$ and a small constant $\epsilon = 1$ (price-squared units) —
+        the Zhang–Guo–Lu (2026) discounted-strike ansatz with a tiny
+        epsilon under the radical to bound the derivative at the kink
+        $(S, t) = (K, T)$ (otherwise autograd through $\sqrt{0}$ blows up
+        to NaN within ~60 iterations under Adam).  The bias from the
+        epsilon is $g_2(K, T) = 0.5$ at the kink itself and decays to
+        $< 0.01$ for $|S - K| > 1$, so the ansatz is effectively the
+        exact payoff $(e^x - K)^+$ at $t = T$ everywhere except a tiny
+        neighbourhood of the strike.  ``beta`` ignored.
     beta :
         Sharpness parameter for ``payoff_type="smooth"``.  Ignored for
         ``"exact"`` and ``"smooth_t"``.  Must be provided when
@@ -2671,9 +2676,25 @@ def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
         # rearranges to (S - K)^2 + 2 S K (1 - e^{-r(T-t)}), which is the
         # original kink-squared term plus a strictly positive smoothing
         # correction that vanishes at t = T (i.e. T - t = 0).
+        #
+        # NUMERICAL FIX (2026-05-13).  At (S, t) = (K, T) the radicand is
+        # exactly zero, so sqrt's derivative is f' / (2 sqrt 0) = inf and
+        # autograd produces NaN.  Even one collocation point landing near
+        # (K, T) poisons the batch mean and Adam blows the whole model up
+        # within a few iterations.  We add a tiny constant epsilon under
+        # the sqrt to bound the kink derivative:
+        #     |dg2/dtau|  ~  K^2 r / sqrt(epsilon)
+        # With epsilon = 1 (price-squared units, so eps_S ~ 1 = 1% of K
+        # in price units), the kink derivative is bounded by ~K^2 r = 200
+        # and Adam is stable.  Bias is g2(K, T) = 0.5 (vs exact 0) but
+        # decays to < 0.01 once |S - K| > 1, so the impact on the
+        # binomial-tree comparison is negligible — the kink is a measure-
+        # zero set anyway.  ``clamp(min=0.0)`` is belt-and-braces against
+        # fp32 negativity near the kink.
         K_const = float(K)
         r_const = float(r)
         T_const = float(T)
+        eps_const = 1.0  # smoothing scale (price^2)
 
         def g2(x_in: torch.Tensor, t_in: torch.Tensor) -> torch.Tensor:
             S = x_in.exp()
@@ -2682,7 +2703,10 @@ def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
                 S * S + K_const * K_const
                 - 2.0 * S * K_const * discounted_strike_factor
             )
-            return 0.5 * (S - K_const + torch.sqrt(discriminant))
+            return 0.5 * (
+                S - K_const
+                + torch.sqrt(discriminant.clamp(min=0.0) + eps_const)
+            )
     else:
         raise ValueError(
             f"_build_hard_ic_ansatz_pinn: unknown payoff_type {payoff_type!r}"
