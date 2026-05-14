@@ -3931,6 +3931,14 @@ def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> No
             else:
                 logger.warning(f"No model found for variant {entry['name']} — GT plots skipped")
         for res, entry in zip(results, visible_entries):
+            # Per-variant matplotlib rendering is silent (each variant
+            # produces ~6 figures) and on a 9-variant ablation this
+            # phase can take several minutes total.  Log per variant so
+            # the FINALIZE SLURM job is observably progressing instead
+            # of looking hung — surfaced during the 2026-05-14 Adastra
+            # smoke when a SLURM finalize task on HPDA went 7 minutes
+            # without any log output between GT recomputation and exit.
+            logger.info(f"plotting per-variant figures for {entry['name']}")
             _plot_variant(res, ablation_dir / f"variant_{entry['name']}")
         output_subdir = "comparison"
     else:
@@ -3953,6 +3961,7 @@ def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> No
         meta.get("num_iterations")
         if "num_iterations" in meta else meta.get("iters", 0)
     ) or 0
+    logger.info(f"plotting cross-variant comparison figures (-> {output_subdir}/)")
     _plot_comparison(results, ablation_dir, iters_for_title, meta["mode"],
                      output_subdir=output_subdir)
 
@@ -3960,7 +3969,9 @@ def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> No
     # ``comparison/`` set stays clean.  Only emitted on canonical replots —
     # filtered ``--exclude-variant`` views deliberately do not touch them.
     if not extra_exclude:
+        logger.info("plotting diagnostics figures")
         _plot_diagnostics(results, ablation_dir)
+    logger.info("--replot: done")
 
 
 # ---------------------------------------------------------------------------
