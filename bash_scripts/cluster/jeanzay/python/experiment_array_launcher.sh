@@ -85,6 +85,15 @@ S_BATCH_ACCOUNT="akz@v100"
 S_BATCH_CPU_PER_TASK=10
 S_BATCH_GPUS=1                       # one GPU per array task
 
+# Finalize defaults — non-billed prepost partition (pure CPU replot pass).
+# Override with --finalize-partition / --finalize-qos / --finalize-account /
+# --finalize-gpus only when the aggregation step truly needs a GPU or a
+# billed allocation; otherwise leave them as-is so the replot stays free.
+S_BATCH_FINALIZE_PARTITION="prepost"
+S_BATCH_FINALIZE_QOS=""
+S_BATCH_FINALIZE_ACCOUNT=""
+S_BATCH_FINALIZE_GPUS=0
+
 # ── Argument parsing ─────────────────────────────────────────────────────────
 while (( $# )); do
     case "$1" in
@@ -97,6 +106,10 @@ while (( $# )); do
         --time-finalize)     S_BATCH_TIME_FINALIZE="$2"; shift 2 ;;
         --cpus-per-task)     S_BATCH_CPU_PER_TASK="$2";  shift 2 ;;
         --gpus)              S_BATCH_GPUS="$2";          shift 2 ;;
+        --finalize-partition) S_BATCH_FINALIZE_PARTITION="$2"; shift 2 ;;
+        --finalize-qos)      S_BATCH_FINALIZE_QOS="$2";  shift 2 ;;
+        --finalize-account)  S_BATCH_FINALIZE_ACCOUNT="$2"; shift 2 ;;
+        --finalize-gpus)     S_BATCH_FINALIZE_GPUS="$2"; shift 2 ;;
         --venv-name)         V_ENV_NAME="$2";            shift 2 ;;
         --name-project)      NAME_PROJECT="$2";          shift 2 ;;
         -h|--help)
@@ -211,17 +224,24 @@ if [[ -n "$FINALIZE_ARGS" ]]; then
     FINALIZE_ARGS_RESOLVED="${FINALIZE_ARGS//\{EXPDIR\}/$EXPDIR}"
     echo "Phase 3: sbatch --dependency=afterok:$TRAIN_JOB_ID (finalize)..."
     echo "  resolved args:  $FINALIZE_ARGS_RESOLVED"
+    echo "  partition:      $S_BATCH_FINALIZE_PARTITION${S_BATCH_FINALIZE_QOS:+ / qos=$S_BATCH_FINALIZE_QOS}${S_BATCH_FINALIZE_ACCOUNT:+ / account=$S_BATCH_FINALIZE_ACCOUNT}${S_BATCH_FINALIZE_GPUS:+ / gpus=$S_BATCH_FINALIZE_GPUS}"
+    # Optional sbatch flags — only emit when set so the default prepost
+    # routing stays free of qos/account/gres lines that would otherwise
+    # pin the job back to a billed allocation.
+    FINALIZE_OPT_FLAGS=()
+    [[ -n "$S_BATCH_FINALIZE_QOS"     ]] && FINALIZE_OPT_FLAGS+=(--qos="$S_BATCH_FINALIZE_QOS")
+    [[ -n "$S_BATCH_FINALIZE_ACCOUNT" ]] && FINALIZE_OPT_FLAGS+=(--account="$S_BATCH_FINALIZE_ACCOUNT")
+    (( S_BATCH_FINALIZE_GPUS > 0 ))    && FINALIZE_OPT_FLAGS+=(--gres="gpu:$S_BATCH_FINALIZE_GPUS")
     FINALIZE_JOB_ID=$(sbatch --parsable \
         --job-name="xp_${EXPDIR_BASENAME}_finalize" \
         --dependency="afterok:${TRAIN_JOB_ID}" \
         --output="$SLURM_LOG_DIR/slurm-FINALIZE.out" \
         --error="$SLURM_LOG_DIR/slurm-FINALIZE.err" \
+        --partition="$S_BATCH_FINALIZE_PARTITION" \
         --cpus-per-task=4 \
         --time="$S_BATCH_TIME_FINALIZE" \
-        --qos="$S_BATCH_QOS" \
-        --account="$S_BATCH_ACCOUNT" \
+        "${FINALIZE_OPT_FLAGS[@]+"${FINALIZE_OPT_FLAGS[@]}"}" \
         --nodes=1 --ntasks-per-node=1 \
-        --gres=gpu:0 \
         --hint=nomultithread \
         --wrap "cd '$PATH_CONTENT_ROOT' && source '$PATH_VENV_BIN' && python '$PATH_PYTHON_SCRIPT' $FINALIZE_ARGS_RESOLVED")
     echo "  FINALIZE job id: $FINALIZE_JOB_ID"
