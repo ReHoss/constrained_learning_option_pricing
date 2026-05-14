@@ -97,12 +97,19 @@ S_BATCH_SLURM_NTASKS=1
 S_BATCH_TIME=05:00:00
 S_BATCH_CONSTRAINT=GENOA
 
+# Adastra accounts are per-constraint variants (e.g. cad14975_genoa).
+# Auto-derive from the bare -A passed by the user; idempotent if the
+# user already passed the suffixed form.
+# shellcheck source=_lib/account.sh
+source "$PATH_PARENT/_lib/account.sh"
+S_BATCH_ACCOUNT_FULL="$(adastra_account_for_constraint "$S_BATCH_ACCOUNT" "$S_BATCH_CONSTRAINT")"
+
 echo "sbatch options:"
 echo "  --job-name=$BASENAME_SCRIPT"
 echo "  --output=$PATH_LOG_DIR/%j.out"
 echo "  --error=$PATH_LOG_DIR/%j.err"
 echo "  --constraint=$S_BATCH_CONSTRAINT  # CPU GENOA, shared mode (no --exclusive)"
-echo "  --account=$S_BATCH_ACCOUNT"
+echo "  --account=$S_BATCH_ACCOUNT_FULL  (auto-derived from -A $S_BATCH_ACCOUNT)"
 echo "  --cpus-per-task=$S_BATCH_CPU_PER_TASK"
 echo "  --threads-per-core=1"
 echo "  --time=$S_BATCH_TIME"
@@ -118,7 +125,7 @@ sbatch \
   --error="$PATH_LOG_DIR"/%j.err \
   --export=NAME_PROJECT="$NAME_PROJECT",PATH_PYTHON_SCRIPT="$PATH_PYTHON_SCRIPT",ARGS_PYTHON_SCRIPT="${ARGS_PYTHON_SCRIPT:-}",WORKDIR="$WORKDIR",PATH_CONTENT_ROOT="$PATH_CONTENT_ROOT",V_ENV_NAME="$V_ENV_NAME" \
   --constraint="$S_BATCH_CONSTRAINT" \
-  --account="$S_BATCH_ACCOUNT" \
+  --account="$S_BATCH_ACCOUNT_FULL" \
   --nodes=1 \
   --ntasks-per-node="$S_BATCH_SLURM_NTASKS" \
   --cpus-per-task="$S_BATCH_CPU_PER_TASK" \
