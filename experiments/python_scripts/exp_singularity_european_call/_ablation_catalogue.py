@@ -553,6 +553,21 @@ def handle_init_only_cli() -> None:
     configs_dir = ablation_dir / "configs"
     configs_dir.mkdir(exist_ok=True)
     n_configs_written = 0
+    # Smoke-test propagation: when the init step itself runs under
+    # ``--debug`` (and the user did not override ``--num-iterations``),
+    # every per-variant YAML carries ``debug: true`` plus a small
+    # ``num_iterations`` so the array tasks satisfy the smoke-test
+    # threshold guard in ``ablation_singularity_logS.py::main`` and
+    # complete in seconds.  Without this propagation the array tasks
+    # would silently fall back to each variant's full
+    # ``default_num_iterations`` (up to 100k) and burn real GPU-hours
+    # on what was meant to be a plumbing test.  ``200`` matches the
+    # canonical smoke command in this script's top-level docstring.
+    SMOKE_TEST_DEBUG_NUM_ITERATIONS = 200
+    if args.debug and args.num_iterations is None:
+        per_task_num_iterations = SMOKE_TEST_DEBUG_NUM_ITERATIONS
+    else:
+        per_task_num_iterations = args.num_iterations  # may be None
     for v in variants:
         if v["name"] in _PLOT_EXCLUDED_VARIANTS:
             continue
@@ -560,10 +575,21 @@ def handle_init_only_cli() -> None:
             "mode":            args.mode,
             "variant_name":    v["name"],
             "ablation_dir":    str(ablation_dir.resolve()),
-            # ``null`` instructs the worker to use the variant's catalogue
-            # ``default_num_iterations``; edit the YAML between init and
-            # array submission to override on the cluster.
-            "num_iterations":  None,
+            # ``null`` (None) instructs the worker to use the variant's
+            # catalogue ``default_num_iterations``; a non-null value
+            # globally overrides every variant for this ablation.  Edit
+            # the YAML between init and array submission to override on
+            # the cluster.
+            "num_iterations":  per_task_num_iterations,
+            # ``debug: true`` makes the per-task --config-name invocation
+            # set ``args.debug`` so the smoke-test threshold guard is
+            # satisfied for the small smoke iter count above.  See the
+            # YAML-translation block in ``ablation_singularity_logS.py``.
+            "debug":           args.debug,
+            # Persist the ablation-wide master seed so per-task
+            # invocations reproduce the same initialisation regardless
+            # of when SLURM eventually schedules them.
+            "master_seed":     args.seed,
         }
         with open(configs_dir / f"{v['name']}.yaml", "w", encoding="utf-8") as f:
             yaml.safe_dump(cfg, f, allow_unicode=True)

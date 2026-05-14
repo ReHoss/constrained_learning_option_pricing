@@ -4307,6 +4307,15 @@ def main() -> None:
             args.device = cfg_yaml["device"]
         if cfg_yaml.get("resume", False):
             args.resume = True
+        # ``debug: true`` in the YAML — written by --init-only --debug
+        # — flags the per-task run as a smoke test so the threshold
+        # guard below is satisfied even when ``num_iterations`` is well
+        # below SMOKE_TEST_NUM_ITERATIONS_THRESHOLD.  Without this, an
+        # array tasked from a debug init phase would silently fall back
+        # to the variant's full ``default_num_iterations`` and run real
+        # training instead of a smoke.
+        if cfg_yaml.get("debug", False):
+            args.debug = True
         # ``master_seed`` is the only legitimate override path for the
         # ablation-wide seed in the YAML — kept optional so existing config
         # files without it keep working (they fall back to the metadata.yaml
