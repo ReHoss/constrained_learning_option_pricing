@@ -300,6 +300,42 @@ def _build_variants(mode: str) -> list[dict]:
                  # orange VPINN entries.
                  color="#00897b", linestyle="-", linewidth=2.0,
                  **_hard_ic_common),
+            dict(name="hard_ic_cm_static",
+                 # Chen-Mangasarian static hyperbolic mollifier:
+                 #   g_2(S, t) = 0.5 (S - K + sqrt((S-K)^2 + eps^2))
+                 # Time-constant smoothing scale eps (price units).  Gamma
+                 # is a bounded bell of peak height 1/(2 eps) at S = K for
+                 # every t — *including* t = T, so the IC kink is removed
+                 # at the cost of a permanent bias around the strike.
+                 # Companion to hard_ic_smooth (softplus) for a side-by-
+                 # side comparison of two static C-infty mollifications.
+                 label=r"Hard-IC ansatz — Chen–Mangasarian static ($\varepsilon=1$)",
+                 sampler_type="naive", payoff_type="cm_static",
+                 eps=0.0, beta=None, cm_eps=1.0,
+                 default_num_iterations=100000,
+                 # Pink-700 — a fresh hue (no other strong-form variant
+                 # uses pink/magenta) keeping clear separation from the
+                 # three blues, the teal smooth_t and the VPINN family.
+                 color="#c2185b", linestyle="-", linewidth=2.0,
+                 **_hard_ic_common),
+            dict(name="hard_ic_cm_time",
+                 # Chen-Mangasarian with linear time-decaying epsilon:
+                 #   eps(t) = eps_0 * (T - t) / T
+                 #   g_2(S, t) = 0.5 (S - K + sqrt((S-K)^2 + eps(t)^2 + 1))
+                 # eps(T) = 0 recovers the exact payoff at maturity (up to
+                 # the same eps_safe = 1 autograd-safety constant used in
+                 # smooth_t, giving the same g_2(K, T) = 0.5 bias).  The
+                 # *interior* smoothing kernel eps(t)^2 is weaker than
+                 # smooth_t's 2 S K (1 - e^{-r tau}) at the same eps_0.
+                 label=r"Hard-IC ansatz — Chen–Mangasarian time-dep ($\varepsilon_0=1$, linear)",
+                 sampler_type="naive", payoff_type="cm_time",
+                 eps=0.0, beta=None, cm_eps=1.0,
+                 default_num_iterations=100000,
+                 # Green-700 — distinct cool hue close to the teal of
+                 # smooth_t (both are time-dependent ansatze) but clearly
+                 # separable on a comparison plot.
+                 color="#388e3c", linestyle="-", linewidth=2.0,
+                 **_hard_ic_common),
             # ── Weak-form (VPINN) variants ──────────────────────────────
             dict(name="hard_ic_vpinn",
                  label="Hard-IC ansatz — VPINN (weak form, Adam)",

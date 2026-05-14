@@ -2601,9 +2601,10 @@ def _build_payoff(cfg: dict):
         return payoff_exact_logS
     if cfg["payoff_type"] == "smooth":
         return make_payoff_smooth_logS(cfg["beta"])
-    if cfg["payoff_type"] == "smooth_t":
-        # ``smooth_t`` smooths the ansatz $g_2(x, t)$ in time, not the IC
-        # *target*: at $t = T$ the ansatz collapses to the exact payoff,
+    if cfg["payoff_type"] in ("smooth_t", "cm_static", "cm_time"):
+        # These payoff_types smooth the ansatz $g_2(x, t)$ (in time or
+        # space), not the IC *target*: at $t = T$ the ansatz collapses
+        # to the exact payoff (up to a tiny epsilon for autograd safety),
         # so any IC-loss computation (only used when ``lam_tc>0``) must
         # still reference $(e^x - K)^+$.
         return payoff_exact_logS
@@ -2616,7 +2617,8 @@ def _build_pinn() -> PINN:
 
 
 def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
-                               beta: float | None = None) -> ETCNN:
+                               beta: float | None = None,
+                               cm_eps: float = 1.0) -> ETCNN:
     r"""Hard-IC ansatz: $V(x,t) = \frac{T-t}{T}\,\mathrm{NN}(x,t) + g_2(x, t)$.
 
     The linear ramp $g_1(t) = (T-t)/T$ vanishes at maturity, completely
@@ -2634,20 +2636,36 @@ def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
         \log 2 / \beta$, the $C^\infty$ spatial smoothing of the payoff
         (still time-constant); pick its sharpness via ``beta``.
         ``"smooth_t"`` sets $g_2(S, t) = \tfrac{1}{2}\bigl(S - K +
-        \sqrt{S^2 + K^2 - 2 S K e^{-r(T-t)} + \epsilon}\bigr)$ with $S =
-        e^x$ and a small constant $\epsilon = 1$ (price-squared units) —
-        the Zhang–Guo–Lu (2026) discounted-strike ansatz with a tiny
-        epsilon under the radical to bound the derivative at the kink
-        $(S, t) = (K, T)$ (otherwise autograd through $\sqrt{0}$ blows up
-        to NaN within ~60 iterations under Adam).  The bias from the
-        epsilon is $g_2(K, T) = 0.5$ at the kink itself and decays to
-        $< 0.01$ for $|S - K| > 1$, so the ansatz is effectively the
-        exact payoff $(e^x - K)^+$ at $t = T$ everywhere except a tiny
-        neighbourhood of the strike.  ``beta`` ignored.
+        \sqrt{S^2 + K^2 - 2 S K e^{-r(T-t)} + \epsilon_{\mathrm{safe}}}\bigr)$
+        with $S = e^x$ and $\epsilon_{\mathrm{safe}} = 1$ — the
+        Zhang–Guo–Lu (2026) discounted-strike ansatz.  The smoothing
+        kernel under the sqrt is $2SK(1 - e^{-r(T-t)})$ which vanishes
+        at $t = T$; $\epsilon_{\mathrm{safe}}$ keeps autograd safe at
+        the kink $(K, T)$ at the cost of a $0.5$-bias at $S = K$.
+        ``beta``, ``cm_eps`` ignored.
+        ``"cm_static"`` sets $g_2(x, t) = \tfrac{1}{2}\bigl(S - K +
+        \sqrt{(S-K)^2 + \varepsilon^2}\bigr)$ — Chen–Mangasarian
+        hyperbolic mollifier with a *constant* smoothing scale
+        $\varepsilon = $ ``cm_eps`` (price units).  Time-constant.
+        Gamma is a bounded bell of height $\approx 1/(2\varepsilon)$ at
+        every $t$.  ``beta`` ignored.
+        ``"cm_time"`` sets $g_2(x, t) = \tfrac{1}{2}\bigl(S - K +
+        \sqrt{(S-K)^2 + \varepsilon(t)^2 + \epsilon_{\mathrm{safe}}}\bigr)$
+        with $\varepsilon(t) = \varepsilon_0 \cdot (T-t)/T$ vanishing
+        linearly at maturity ($\varepsilon_0 = $ ``cm_eps``).  Same
+        $\epsilon_{\mathrm{safe}} = 1$ trick as ``smooth_t`` to bound
+        the kink derivative at $(K, T)$, so $t = T$ behaviour matches
+        ``smooth_t`` exactly while interior smoothing is *weaker* than
+        ``smooth_t`` (kernel $\varepsilon(t)^2$ vs $2SK(1 - e^{-rt})$).
+        ``beta`` ignored.
     beta :
         Sharpness parameter for ``payoff_type="smooth"``.  Ignored for
-        ``"exact"`` and ``"smooth_t"``.  Must be provided when
-        ``payoff_type="smooth"``.
+        ``"exact"``, ``"smooth_t"``, ``"cm_static"``, ``"cm_time"``.
+        Must be provided when ``payoff_type="smooth"``.
+    cm_eps :
+        Smoothing scale $\varepsilon$ for ``"cm_static"`` (constant) or
+        $\varepsilon_0$ for ``"cm_time"`` (peak value at $t = 0$).  In
+        price units; default $1.0$.  Ignored otherwise.
 
     Backbone is identical to :func:`_build_pinn` (ResNet d_in=2, d_out=1,
     n=50, M=4, L=2) to keep the parameter count comparable.
@@ -2707,6 +2725,40 @@ def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
                 S - K_const
                 + torch.sqrt(discriminant.clamp(min=0.0) + eps_const)
             )
+    elif payoff_type == "cm_static":
+        # Chen-Mangasarian static hyperbolic mollifier.  Replaces |S - K|
+        # with sqrt((S-K)^2 + eps^2), giving a globally C^infty payoff.
+        # The smoothing scale ``eps`` is *constant* in time, so g_2(S, T)
+        # is biased everywhere (not just at the kink) by ~eps/2 around
+        # S = K.  Gamma = d^2 g_2 / dS^2 is the bell-shaped bounded
+        # function eps^2 / (2 ((S-K)^2 + eps^2)^{3/2}) with peak height
+        # 1 / (2 eps) at S = K.
+        K_const = float(K)
+        eps_val = float(cm_eps)
+        eps_sq = eps_val * eps_val
+
+        def g2(x_in: torch.Tensor, t_in: torch.Tensor) -> torch.Tensor:
+            diff = x_in.exp() - K_const
+            return 0.5 * (diff + torch.sqrt(diff * diff + eps_sq))
+    elif payoff_type == "cm_time":
+        # Chen-Mangasarian with linear time-decaying smoothing scale:
+        #     eps(t) = eps_0 * (T - t) / T
+        # so eps(T) = 0 recovers the exact payoff |S - K| at maturity
+        # (modulo the same ``eps_safe = 1`` autograd-safety constant used
+        # in the smooth_t variant — bias g_2(K, T) = 0.5).  Interior
+        # smoothing is *weaker* than smooth_t at the same eps_0: the
+        # kernel under the sqrt is eps(t)^2 = eps_0^2 (T-t)^2 / T^2
+        # whereas smooth_t's kernel is 2 S K (1 - e^{-r tau}).
+        K_const = float(K)
+        T_const = float(T)
+        eps_0 = float(cm_eps)
+        eps_safe = 1.0  # matches smooth_t's epsilon for fair (K, T) comparison
+
+        def g2(x_in: torch.Tensor, t_in: torch.Tensor) -> torch.Tensor:
+            diff = x_in.exp() - K_const
+            eps_t = eps_0 * (T_const - t_in) / T_const
+            radicand = diff * diff + eps_t * eps_t + eps_safe
+            return 0.5 * (diff + torch.sqrt(radicand.clamp(min=0.0)))
     else:
         raise ValueError(
             f"_build_hard_ic_ansatz_pinn: unknown payoff_type {payoff_type!r}"
@@ -3613,6 +3665,7 @@ def _build_model_for_variant(v: dict) -> torch.nn.Module:
         return _build_hard_ic_ansatz_pinn(
             payoff_type=v.get("payoff_type", "exact"),
             beta=v.get("beta"),
+            cm_eps=float(v.get("cm_eps", 1.0)),
         )
     if v["sampler_type"] == "engd":
         return _build_engd_pinn(hidden=v.get("hidden", 32))
@@ -3643,10 +3696,12 @@ def _load_model_for_variant(ablation_dir: Path, variant_name: str,
     if v is not None and v.get("model_type") == "hard_ic_ansatz":
         payoff_type = v.get("payoff_type", "exact")
         payoff_beta = v.get("beta")
+        payoff_cm_eps = float(v.get("cm_eps", 1.0))
 
         def _build_ansatz_for_load() -> torch.nn.Module:
             return _build_hard_ic_ansatz_pinn(payoff_type=payoff_type,
-                                              beta=payoff_beta)
+                                              beta=payoff_beta,
+                                              cm_eps=payoff_cm_eps)
 
         candidates = [_build_ansatz_for_load, _build_pinn]
     for build_fn in candidates:
