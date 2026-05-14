@@ -196,6 +196,107 @@ VARIANTS: list[dict] = [
         "linestyle":      "--",
         "linewidth":      2.0,
     },
+    # ── Mode: noise-sweep ────────────────────────────────────────────────────
+    # Single-axis sweep of the smooth-Gaussian-field noise amplitude added to
+    # V^E (Stage A's *exact* analytical value in --analytical-stage-a mode, so
+    # this is the ground truth perturbed by a smooth random field — mimicking
+    # what an imperfect Stage A NN would produce).  All variants share:
+    #   * the same mollifier shape: Chen-Mangasarian time-dependent
+    #     g_2^B(s, t) = 0.5 (Phi + V^E_noisy + sqrt((Phi - V^E_noisy)^2 + eps(t)^2 + 1))
+    #     with eps(t) = (t1 - t)/t1;
+    #   * the same noise structure: 8 Fourier modes, fixed seed 0;
+    #   * the same training budget (default --iters-b applies);
+    # only ``noise_sigma_frac`` varies, expressed as a fraction of V^E_atm.
+    # σ=0 reduces to bermudan_cm_time bit-for-bit (sanity baseline; the
+    # _smooth_gaussian_field helper sets all Fourier amplitudes to 0).
+    # Companion to study 2's bermudan_cm_time_noisy (σ=1%) for a curve-shaped
+    # sensitivity analysis: how does Stage-A approximation error propagate?
+    {
+        "name":           "bermudan_cm_time_sigma_0",
+        "label":          r"CM time-dep, $\sigma=0\%$ (noise-free baseline)",
+        "tc_type":        "mollifier_cm_time_noisy",
+        "lambda_tc_soft": None,
+        "mode":           "noise-sweep",
+        "moll_eps":       1.0,
+        "noise_sigma_frac": 0.0,
+        "noise_n_modes":  8,
+        "noise_seed":     0,
+        # Viridis sequential palette for the σ axis: dark purple → yellow as
+        # σ grows.  Stays visually distinct from the mollifiers-mode palette.
+        "color":          "#440154",  # viridis 0/5 — dark purple
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
+    {
+        "name":           "bermudan_cm_time_sigma_05",
+        "label":          r"CM time-dep, $\sigma=0.5\%$ of $V^E_{\mathrm{atm}}$",
+        "tc_type":        "mollifier_cm_time_noisy",
+        "lambda_tc_soft": None,
+        "mode":           "noise-sweep",
+        "moll_eps":       1.0,
+        "noise_sigma_frac": 0.005,
+        "noise_n_modes":  8,
+        "noise_seed":     0,
+        "color":          "#414487",  # viridis 1/5
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
+    {
+        "name":           "bermudan_cm_time_sigma_1",
+        "label":          r"CM time-dep, $\sigma=1\%$ of $V^E_{\mathrm{atm}}$",
+        "tc_type":        "mollifier_cm_time_noisy",
+        "lambda_tc_soft": None,
+        "mode":           "noise-sweep",
+        "moll_eps":       1.0,
+        "noise_sigma_frac": 0.01,
+        "noise_n_modes":  8,
+        "noise_seed":     0,
+        "color":          "#2a788e",  # viridis 2/5
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
+    {
+        "name":           "bermudan_cm_time_sigma_2",
+        "label":          r"CM time-dep, $\sigma=2\%$ of $V^E_{\mathrm{atm}}$",
+        "tc_type":        "mollifier_cm_time_noisy",
+        "lambda_tc_soft": None,
+        "mode":           "noise-sweep",
+        "moll_eps":       1.0,
+        "noise_sigma_frac": 0.02,
+        "noise_n_modes":  8,
+        "noise_seed":     0,
+        "color":          "#22a884",  # viridis 3/5
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
+    {
+        "name":           "bermudan_cm_time_sigma_5",
+        "label":          r"CM time-dep, $\sigma=5\%$ of $V^E_{\mathrm{atm}}$",
+        "tc_type":        "mollifier_cm_time_noisy",
+        "lambda_tc_soft": None,
+        "mode":           "noise-sweep",
+        "moll_eps":       1.0,
+        "noise_sigma_frac": 0.05,
+        "noise_n_modes":  8,
+        "noise_seed":     0,
+        "color":          "#7ad151",  # viridis 4/5
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
+    {
+        "name":           "bermudan_cm_time_sigma_10",
+        "label":          r"CM time-dep, $\sigma=10\%$ of $V^E_{\mathrm{atm}}$",
+        "tc_type":        "mollifier_cm_time_noisy",
+        "lambda_tc_soft": None,
+        "mode":           "noise-sweep",
+        "moll_eps":       1.0,
+        "noise_sigma_frac": 0.10,
+        "noise_n_modes":  8,
+        "noise_seed":     0,
+        "color":          "#fde725",  # viridis 5/5 — yellow
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
 ]
 
 _STYLE_BY_NAME: dict[str, dict] = {v["name"]: v for v in VARIANTS}
@@ -2035,7 +2136,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode", type=str, default="tc-enforcement",
-        choices=("tc-enforcement", "mollifiers"),
+        choices=("tc-enforcement", "mollifiers", "noise-sweep"),
         help="Selects which subset of the VARIANTS catalogue is iterated:\n"
              "  tc-enforcement: original hard ETCNN vs soft PINN penalty\n"
              "                  ablation (4 variants).\n"
@@ -2043,6 +2144,12 @@ def main() -> None:
              "                  ansatz study — 5 variants applying different\n"
              "                  mollifiers to V_target(s) = max((K-s)+, V^E),\n"
              "                  with Stage A = exact Black-Scholes (no NN).\n"
+             "                  Implicitly forces --analytical-stage-a.\n"
+             "  noise-sweep:    sensitivity study on the smooth-Gaussian-field\n"
+             "                  perturbation amplitude σ added to V^E in the\n"
+             "                  CM-time ansatz — 6 variants at σ ∈ {0, 0.5%,\n"
+             "                  1%, 2%, 5%, 10%} of V^E_atm.  Same fixed seed\n"
+             "                  across all variants.  Stage A = analytical BS.\n"
              "                  Implicitly forces --analytical-stage-a.",
     )
     args = parser.parse_args()
@@ -2103,9 +2210,12 @@ def main() -> None:
     # independent and the implicit ``--analytical-stage-a`` saves the user
     # from having to type it.  The existing tc-enforcement default is
     # unchanged (user supplies --analytical-stage-a explicitly).
-    if args.mode == "mollifiers" and not args.analytical_stage_a:
+    if args.mode in ("mollifiers", "noise-sweep") and not args.analytical_stage_a:
         args.analytical_stage_a = True
-        logger.info("--mode mollifiers implicitly forces --analytical-stage-a.")
+        logger.info(
+            f"--mode {args.mode} implicitly forces --analytical-stage-a "
+            f"(Stage A = exact Black-Scholes European put)."
+        )
 
     if args.variant is not None:
         names = [v["name"] for v in variants_in_mode]
