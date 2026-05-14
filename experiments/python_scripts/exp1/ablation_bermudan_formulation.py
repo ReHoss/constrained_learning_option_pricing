@@ -50,10 +50,12 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -76,12 +78,23 @@ logger = logging.getLogger(__name__)
 # Variant definitions
 # ---------------------------------------------------------------------------
 
+# Each variant carries an explicit ``mode`` field used to partition the
+# catalogue into independent ablation regimes:
+#   * "tc-enforcement"  — hard ETCNN ansatz vs soft PINN penalty (the
+#                         original axis of this script).
+#   * "mollifiers"      — analytical-Stage-A bermudan study testing how
+#                         the bermudan TC max((K-s)+, V^E(s, t1)) is
+#                         mollified into a smooth g_2^B(s, t).  Stage A is
+#                         the exact Black-Scholes European put — no NN.
+# The CLI flag --mode selects which subset is iterated over.
 VARIANTS: list[dict] = [
+    # ── Mode: tc-enforcement ─────────────────────────────────────────────────
     {
         "name":           "hard_etcnn",
         "label":          "Hard BC (ETCNN ansatz)",
         "tc_type":        "hard",
         "lambda_tc_soft": None,
+        "mode":           "tc-enforcement",
         "color":          "tab:blue",
         "linestyle":      "-",
         "linewidth":      2.5,
@@ -91,6 +104,7 @@ VARIANTS: list[dict] = [
         "label":          r"Soft BC (PINN, $\lambda_{tc}=10$)",
         "tc_type":        "soft",
         "lambda_tc_soft": 10.0,
+        "mode":           "tc-enforcement",
         "color":          "tab:orange",
         "linestyle":      "--",
         "linewidth":      2.0,
@@ -100,6 +114,7 @@ VARIANTS: list[dict] = [
         "label":          r"Soft BC (PINN, $\lambda_{tc}=100$)",
         "tc_type":        "soft",
         "lambda_tc_soft": 100.0,
+        "mode":           "tc-enforcement",
         "color":          "tab:green",
         "linestyle":      "-.",
         "linewidth":      2.0,
@@ -109,8 +124,76 @@ VARIANTS: list[dict] = [
         "label":          r"Soft BC (PINN, $\lambda_{tc}=1000$)",
         "tc_type":        "soft",
         "lambda_tc_soft": 1000.0,
+        "mode":           "tc-enforcement",
         "color":          "tab:red",
         "linestyle":      ":",
+        "linewidth":      2.0,
+    },
+    # ── Mode: mollifiers ─────────────────────────────────────────────────────
+    # Companion family to the European-call study in
+    # exp_singularity_european_call/_ablation_catalogue.py
+    # (hard-ic-ansatz-european-call mode).  Each Stage B variant is an
+    # ETCNN with V_theta(s, t) = (t1 - t)/t1 * NN(s, t) + g_2^B(s, t),
+    # where g_2^B mollifies the Bermudan TC
+    #     V_target(s) = max((K-s)+, V^E_BS(s, t1))
+    # with a chosen mollifier family.  Stage A is the exact Black-Scholes
+    # European put (no NN trained); tc_type "mollifier_*" triggers
+    # train_stage_b_mollifier_ansatz (see below).
+    {
+        "name":           "bermudan_naive_max",
+        "label":          r"Mollifier ansatz — Naïve $\max(\Phi, V^E)$",
+        "tc_type":        "mollifier_naive",
+        "lambda_tc_soft": None,
+        "mode":           "mollifiers",
+        "color":          "#0d47a1",  # blue-900 — naive baseline (cf hard_ic_naive)
+        "linestyle":      "-",
+        "linewidth":      2.5,
+    },
+    {
+        "name":           "bermudan_softplus",
+        "label":          r"Mollifier ansatz — Softplus ($\beta=100$)",
+        "tc_type":        "mollifier_softplus",
+        "lambda_tc_soft": None,
+        "mode":           "mollifiers",
+        "moll_beta":      100.0,
+        "color":          "#42a5f5",  # blue-400 (cf hard_ic_smooth)
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
+    {
+        "name":           "bermudan_cm_static",
+        "label":          r"Mollifier ansatz — Chen–Mangasarian static ($\varepsilon=1$)",
+        "tc_type":        "mollifier_cm_static",
+        "lambda_tc_soft": None,
+        "mode":           "mollifiers",
+        "moll_eps":       1.0,
+        "color":          "#c2185b",  # pink-700 (cf hard_ic_cm_static)
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
+    {
+        "name":           "bermudan_cm_time",
+        "label":          r"Mollifier ansatz — Chen–Mangasarian time-dep ($\varepsilon_0=1$, linear)",
+        "tc_type":        "mollifier_cm_time",
+        "lambda_tc_soft": None,
+        "mode":           "mollifiers",
+        "moll_eps":       1.0,
+        "color":          "#388e3c",  # green-700 (cf hard_ic_cm_time)
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
+    {
+        "name":           "bermudan_cm_time_noisy",
+        "label":          r"Mollifier ansatz — CM time-dep, noisy $V^E$ ($\sigma=1\%$)",
+        "tc_type":        "mollifier_cm_time_noisy",
+        "lambda_tc_soft": None,
+        "mode":           "mollifiers",
+        "moll_eps":       1.0,
+        "noise_sigma_frac": 0.01,  # smooth Gaussian random field amplitude as fraction of |V^E|_max
+        "noise_n_modes":  8,        # number of Fourier modes
+        "noise_seed":     0,        # fixed seed so the perturbation is reproducible across runs
+        "color":          "#7b1fa2",  # purple-700 — distinct from the noise-free cm_time green
+        "linestyle":      "--",
         "linewidth":      2.0,
     },
 ]
@@ -185,6 +268,303 @@ def _build_soft_pinn() -> PINN:
         resnet=ResNet(d_in=2, d_out=1, n=p3.n, M=p3.M, L=p3.L_BLOCK),
         normalizer=InputNormalization(p3.K),
     )
+
+
+# ---------------------------------------------------------------------------
+# Mollifier helpers for the "mollifiers" mode (Stage A analytical).
+# These define g_2^B(s, t) for the Bermudan TC max((K-s)+, V^E(s, t1)) with
+# different mollification strategies — the bermudan analogue of the European-
+# call hard-IC variants in exp_singularity_european_call/_ablation_catalogue.py.
+# ---------------------------------------------------------------------------
+
+# ε_safe (price^2 units) added under every sqrt that could see a zero radicand
+# at (s, t) = (s*, t1).  Same value as the European hard_ic_smooth_t / cm_time
+# variants so the two studies remain fair (price-domain bias of magnitude
+# eps_safe / 2 = 0.5 at the kink, decaying to <0.01 once |a - b| > 1).
+_MOLL_EPS_SAFE = 1.0
+
+
+def _bs_european_put_torch(s: torch.Tensor, t1: float) -> torch.Tensor:
+    """Analytic Black-Scholes European put at (s, t1), maturity p3.T."""
+    K  = float(p3.K)
+    r  = float(p3.r)
+    sigma = float(p3.sigma)
+    tau = float(p3.T) - t1  # remaining maturity, scalar > 0
+    # Vectorised over s; broadcast tau.
+    sqrt_tau = math.sqrt(tau)
+    d1 = (torch.log(s / K) + (r + 0.5 * sigma * sigma) * tau) / (sigma * sqrt_tau)
+    d2 = d1 - sigma * sqrt_tau
+    sqrt2 = math.sqrt(2.0)
+    Nm_d1 = 0.5 * (1.0 - torch.erf(d1 / sqrt2))
+    Nm_d2 = 0.5 * (1.0 - torch.erf(d2 / sqrt2))
+    return K * math.exp(-r * tau) * Nm_d2 - s * Nm_d1
+
+
+def _smooth_gaussian_field(noise_seed: int, n_modes: int, sigma_frac: float,
+                            v_e_max: float) -> Callable[[torch.Tensor], torch.Tensor]:
+    """Build a smooth Gaussian random field xi(s) = sigma * sum_k a_k sin(k_k s + phi_k).
+
+    A single realisation is drawn once at the seed and frozen for the run, so
+    g_2^B stays smooth in s (deterministic perturbation per query, not Monte
+    Carlo).  The bandwidth scales with the asset-price domain so the
+    perturbation has typical wavelength ~ (S_HI - S_LO) / max_k k.
+
+    Args:
+        noise_seed:  RNG seed (variant-level, fixed per variant for repro).
+        n_modes:     Number of sinusoidal modes summed.
+        sigma_frac:  Target RMS amplitude as a fraction of |V^E|_max.
+        v_e_max:     Scale used to anchor sigma to V^E magnitudes.
+
+    Returns:
+        Callable s -> xi(s) (tensor in same dtype/device as s).
+    """
+    rng = np.random.default_rng(noise_seed)
+    # Frequencies span low end of the spectrum: wavelengths from ~ (full domain)
+    # down to ~ (full domain) / n_modes.  Domain length on which we anchor.
+    S_LO = float(p3.S_TRAIN_LO)
+    S_HI = float(p3.S_TRAIN_HI)
+    L = S_HI - S_LO
+    base_k = 2.0 * math.pi / L  # fundamental
+    ks_np     = base_k * (1.0 + np.arange(n_modes))
+    phases_np = rng.uniform(0.0, 2.0 * math.pi, size=n_modes)
+    amps_np   = rng.normal(loc=0.0, scale=1.0, size=n_modes)
+    # Normalise so the empirical std of xi on a dense grid is sigma = sigma_frac * v_e_max.
+    s_dense = np.linspace(S_LO, S_HI, 4000)
+    xi_dense = np.zeros_like(s_dense)
+    for a, k, ph in zip(amps_np, ks_np, phases_np):
+        xi_dense += a * np.sin(k * s_dense + ph)
+    std_pre = xi_dense.std() if xi_dense.std() > 1e-12 else 1.0
+    target_sigma = sigma_frac * v_e_max
+    amps_np = amps_np * (target_sigma / std_pre)
+    logger.info(
+        f"  noise field: n_modes={n_modes}  sigma_frac={sigma_frac}  "
+        f"sigma_target={target_sigma:.3e}  seed={noise_seed}  "
+        f"k_range=[{ks_np[0]:.3f}, {ks_np[-1]:.3f}]"
+    )
+
+    ks_t = torch.tensor(ks_np, dtype=torch.get_default_dtype())
+    ph_t = torch.tensor(phases_np, dtype=torch.get_default_dtype())
+    am_t = torch.tensor(amps_np, dtype=torch.get_default_dtype())
+
+    def xi(s: torch.Tensor) -> torch.Tensor:
+        # Broadcast: s (N,) and modes (M,) -> (N, M) -> (N,)
+        ks  = ks_t.to(s.device, dtype=s.dtype)
+        ph  = ph_t.to(s.device, dtype=s.dtype)
+        am  = am_t.to(s.device, dtype=s.dtype)
+        return (am * torch.sin(ks * s.unsqueeze(-1) + ph)).sum(dim=-1)
+
+    return xi
+
+
+def _build_mollifier_g2(variant: dict) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+    """Build g_2^B(s, t) for one of the ``mollifier_*`` Stage B variants.
+
+    Common structure across all four mollifier families:
+        g_2^B(s, t) = M_epsilon(Phi(s, t),  V^E_noisy(s))
+    where
+        Phi(s, t)   — the put payoff (K - s)+, optionally mollified in s
+        V^E_noisy   — analytic Black-Scholes European put at t1, optionally
+                       perturbed by a smooth Gaussian random field xi(s).
+        M_epsilon   — smooth max:
+                       naive      : exact max
+                       softplus   : (1/beta) log(e^(beta a) + e^(beta b))
+                       cm_static  : 0.5 (a+b + sqrt((a-b)^2 + eps^2))
+                       cm_time    : 0.5 (a+b + sqrt((a-b)^2 + eps(t)^2 + eps_safe))
+
+    Returns a function (s, t) -> g_2^B (both inputs (N,) tensors).
+    """
+    tc_type = variant["tc_type"]
+    K       = float(p3.K)
+    t1      = float(p3.t1)
+    eps0    = float(variant.get("moll_eps", 1.0))
+    beta    = float(variant.get("moll_beta", 100.0))
+    eps_safe = _MOLL_EPS_SAFE
+
+    # ── V^E_noisy(s) ─────────────────────────────────────────────────────
+    if tc_type == "mollifier_cm_time_noisy":
+        # Realise the smooth random field once.  Anchor amplitude to the
+        # ATM European put value so sigma_frac is dimensionless-meaningful.
+        s_atm = torch.tensor([K], dtype=torch.get_default_dtype())
+        v_e_atm = float(_bs_european_put_torch(s_atm, t1).item())
+        xi_fn = _smooth_gaussian_field(
+            noise_seed=int(variant.get("noise_seed", 0)),
+            n_modes=int(variant.get("noise_n_modes", 8)),
+            sigma_frac=float(variant.get("noise_sigma_frac", 0.01)),
+            v_e_max=max(abs(v_e_atm), 1e-6),
+        )
+
+        def v_e_noisy(s: torch.Tensor) -> torch.Tensor:
+            return _bs_european_put_torch(s, t1) + xi_fn(s)
+    else:
+        def v_e_noisy(s: torch.Tensor) -> torch.Tensor:
+            return _bs_european_put_torch(s, t1)
+
+    # ── Phi(s, t) — put payoff, optionally smoothed in s ─────────────────
+    # For the bermudan max((K-s)+, V^E), the (K-s)+ kink at s = K is hidden
+    # beneath V^E (V^E(K, t1) > 0 = (K-s)+(K)), so we leave (K-s)+ as-is for
+    # every variant.  The only kink visible in V_target is the exercise
+    # boundary s = s*, which is what the M_epsilon smoothing addresses.
+    def Phi(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return torch.clamp(K - s, min=0.0)
+
+    # ── M_epsilon — the smoothed max ─────────────────────────────────────
+    if tc_type == "mollifier_naive":
+        def g2_b(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+            return torch.maximum(Phi(s, t), v_e_noisy(s))
+    elif tc_type == "mollifier_softplus":
+        # Stable log-sum-exp form of the soft-max:
+        #     M_beta(a, b) = (1/beta) log(e^{beta a} + e^{beta b})
+        #                 = M + (1/beta) log(e^{beta (a-M)} + e^{beta (b-M)})
+        def g2_b(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+            a = Phi(s, t)
+            b = v_e_noisy(s)
+            M = torch.maximum(a, b)
+            return M + torch.log(
+                torch.exp(beta * (a - M)) + torch.exp(beta * (b - M))
+            ) / beta
+    elif tc_type == "mollifier_cm_static":
+        eps_sq = eps0 * eps0
+
+        def g2_b(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+            a = Phi(s, t)
+            b = v_e_noisy(s)
+            diff = a - b
+            return 0.5 * (a + b + torch.sqrt(diff * diff + eps_sq))
+    elif tc_type in ("mollifier_cm_time", "mollifier_cm_time_noisy"):
+        def g2_b(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+            a = Phi(s, t)
+            b = v_e_noisy(s)
+            eps_t = eps0 * (t1 - t) / t1
+            diff = a - b
+            radicand = diff * diff + eps_t * eps_t + eps_safe
+            return 0.5 * (a + b + torch.sqrt(radicand.clamp(min=0.0)))
+    else:
+        raise ValueError(
+            f"_build_mollifier_g2: unknown tc_type {tc_type!r}"
+        )
+
+    return g2_b
+
+
+# ---------------------------------------------------------------------------
+# Stage B training for mollifier ansatze (no soft TC penalty — hard IC via
+# ETCNN construction).  Mirrors the Adam + cosine-LR schedule of
+# train_stage_b_soft_pinn so wall-clock and metrics stay comparable.
+# ---------------------------------------------------------------------------
+
+def train_stage_b_mollifier_ansatz(
+    variant: dict,
+    total_iters: int,
+    log_every: int | None = None,
+) -> tuple[torch.nn.Module, dict]:
+    """Train an ETCNN Stage B model with a mollified g_2^B(s, t).
+
+    The ansatz is V_theta(s, t) = (t1 - t)/t1 * NN(s, t) + g_2^B(s, t),
+    so the Bermudan TC is enforced exactly (up to the mollifier bias) at
+    t = t1 and the network only sees a PDE-residual loss on [0, t1].
+    """
+    from learning_option_pricing.models.etcnn import ETCNN
+
+    if log_every is None:
+        log_every = p3._adaptive_log_every(total_iters)
+
+    label = variant["name"]
+    t1    = float(p3.t1)
+
+    # ── Ansatz construction ─────────────────────────────────────────────────
+    def g1(s, t):
+        return (t1 - t) / t1
+
+    g2_b = _build_mollifier_g2(variant)
+    resnet = ResNet(d_in=2, d_out=1, n=p3.n, M=p3.M, L=p3.L_BLOCK)
+    normalizer = InputNormalization(p3.K)
+    model = ETCNN(resnet=resnet, g1=g1, g2=g2_b, normalizer=normalizer)
+    model.to(p3.DEVICE)
+
+    # ── Optimiser + LR schedule (same as soft variants) ─────────────────────
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01, betas=(0.9, 0.999))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer, p3.build_lr_lambda(total_iters)
+    )
+
+    history: dict = {
+        "loss": [], "loss_f": [], "loss_tc": [],
+        "iter": [], "grad_norm": [], "lr": [],
+        "tc_enforced": True,
+    }
+    best_loss = float("inf")
+    best_state: dict | None = None
+    best_iter = 0
+
+    model.train()
+    t0 = time.time()
+    t_prev = t0
+
+    for iteration in range(1, total_iters + 1):
+        optimizer.zero_grad()
+
+        s_f = (
+            torch.rand(p3.N_F, device=p3.DEVICE) * (p3.S_TRAIN_HI - p3.S_TRAIN_LO)
+            + p3.S_TRAIN_LO
+        ).requires_grad_(True)
+        t_f = (
+            torch.rand(p3.N_F, device=p3.DEVICE) * t1
+        ).requires_grad_(True)
+
+        x_f = torch.stack([s_f, t_f], dim=1)
+        V_f = model(x_f).squeeze()
+        F_f = p3.bsm_operator(V_f, s_f, t_f, p3.r, p3.q, p3.sigma)
+        loss_f = (F_f ** 2).mean()
+        loss = p3.LAMBDA_F * loss_f
+
+        loss.backward()
+        total_norm = sum(
+            p.grad.detach().norm(2).item() ** 2
+            for p in model.parameters() if p.grad is not None
+        ) ** 0.5
+        optimizer.step()
+        scheduler.step()
+
+        if loss.item() < best_loss and math.isfinite(loss.item()):
+            best_loss = loss.item()
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_iter = iteration
+
+        if iteration % log_every == 0 or iteration == 1:
+            lr_now    = optimizer.param_groups[0]["lr"]
+            t_now     = time.time()
+            elapsed   = t_now - t0
+            iter_rate = (t_now - t_prev) / log_every if iteration > 1 else float("nan")
+            t_prev    = t_now
+
+            history["loss"].append(loss.item())
+            history["loss_f"].append(loss_f.item())
+            history["loss_tc"].append(0.0)  # exactly zero by construction
+            history["grad_norm"].append(total_norm)
+            history["lr"].append(lr_now)
+            history["iter"].append(iteration)
+
+            logger.info(
+                f"[{label}] iter {iteration:>6d}/{total_iters}  "
+                f"loss={loss.item():.4e}  Lf={loss_f.item():.4e}  "
+                f"Ltc=0 (hard)  |g|={total_norm:.2e}  "
+                f"lr={lr_now:.5f}  ({elapsed:.1f}s, {iter_rate:.3f}s/iter)"
+            )
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+        logger.info(
+            f"[{label}] Restored best model from iter {best_iter} "
+            f"(best_loss={best_loss:.4e}; last iter loss was {loss.item():.4e})"
+        )
+    model.eval()
+    total_elapsed = time.time() - t0
+    per_iter = total_elapsed / total_iters
+    logger.info(
+        f"[{label}] Training done — total={total_elapsed:.1f}s  "
+        f"({per_iter:.3f}s/iter)  best_loss={best_loss:.4e} at iter {best_iter}"
+    )
+    return model, history
 
 
 # ---------------------------------------------------------------------------
@@ -1653,6 +2033,18 @@ def main() -> None:
              " --ablation-dir <ablation_dir> plus any iter / stage-A "
              "overrides recorded by the init step.",
     )
+    parser.add_argument(
+        "--mode", type=str, default="tc-enforcement",
+        choices=("tc-enforcement", "mollifiers"),
+        help="Selects which subset of the VARIANTS catalogue is iterated:\n"
+             "  tc-enforcement: original hard ETCNN vs soft PINN penalty\n"
+             "                  ablation (4 variants).\n"
+             "  mollifiers:     bermudan analogue of the European-call hard-IC\n"
+             "                  ansatz study — 5 variants applying different\n"
+             "                  mollifiers to V_target(s) = max((K-s)+, V^E),\n"
+             "                  with Stage A = exact Black-Scholes (no NN).\n"
+             "                  Implicitly forces --analytical-stage-a.",
+    )
     args = parser.parse_args()
 
     # ── Config-driven entry point (YAML) ────────────────────────────────────
@@ -1694,10 +2086,31 @@ def main() -> None:
             args.n_f = int(cfg_yaml["n_f"])
         if "device" in cfg_yaml and args.device == "auto":
             args.device = cfg_yaml["device"]
+        if "mode" in cfg_yaml and cfg_yaml["mode"] is not None:
+            args.mode = cfg_yaml["mode"]
+
+    # ── Filter the catalogue to the requested mode ──────────────────────────
+    # Every site below that iterated over the full VARIANTS list now uses
+    # ``variants_in_mode`` so that "tc-enforcement" and "mollifiers" runs see
+    # only their own catalogue rows.  The original module-level VARIANTS is
+    # the union of both modes and stays intact for catalogue lookups.
+    variants_in_mode = [v for v in VARIANTS if v.get("mode") == args.mode]
+    if not variants_in_mode:
+        parser.error(f"--mode {args.mode!r} produced an empty variant list — check the catalogue.")
+
+    # Implicit-flag: ``mollifiers`` always uses analytical Stage A (no NN
+    # Stage A) and produces no shared etcnn_a.pt, so the variants are
+    # independent and the implicit ``--analytical-stage-a`` saves the user
+    # from having to type it.  The existing tc-enforcement default is
+    # unchanged (user supplies --analytical-stage-a explicitly).
+    if args.mode == "mollifiers" and not args.analytical_stage_a:
+        args.analytical_stage_a = True
+        logger.info("--mode mollifiers implicitly forces --analytical-stage-a.")
+
     if args.variant is not None:
-        names = [v["name"] for v in VARIANTS]
+        names = [v["name"] for v in variants_in_mode]
         if args.variant not in names:
-            parser.error(f"--variant {args.variant!r} not in VARIANTS catalogue. "
+            parser.error(f"--variant {args.variant!r} not in mode {args.mode!r} catalogue. "
                          f"Available: {names}")
 
     # Smoke-test guard: any run with an iteration budget far below the real-run
@@ -1759,7 +2172,7 @@ def main() -> None:
             )
         ablation_dir.mkdir(parents=True, exist_ok=True)
         (ablation_dir / "comparison").mkdir(exist_ok=True)
-        for v in VARIANTS:
+        for v in variants_in_mode:
             for sub in ("training_metrics", "pricing", "greeks", "diagnostics", "models"):
                 (ablation_dir / f"variant_{v['name']}" / sub).mkdir(parents=True, exist_ok=True)
 
@@ -1785,8 +2198,9 @@ def main() -> None:
                 "variants": [
                     {k: vv for k, vv in var.items()
                      if k not in ("color", "linestyle", "linewidth")}
-                    for var in VARIANTS
+                    for var in variants_in_mode
                 ],
+                "mode":               args.mode,
                 "iters_a":            args.iters_a,
                 "iters_b":            args.iters_b,
                 "weight_decay":       args.weight_decay,
@@ -1804,10 +2218,11 @@ def main() -> None:
         # user's intent without re-parsing the launcher's arguments.
         configs_dir = ablation_dir / "configs"
         configs_dir.mkdir(exist_ok=True)
-        for v in VARIANTS:
+        for v in variants_in_mode:
             cfg = {
                 "variant_name":       v["name"],
                 "ablation_dir":       str(ablation_dir.resolve()),
+                "mode":               args.mode,
                 "iters_a":            args.iters_a,
                 "iters_b":            args.iters_b,
                 "weight_decay":       args.weight_decay,
@@ -1852,9 +2267,9 @@ def main() -> None:
     # When --variant NAME is set, only create the subfolders for the named
     # variant — other tasks of the array own the other variants' folders.
     variants_to_create = (
-        [v for v in VARIANTS if v["name"] == args.variant]
+        [v for v in variants_in_mode if v["name"] == args.variant]
         if args.variant is not None
-        else VARIANTS
+        else variants_in_mode
     )
     for v in variants_to_create:
         vdir = ablation_dir / f"variant_{v['name']}"
@@ -1886,7 +2301,7 @@ def main() -> None:
     logger.info(f"  Device: {p3.DEVICE}")
     logger.info(f"  iters_a={args.iters_a}  iters_b={args.iters_b}")
     logger.info(f"  N_TC={p3.N_TC}  N_F={p3.N_F}  LAMBDA_F={p3.LAMBDA_F}  SEED={p3.SEED}")
-    logger.info(f"  variants: {[v['name'] for v in VARIANTS]}")
+    logger.info(f"  variants: {[v['name'] for v in variants_in_mode]}")
     logger.info(f"  output:   {ablation_dir}")
     logger.info(f"  log:      {log_path}")
 
@@ -1959,7 +2374,7 @@ def main() -> None:
             "variants": [
                 {k: v for k, v in var.items()
                  if k not in ("color", "linestyle", "linewidth")}
-                for var in VARIANTS
+                for var in variants_in_mode
             ],
             "iters_a":            args.iters_a,
             "iters_b":            args.iters_b,
@@ -1980,9 +2395,9 @@ def main() -> None:
     # array tasks pulling --variant from $SLURM_ARRAY_TASK_ID get identical
     # hyperparameters to a single-process run.
     variants_to_run = (
-        [v for v in VARIANTS if v["name"] == args.variant]
+        [v for v in variants_in_mode if v["name"] == args.variant]
         if args.variant is not None
-        else VARIANTS
+        else variants_in_mode
     )
 
     for idx, variant in enumerate(variants_to_run):
@@ -1992,7 +2407,7 @@ def main() -> None:
 
         logger.info("")
         logger.info("=" * 70)
-        logger.info(f"VARIANT {idx + 1}/{len(VARIANTS)}: {vname}  (tc_type={tc_type})")
+        logger.info(f"VARIANT {idx + 1}/{len(variants_in_mode)}: {vname}  (tc_type={tc_type})")
         logger.info("=" * 70)
 
         t_start = time.time()
@@ -2069,6 +2484,25 @@ def main() -> None:
                         yaml.dump(_meta, _f, default_flow_style=False,
                                   sort_keys=False, width=float("inf"))
 
+        elif tc_type.startswith("mollifier_"):
+            # -----------------------------------------------------------
+            # Mollifier-mode variant — analytical Stage A + ETCNN ansatz
+            # with a smoothed-max g_2^B(s, t).  No soft TC penalty
+            # (hard IC via construction).  See train_stage_b_mollifier_ansatz
+            # for the per-variant g_2^B definition.
+            # -----------------------------------------------------------
+            torch.manual_seed(p3.SEED)
+            model_b, hist_b = train_stage_b_mollifier_ansatz(
+                variant=variant,
+                total_iters=args.iters_b,
+            )
+            torch.save(model_b.state_dict(), vdir / "models" / "stage_b_model.pt")
+            logger.info(f"  Model saved to {vdir / 'models' / 'stage_b_model.pt'}")
+
+            s_eval_arr, bt_prices, nn_prices, mae_bt, rel_l2_bt = (
+                _evaluate_vs_binomial_tree(model_b)
+            )
+
         else:
             # -----------------------------------------------------------
             # Soft BC variant — plain PINN + penalty
@@ -2143,7 +2577,7 @@ def main() -> None:
     # Save summary
     # ------------------------------------------------------------------
     summary: dict = {}
-    for v, res in zip(VARIANTS, results):
+    for v, res in zip(variants_in_mode, results):
         m = res.get("metrics", {}) or {}
         summary[v["name"]] = {
             "mae_bt":       float(res["mae_bt"]),
@@ -2195,11 +2629,11 @@ def main() -> None:
     logger.info("=" * 70)
     logger.info(
         f"  Total wall-clock time: {total_elapsed:.1f}s  "
-        f"({total_elapsed/len(VARIANTS):.1f}s per variant)"
+        f"({total_elapsed/len(variants_in_mode):.1f}s per variant)"
     )
     logger.info(f"  {'Variant':<25} {'MAE':>12} {'rel_L2':>12} {'TC_MAE':>12} {'GEI':>8}")
     logger.info("  " + "-" * 72)
-    for v, res in zip(VARIANTS, results):
+    for v, res in zip(variants_in_mode, results):
         m      = res.get("metrics") or {}
         tc_mae = m.get("tc_mae", float("nan"))
         gei    = m.get("gei",    float("nan"))
