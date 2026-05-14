@@ -168,10 +168,10 @@ class _VPINNLossForwardLogS(torch.nn.Module):
     the second-order term (boundary terms vanish because $\phi_k(X_{lo})=\phi_k(X_{hi})=0$):
 
         $R_{i,k} = \int_{X_{lo}}^{X_{hi}}
-            \bigl[\partial_t V\cdot\phi_k
+            \left[\partial_t V\cdot\phi_k
              - \tfrac{\sigma^2}{2}\,\partial_x V\cdot\phi_k'
              + \mu\,\partial_x V\cdot\phi_k
-             - r\,V\cdot\phi_k\bigr]\,dx = 0.$
+             - r\,V\cdot\phi_k\right]\,dx = 0.$
 
     Test functions: $\phi_k(x)=\sin\!\left(\tfrac{k\pi(x-X_{lo})}{X_{hi}-X_{lo}}\right)$.
     Spatial integral approximated by Gauss-Legendre quadrature.
@@ -2635,22 +2635,22 @@ def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
         ``"smooth"`` sets $g_2(x, t) = \mathrm{softplus}(e^x - K, \beta) -
         \log 2 / \beta$, the $C^\infty$ spatial smoothing of the payoff
         (still time-constant); pick its sharpness via ``beta``.
-        ``"smooth_t"`` sets $g_2(S, t) = \tfrac{1}{2}\bigl(S - K +
-        \sqrt{S^2 + K^2 - 2 S K e^{-r(T-t)} + \epsilon_{\mathrm{safe}}}\bigr)$
+        ``"smooth_t"`` sets $g_2(S, t) = \frac{1}{2}\left(S - K +
+        \sqrt{S^2 + K^2 - 2 S K e^{-r(T-t)} + \epsilon_{\mathrm{safe}}}\right)$
         with $S = e^x$ and $\epsilon_{\mathrm{safe}} = 1$ — the
         Zhang–Guo–Lu (2026) discounted-strike ansatz.  The smoothing
         kernel under the sqrt is $2SK(1 - e^{-r(T-t)})$ which vanishes
         at $t = T$; $\epsilon_{\mathrm{safe}}$ keeps autograd safe at
         the kink $(K, T)$ at the cost of a $0.5$-bias at $S = K$.
         ``beta``, ``cm_eps`` ignored.
-        ``"cm_static"`` sets $g_2(x, t) = \tfrac{1}{2}\bigl(S - K +
-        \sqrt{(S-K)^2 + \varepsilon^2}\bigr)$ — Chen–Mangasarian
+        ``"cm_static"`` sets $g_2(x, t) = \frac{1}{2}\left(S - K +
+        \sqrt{(S-K)^2 + \varepsilon^2}\right)$ — Chen–Mangasarian
         hyperbolic mollifier with a *constant* smoothing scale
         $\varepsilon = $ ``cm_eps`` (price units).  Time-constant.
         Gamma is a bounded bell of height $\approx 1/(2\varepsilon)$ at
         every $t$.  ``beta`` ignored.
-        ``"cm_time"`` sets $g_2(x, t) = \tfrac{1}{2}\bigl(S - K +
-        \sqrt{(S-K)^2 + \varepsilon(t)^2 + \epsilon_{\mathrm{safe}}}\bigr)$
+        ``"cm_time"`` sets $g_2(x, t) = \frac{1}{2}\left(S - K +
+        \sqrt{(S-K)^2 + \varepsilon(t)^2 + \epsilon_{\mathrm{safe}}}\right)$
         with $\varepsilon(t) = \varepsilon_0 \cdot (T-t)/T$ vanishing
         linearly at maturity ($\varepsilon_0 = $ ``cm_eps``).  Same
         $\epsilon_{\mathrm{safe}} = 1$ trick as ``smooth_t`` to bound
@@ -3231,55 +3231,87 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters: int, mode: 
     fig.savefig(comp_dir / "metrics_bar.png", dpi=150)
     plt.close(fig)
 
-    # Payoff comparison — exact vs smooth softplus (analytical, no model needed)
-    smooth_results = [r for r in results
-                      if r.get("payoff_type") == "smooth" and r.get("beta") is not None]
-    if smooth_results:
+    # Payoff comparison — exact vs every mollified g_2 shape used in the run.
+    # Covers softplus (``smooth``), Zhang-Guo-Lu discounted-strike (``smooth_t``),
+    # and Chen-Mangasarian static / time-dependent (``cm_static`` / ``cm_time``).
+    # The static mollifiers are time-invariant so their t = 0 and t = T panels
+    # are identical; the time-dependent ones are shown at both ends so the
+    # reader can see the maturity recovery directly.
+    _moll_payoffs = {"smooth", "smooth_t", "cm_static", "cm_time"}
+    mollifier_results = [r for r in results if r.get("payoff_type") in _moll_payoffs]
+    if mollifier_results:
         with torch.no_grad():
             x_fine    = torch.linspace(X_EVAL_LO, X_EVAL_HI, 600)
             phi_exact = payoff_exact_logS(x_fine).numpy()
+            t_zero    = torch.zeros_like(x_fine)
+            t_term    = torch.full_like(x_fine, float(T))
         S_fine = x_fine.exp().numpy()
 
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-
-        ax1.plot(S_fine, phi_exact, color="k", linewidth=2.5,
-                 label=r"Exact: $(S-K)^+$", zorder=10)
-        for sv in smooth_results:
-            beta = sv["beta"]
+        def _eval_g2(sv: dict, t_in: torch.Tensor) -> np.ndarray:
+            """Re-instantiate the mollifier g_2 from a summary entry and evaluate."""
+            ansatz_model = _build_hard_ic_ansatz_pinn(
+                payoff_type=sv["payoff_type"],
+                beta=sv.get("beta"),
+                cm_eps=float(sv.get("cm_eps", 1.0)),
+            )
             with torch.no_grad():
-                phi_sm = make_payoff_smooth_logS(beta)(x_fine).numpy()
-            ax1.plot(S_fine, phi_sm, color=sv["color"], linestyle=sv["linestyle"],
-                     linewidth=sv["linewidth"],
-                     label=rf"$\tilde{{\Phi}}_{{\beta={beta}}}$  ({sv['label']})")
-        ax1.axvline(K, color="gray", linestyle=":", linewidth=1.0, label=rf"$K={K:.0f}$ (ATM)")
-        ax1.set_xlabel(r"$S = e^x$"); ax1.set_ylabel(r"Payoff $\Phi(x)$")
-        ax1.set_title("Terminal condition — exact vs smooth payoff")
-        ax1.legend(fontsize=9); ax1.grid(True, alpha=0.3)
+                return ansatz_model._g2(x_fine, t_in).numpy()
 
-        ax2.set_title(r"Smoothing error $|\tilde{\Phi}_\beta(x) - (S-K)^+|$")
-        for sv in smooth_results:
-            beta = sv["beta"]
-            with torch.no_grad():
-                phi_sm = make_payoff_smooth_logS(beta)(x_fine).numpy()
-            err = np.abs(phi_sm - phi_exact)
-            ax2.plot(S_fine, err, color=sv["color"], linestyle=sv["linestyle"],
-                     linewidth=sv["linewidth"],
-                     label=rf"$\beta={beta}$,  max$={err.max():.2e}$")
-        ax2.axvline(K, color="gray", linestyle=":", linewidth=1.0, label=rf"$K={K:.0f}$ (ATM)")
-        ax2.set_xlabel(r"$S = e^x$"); ax2.set_ylabel("Absolute error")
-        ax2.set_yscale("log")
-        ax2.legend(fontsize=9); ax2.grid(True, alpha=0.3)
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharex="col")
+        (ax_t0, ax_tT), (ax_err_t0, ax_err_tT) = axes
 
-        fig.suptitle(f"Payoff smoothing  |  {_SUPTITLE}", fontsize=10)
+        for ax, t_in, title in (
+            (ax_t0, t_zero,
+             rf"$g_2(S,\, t=0)$ — maximum interior smoothing"),
+            (ax_tT, t_term,
+             rf"$g_2(S,\, t=T)$ — recovery at maturity"),
+        ):
+            ax.plot(S_fine, phi_exact, color="k", linewidth=2.5,
+                    label=r"Exact $(S-K)^+$", zorder=10)
+            for sv in mollifier_results:
+                vals = _eval_g2(sv, t_in)
+                ax.plot(S_fine, vals,
+                        color=sv["color"], linestyle=sv["linestyle"],
+                        linewidth=sv["linewidth"],
+                        label=sv["label"])
+            ax.axvline(K, color="gray", linestyle=":", linewidth=1.0,
+                       label=rf"$K={K:.0f}$ (ATM)")
+            ax.set_ylabel(r"$g_2(S, t)$")
+            ax.set_title(title, fontsize=10)
+            ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+
+        for ax, t_in, title in (
+            (ax_err_t0, t_zero,
+             rf"Smoothing error $|g_2(S,\, 0) - (S-K)^+|$ — $t=0$"),
+            (ax_err_tT, t_term,
+             rf"Maturity bias $|g_2(S,\, T) - (S-K)^+|$ — $t=T$"),
+        ):
+            for sv in mollifier_results:
+                err = np.abs(_eval_g2(sv, t_in) - phi_exact)
+                ax.plot(S_fine, err,
+                        color=sv["color"], linestyle=sv["linestyle"],
+                        linewidth=sv["linewidth"],
+                        label=rf"{sv['name']}  max$={err.max():.2e}$")
+            ax.axvline(K, color="gray", linestyle=":", linewidth=1.0)
+            ax.set_xlabel(r"$S = e^x$"); ax.set_ylabel("|error|")
+            ax.set_yscale("symlog", linthresh=1e-3)
+            ax.set_title(title, fontsize=10)
+            ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+
+        fig.suptitle(f"Mollified payoff approximations  |  {_SUPTITLE}", fontsize=10)
         _formula_payoff = "\n".join([
-            r"Exact:  $\Phi(x) = (e^x-K)^+$   — discontinuous slope at $x=\ln K$"
-            r" (source of the terminal-condition singularity)",
-            r"Smooth: $\tilde{\Phi}_\beta(x) = \frac{1}{\beta}\ln(1+e^{\beta(e^x-K)})"
-            r" - \frac{\ln 2}{\beta}$   (softplus, centered at $\tilde{\Phi}_\beta(\ln K)=0$)",
-            r"Max error: $\max_x|\tilde{\Phi}_\beta-\Phi| = \frac{\ln 2}{\beta}$"
-            r"   attained at $x=\ln K$ (ATM)",
+            r"Exact: $\Phi(S) = (S-K)^+$ — discontinuous slope at $S = K$"
+            r" (source of the IC singularity)",
+            r"Softplus: $\tilde{\Phi}_\beta(S) = \frac{1}{\beta}\ln(1+e^{\beta(S-K)})"
+            r" - \frac{\ln 2}{\beta}$;  max error $\frac{\ln 2}{\beta}$ at $S=K$ for every $t$",
+            r"smooth_t: $\frac{1}{2}\left(S - K + \sqrt{S^2+K^2-2SKe^{-r(T-t)}+1}\right)$"
+            r"   — exact at $t=T$ modulo $g_2(K,T)=0.5$",
+            r"cm_static: $\frac{1}{2}\left(S - K + \sqrt{(S-K)^2+\varepsilon^2}\right)$"
+            r" with $\varepsilon=1$; max error $\varepsilon/2$ at $S=K$ for every $t$",
+            r"cm_time: $\frac{1}{2}\left(S - K + \sqrt{(S-K)^2+\varepsilon(t)^2+1}\right)$"
+            r" with $\varepsilon(t)=(T-t)/T$; matches smooth_t at $t=T$",
         ])
-        _savefig(fig, "payoff_comparison.png", _formula_payoff, bottom=0.20)
+        _savefig(fig, "payoff_comparison.png", _formula_payoff, bottom=0.28)
 
     # Terminal-condition loss — split into two rows like loss_pde.png because the
     # strong-form variants use a Monte-Carlo MSE at randomly sampled (x_i, T)
