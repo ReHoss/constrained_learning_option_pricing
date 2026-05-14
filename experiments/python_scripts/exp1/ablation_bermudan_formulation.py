@@ -297,6 +297,89 @@ VARIANTS: list[dict] = [
         "linestyle":      "-",
         "linewidth":      2.0,
     },
+    # ── Mode: eps-sweep ──────────────────────────────────────────────────────
+    # Single-axis sweep of the mollifier smoothing scale eps_0 in the CM time-
+    # dependent ansatz.  Companion / orthogonal study to noise-sweep:
+    #   * noise-sweep varies the Stage-A perturbation amplitude σ on V^E
+    #     (signal-domain), mollifier eps fixed at 1.
+    #   * eps-sweep varies the mollifier eps_0 (kernel-domain), V^E noise
+    #     fixed at 0.
+    # Effective smoothing width at s = s*, t = 0:  sqrt(eps_0^2 + eps_safe)
+    # with eps_safe = 1 (fp32 autograd safety, fixed throughout).  So eps_0=0
+    # collapses to eps_safe-only smoothing (~1 price unit, essentially CM-static
+    # with eps=1), while eps_0=20 gives a ~20-price-unit bell around s* (20% of
+    # K=100) — very smooth, almost obliterates the kink.
+    # All variants:
+    #   * Same mollifier family: CM time-dependent eps(t) = eps_0 * (t1-t)/t1.
+    #   * No V^E noise (sigma=0).
+    #   * Same training budget (--iters-b applies).
+    # eps_0 axis sampled at {0, 1, 2, 5, 10, 20}; viridis colour ramp.
+    {
+        "name":           "bermudan_cm_time_eps_0",
+        "label":          r"CM time-dep, $\varepsilon_0=0$ (safety floor only)",
+        "tc_type":        "mollifier_cm_time",
+        "lambda_tc_soft": None,
+        "mode":           "eps-sweep",
+        "moll_eps":       0.0,
+        "color":          "#440154",  # viridis 0/5 — dark purple
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
+    {
+        "name":           "bermudan_cm_time_eps_1",
+        "label":          r"CM time-dep, $\varepsilon_0=1$ (Study 2/3 baseline)",
+        "tc_type":        "mollifier_cm_time",
+        "lambda_tc_soft": None,
+        "mode":           "eps-sweep",
+        "moll_eps":       1.0,
+        "color":          "#414487",  # viridis 1/5
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
+    {
+        "name":           "bermudan_cm_time_eps_2",
+        "label":          r"CM time-dep, $\varepsilon_0=2$",
+        "tc_type":        "mollifier_cm_time",
+        "lambda_tc_soft": None,
+        "mode":           "eps-sweep",
+        "moll_eps":       2.0,
+        "color":          "#2a788e",  # viridis 2/5
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
+    {
+        "name":           "bermudan_cm_time_eps_5",
+        "label":          r"CM time-dep, $\varepsilon_0=5$",
+        "tc_type":        "mollifier_cm_time",
+        "lambda_tc_soft": None,
+        "mode":           "eps-sweep",
+        "moll_eps":       5.0,
+        "color":          "#22a884",  # viridis 3/5
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
+    {
+        "name":           "bermudan_cm_time_eps_10",
+        "label":          r"CM time-dep, $\varepsilon_0=10$",
+        "tc_type":        "mollifier_cm_time",
+        "lambda_tc_soft": None,
+        "mode":           "eps-sweep",
+        "moll_eps":       10.0,
+        "color":          "#7ad151",  # viridis 4/5
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
+    {
+        "name":           "bermudan_cm_time_eps_20",
+        "label":          r"CM time-dep, $\varepsilon_0=20$ (very smooth)",
+        "tc_type":        "mollifier_cm_time",
+        "lambda_tc_soft": None,
+        "mode":           "eps-sweep",
+        "moll_eps":       20.0,
+        "color":          "#fde725",  # viridis 5/5 — yellow
+        "linestyle":      "-",
+        "linewidth":      2.0,
+    },
 ]
 
 _STYLE_BY_NAME: dict[str, dict] = {v["name"]: v for v in VARIANTS}
@@ -2136,7 +2219,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode", type=str, default="tc-enforcement",
-        choices=("tc-enforcement", "mollifiers", "noise-sweep"),
+        choices=("tc-enforcement", "mollifiers", "noise-sweep", "eps-sweep"),
         help="Selects which subset of the VARIANTS catalogue is iterated:\n"
              "  tc-enforcement: original hard ETCNN vs soft PINN penalty\n"
              "                  ablation (4 variants).\n"
@@ -2150,6 +2233,12 @@ def main() -> None:
              "                  CM-time ansatz — 6 variants at σ ∈ {0, 0.5%,\n"
              "                  1%, 2%, 5%, 10%} of V^E_atm.  Same fixed seed\n"
              "                  across all variants.  Stage A = analytical BS.\n"
+             "                  Implicitly forces --analytical-stage-a.\n"
+             "  eps-sweep:      sensitivity study on the mollifier smoothing\n"
+             "                  scale ε₀ in the CM-time ansatz — 6 variants at\n"
+             "                  ε₀ ∈ {0, 1, 2, 5, 10, 20}.  V^E noise off\n"
+             "                  (σ=0).  Effective bell width at s* is\n"
+             "                  sqrt(ε₀² + 1).  Stage A = analytical BS.\n"
              "                  Implicitly forces --analytical-stage-a.",
     )
     args = parser.parse_args()
@@ -2210,7 +2299,7 @@ def main() -> None:
     # independent and the implicit ``--analytical-stage-a`` saves the user
     # from having to type it.  The existing tc-enforcement default is
     # unchanged (user supplies --analytical-stage-a explicitly).
-    if args.mode in ("mollifiers", "noise-sweep") and not args.analytical_stage_a:
+    if args.mode in ("mollifiers", "noise-sweep", "eps-sweep") and not args.analytical_stage_a:
         args.analytical_stage_a = True
         logger.info(
             f"--mode {args.mode} implicitly forces --analytical-stage-a "
