@@ -86,12 +86,14 @@ S_BATCH_CPU_PER_TASK=10
 S_BATCH_GPUS=1                       # one GPU per array task
 
 # Finalize defaults — non-billed prepost partition (pure CPU replot pass).
-# Override with --finalize-partition / --finalize-qos / --finalize-account /
-# --finalize-gpus only when the aggregation step truly needs a GPU or a
-# billed allocation; otherwise leave them as-is so the replot stays free.
+# IDRIS requires --account even on prepost when the user has multiple
+# accounts available, so default to the CPU twin of the typical billed
+# allocation (akz@cpu).  Override with --finalize-partition /
+# --finalize-qos / --finalize-account / --finalize-gpus when the
+# aggregation step truly needs a GPU or a different allocation.
 S_BATCH_FINALIZE_PARTITION="prepost"
 S_BATCH_FINALIZE_QOS=""
-S_BATCH_FINALIZE_ACCOUNT=""
+S_BATCH_FINALIZE_ACCOUNT="akz@cpu"
 S_BATCH_FINALIZE_GPUS=0
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
