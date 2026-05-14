@@ -2576,8 +2576,15 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Save summary
     # ------------------------------------------------------------------
+    # Pair results with the *trained* variants, not the full mode catalogue.
+    # In single-variant mode (--variant NAME, every array task) results has
+    # length 1 and pairing with variants_in_mode silently truncated to the
+    # first catalogue entry — so every per-variant summary_<NAME>.yaml ended
+    # up keyed under whichever variant was first in the catalogue, regardless
+    # of which variant was actually trained.  The merged summary.yaml then
+    # collapsed to a single key on the assembler pass.
     summary: dict = {}
-    for v, res in zip(variants_in_mode, results):
+    for v, res in zip(variants_to_run, results):
         m = res.get("metrics", {}) or {}
         summary[v["name"]] = {
             "mae_bt":       float(res["mae_bt"]),
@@ -2633,7 +2640,7 @@ def main() -> None:
     )
     logger.info(f"  {'Variant':<25} {'MAE':>12} {'rel_L2':>12} {'TC_MAE':>12} {'GEI':>8}")
     logger.info("  " + "-" * 72)
-    for v, res in zip(variants_in_mode, results):
+    for v, res in zip(variants_to_run, results):
         m      = res.get("metrics") or {}
         tc_mae = m.get("tc_mae", float("nan"))
         gei    = m.get("gei",    float("nan"))
