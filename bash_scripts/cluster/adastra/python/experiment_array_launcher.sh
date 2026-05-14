@@ -15,20 +15,26 @@
 #   * ``--qos=`` is NEVER passed — Adastra's scheduler picks the QoS
 #     automatically from the requested wall-time + node count.  The docs
 #     explicitly warn against ``--qos=`` (see CLAUDE.md / Adastra section).
-#   * ``--account=<project>`` is mandatory and **per-constraint** on
-#     Adastra: each project has five association rows
-#         <project>, <project>_genoa, _mi250, _mi300, _hpda
-#     (verified 2026-05-14 via sacctmgr on this user's projects).  The
-#     SLURM assoc table accepts the BARE account on any constraint, so
-#     an unsuffixed --account is *not* rejected at submit — it silently
-#     misses the right billing pool.  Pass the bare project to this
-#     launcher via -A; it auto-derives ``${ACCOUNT}_<lc(CONSTRAINT)>``
-#     for every sbatch stage (TRAIN and FINALIZE alike).  Adastra does
-#     not ship IDRIS's ``myproject`` helper — discover yours via
+#   * ``--account=<project>`` is mandatory and must be the BARE project
+#     name.  Adastra's SLURM auto-routes the submission to the
+#     constraint-specific accounting pool internally: passing
+#     ``--account=c2117856 --constraint=GENOA`` makes the scheduler
+#     record the job under ``c2117856_genoa`` for billing (visible in
+#     ``sacct -P -o JobID,Account``), but the suffixed name is NOT
+#     directly submittable — sbatch rejects ``--account=c2117856_genoa``
+#     with the misleading mask "You must specify an account from those
+#     listed by command: myproject -l" (same error fires for unrelated
+#     causes such as an expired project validity window — verified
+#     empirically on 2026-05-14, see _lib/account.sh).
+#     The launcher defensively strips any known suffix from the value
+#     passed via -A so callers are robust to either form.
+#     Adastra does not ship IDRIS's ``myproject`` — discover the bare
+#     project name via
 #         sacctmgr -nP list assoc where user=$USER \
 #                  format=user,account,partition,defaultqos
-#     ``$WORKDIR=/lus/work/<group>/<project>/<user>`` also reveals the
-#     active project (third path component).
+#     and pick the row whose ``account`` column has no underscore, or
+#     read the third component of ``$WORKDIR``
+#     (``/lus/work/<group>/<project>/<user>``).
 #   * GPU specification uses ``--gpus-per-node=N`` (the official example
 #     spelling), not ``--gres=gpu:N``.
 #   * Job arrays are temporarily capped at 11 tasks (CINES bug workaround,
@@ -96,14 +102,12 @@ S_BATCH_EXCLUSIVE=1                    # 1 → pass --exclusive; 0 → shared mo
 
 # SLURM resource defaults — FINALIZE phase (HPDA, non-billed).
 S_BATCH_FINALIZE_CONSTRAINT="HPDA"
-S_BATCH_FINALIZE_ACCOUNT=""            # left empty → auto-derived from the
-                                       # base account passed via -A and the
-                                       # finalize constraint, i.e.
-                                       # ``${S_BATCH_ACCOUNT}_hpda`` by
-                                       # default.  Override only when your
-                                       # project lacks the _hpda variant
-                                       # (then point --finalize-constraint
-                                       # at GENOA shared instead).
+S_BATCH_FINALIZE_ACCOUNT=""            # left empty → defaults to the bare
+                                       # account passed via -A (SLURM
+                                       # auto-routes to <project>_hpda
+                                       # internally based on
+                                       # --constraint=HPDA — never pass
+                                       # the suffixed form directly).
 S_BATCH_FINALIZE_GPUS=0                # HPDA is for CPU replot; bump to 1 for GPU.
 
 # Project location on Adastra's $WORKDIR.  $WORKDIR is auto-set by the
@@ -148,30 +152,29 @@ if [[ -z "$INIT_ARGS" ]]; then
 fi
 if [[ -z "$S_BATCH_ACCOUNT" ]]; then
     echo "Error: --account is required on Adastra." >&2
-    echo "       Discover yours with: sacctmgr -nP list assoc where user=\$USER format=user,account,partition,defaultqos" >&2
-    echo "       Pass the BARE project (e.g. -A cad14975); the launcher" >&2
-    echo "       auto-derives the per-constraint variant (cad14975_mi250," >&2
-    echo "       cad14975_hpda, etc.) for each sbatch stage." >&2
+    echo "       Pass the BARE project name (e.g. -A c2117856)." >&2
+    echo "       SLURM auto-routes to the per-constraint billing pool" >&2
+    echo "       internally based on --constraint=." >&2
+    echo "       Discover the bare project with:" >&2
+    echo "           sacctmgr -nP list assoc where user=\$USER format=user,account,partition,defaultqos" >&2
+    echo "       Pick the row whose 'account' column has no underscore," >&2
+    echo "       or read the third component of \$WORKDIR." >&2
     exit 1
 fi
 
-# Adastra account variants are per-constraint, not HPDA-only.  Verified
-# on 2026-05-14 via sacctmgr: every project has five association rows
-# (<project>, <project>_genoa, _mi250, _mi300, _hpda).  The launcher's
-# CLI takes the bare project via -A; the helper below appends the right
-# suffix for each sbatch stage.  This is idempotent — pass an already
-# suffixed variant and it stays unchanged.
+# Defensive: strip any constraint suffix the user may have pasted from
+# sacctmgr output (e.g. ``c2117856_hpda``).  sbatch rejects the
+# suffixed form directly — see _lib/account.sh for the empirical model.
 # shellcheck source=_lib/account.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/_lib/account.sh"
+S_BATCH_ACCOUNT="$(adastra_account_bare "$S_BATCH_ACCOUNT")"
 
-S_BATCH_ACCOUNT_TRAIN="$(adastra_account_for_constraint "$S_BATCH_ACCOUNT" "$S_BATCH_CONSTRAINT")"
-
-# --finalize-account, if given, is used verbatim (still passed through
-# the helper for idempotency); otherwise auto-derive from the base.
+# FINALIZE defaults to the same bare account as TRAIN when not
+# overridden.  If overridden, defensively strip its suffix too.
 if [[ -z "$S_BATCH_FINALIZE_ACCOUNT" ]]; then
-    S_BATCH_FINALIZE_ACCOUNT_FULL="$(adastra_account_for_constraint "$S_BATCH_ACCOUNT" "$S_BATCH_FINALIZE_CONSTRAINT")"
+    S_BATCH_FINALIZE_ACCOUNT="$S_BATCH_ACCOUNT"
 else
-    S_BATCH_FINALIZE_ACCOUNT_FULL="$(adastra_account_for_constraint "$S_BATCH_FINALIZE_ACCOUNT" "$S_BATCH_FINALIZE_CONSTRAINT")"
+    S_BATCH_FINALIZE_ACCOUNT="$(adastra_account_bare "$S_BATCH_FINALIZE_ACCOUNT")"
 fi
 
 # ── Locate the project on Adastra's $WORKDIR ────────────────────────────────
@@ -196,9 +199,9 @@ echo "Project root:   $PATH_CONTENT_ROOT"
 echo "Python script:  $PATH_PYTHON_SCRIPT"
 echo "Venv:           $PATH_VENV_BIN"
 echo "Worker:         $PATH_WORKER_SLURM"
-echo "Base account:        $S_BATCH_ACCOUNT"
-echo "TRAIN constraint:    $S_BATCH_CONSTRAINT  (exclusive=$S_BATCH_EXCLUSIVE, account=$S_BATCH_ACCOUNT_TRAIN)"
-echo "FINALIZE constraint: $S_BATCH_FINALIZE_CONSTRAINT  (account=$S_BATCH_FINALIZE_ACCOUNT_FULL)"
+echo "Account (bare):      $S_BATCH_ACCOUNT  (SLURM auto-routes to <project>_<constraint> internally)"
+echo "TRAIN constraint:    $S_BATCH_CONSTRAINT  (exclusive=$S_BATCH_EXCLUSIVE)"
+echo "FINALIZE constraint: $S_BATCH_FINALIZE_CONSTRAINT  (account=$S_BATCH_FINALIZE_ACCOUNT)"
 echo "Init args:      $INIT_ARGS"
 echo "Finalize args:  ${FINALIZE_ARGS:-<none>}"
 echo
@@ -268,7 +271,7 @@ TRAIN_JOB_ID=$(sbatch --parsable \
     --error="$SLURM_LOG_DIR/slurm-TRAIN-%A_%a.err" \
     --export=NAME_PROJECT="$NAME_PROJECT",PATH_PYTHON_SCRIPT="$PATH_PYTHON_SCRIPT",PATH_FOLDER_CONFIGS="$PATH_FOLDER_CONFIGS",WORKDIR="$WORKDIR",V_ENV_NAME="$V_ENV_NAME",PATH_PROJECT_PARENT_DIR_REL="$PATH_PROJECT_PARENT_DIR_REL" \
     --constraint="$S_BATCH_CONSTRAINT" \
-    --account="$S_BATCH_ACCOUNT_TRAIN" \
+    --account="$S_BATCH_ACCOUNT" \
     --time="$S_BATCH_TIME" \
     --nodes=1 \
     --ntasks-per-node=1 \
@@ -295,7 +298,7 @@ if [[ -n "$FINALIZE_ARGS" ]]; then
         --output="$SLURM_LOG_DIR/slurm-FINALIZE.out" \
         --error="$SLURM_LOG_DIR/slurm-FINALIZE.err" \
         --constraint="$S_BATCH_FINALIZE_CONSTRAINT" \
-        --account="$S_BATCH_FINALIZE_ACCOUNT_FULL" \
+        --account="$S_BATCH_FINALIZE_ACCOUNT" \
         --time="$S_BATCH_TIME_FINALIZE" \
         --nodes=1 --ntasks-per-node=1 \
         --cpus-per-task=8 \

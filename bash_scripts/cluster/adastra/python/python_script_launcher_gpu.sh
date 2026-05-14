@@ -94,19 +94,20 @@ S_BATCH_TIME=02:00:00
 S_BATCH_CONSTRAINT=MI250
 S_BATCH_REQUEUE="--requeue"
 
-# Adastra accounts are per-constraint variants (e.g. cad14975_mi250).
-# Auto-derive from the bare -A passed by the user; idempotent if the
-# user already passed the suffixed form.
+# Adastra's SLURM auto-routes the bare project to the per-constraint
+# billing pool internally; passing the suffixed form (e.g. _mi250) is
+# rejected.  The helper defensively strips a suffix the user may have
+# pasted from sacctmgr output, so we are robust to either form.
 # shellcheck source=_lib/account.sh
 source "$PATH_PARENT/_lib/account.sh"
-S_BATCH_ACCOUNT_FULL="$(adastra_account_for_constraint "$S_BATCH_ACCOUNT" "$S_BATCH_CONSTRAINT")"
+S_BATCH_ACCOUNT="$(adastra_account_bare "$S_BATCH_ACCOUNT")"
 
 echo "sbatch options:"
 echo "  --job-name=$BASENAME_SCRIPT${VARIANT_TAG:+_$VARIANT_TAG}"
 echo "  --output=$PATH_LOG_DIR/%j.out"
 echo "  --error=$PATH_LOG_DIR/%j.err"
 echo "  --constraint=$S_BATCH_CONSTRAINT  # GPU MI250X, shared mode (1 GCD, 8 cores)"
-echo "  --account=$S_BATCH_ACCOUNT_FULL  (auto-derived from -A $S_BATCH_ACCOUNT)"
+echo "  --account=$S_BATCH_ACCOUNT  (bare; SLURM routes to ${S_BATCH_ACCOUNT}_mi250 internally)"
 echo "  --cpus-per-task=$S_BATCH_CPU_PER_TASK"
 echo "  --gpus-per-node=$S_BATCH_GPUS_PER_NODE"
 echo "  --threads-per-core=1"
@@ -125,7 +126,7 @@ sbatch \
   --error="$PATH_LOG_DIR"/%j.err \
   --export=NAME_PROJECT="$NAME_PROJECT",PATH_PYTHON_SCRIPT="$PATH_PYTHON_SCRIPT",ARGS_PYTHON_SCRIPT="${ARGS_PYTHON_SCRIPT:-}",WORKDIR="$WORKDIR",PATH_CONTENT_ROOT="$PATH_CONTENT_ROOT",V_ENV_NAME="$V_ENV_NAME" \
   --constraint="$S_BATCH_CONSTRAINT" \
-  --account="$S_BATCH_ACCOUNT_FULL" \
+  --account="$S_BATCH_ACCOUNT" \
   --nodes=1 \
   --ntasks-per-node=1 \
   --cpus-per-task="$S_BATCH_CPU_PER_TASK" \

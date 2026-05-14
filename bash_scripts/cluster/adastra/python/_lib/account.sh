@@ -1,48 +1,51 @@
 # shellcheck shell=bash
 # =============================================================================
-# Adastra (CINES) — account variant derivation.
+# Adastra (CINES) — account normalisation.
 #
-# Adastra uses a per-constraint account-variant convention: the base
-# project name is suffixed with the lower-cased constraint name when
-# submitting to that constraint.  Confirmed on 2026-05-14 via
-# ``sacctmgr -nP list assoc where user=$USER``; both projects of this
-# user (cad14975, c2117856) carry five association rows each:
+# Empirical finding from a smoke test on 2026-05-14: Adastra's SLURM
+# accepts ONLY the bare project name on ``--account=``.  When you pass
+# ``--account=<project> --constraint=GENOA``, the scheduler auto-routes
+# the job internally to the ``<project>_genoa`` accounting pool — that
+# remapped name is what shows up in ``sacct -P -o JobID,Account``, NOT
+# what you submit.  Three test jobs confirmed the mapping for GENOA,
+# MI250 and HPDA.
 #
-#     <project>          (bare, no suffix)
-#     <project>_genoa    (GENOA constraint)
-#     <project>_mi250    (MI250 constraint)
-#     <project>_mi300    (MI300 constraint)
-#     <project>_hpda     (HPDA constraint, non-billed)
+# Passing a pre-suffixed variant (e.g. ``c2117856_hpda``) directly to
+# sbatch / srun is **rejected**, with a misleading mask:
 #
-# The trap: SLURM's assoc table accepts the BARE account on any
-# constraint, so an unsuffixed --account=<project> --constraint=MI250
-# is *not* rejected at sbatch time — the job runs and the billing
-# silently misses the right pool.  Always pass the suffixed variant.
+#     "You must specify an account from those listed by command:
+#      myproject -l"
+#
+# (Same error happens for several unrelated causes — e.g. an expired
+# project validity window — so don't take it literally.)
+#
+# So this helper does the OPPOSITE of what its previous incarnation did:
+# it strips any known constraint suffix from a value so that callers
+# can submit safely regardless of whether the user typed the bare form
+# or accidentally pasted a suffixed variant from sacctmgr output.
 #
 # Helper contract
 # ---------------
-# adastra_account_for_constraint <base_or_variant> <CONSTRAINT>
-#     Echoes the suffixed account name.  Idempotent: a value already
-#     ending in any known suffix (_genoa/_mi250/_mi300/_hpda) is
-#     returned unchanged, so callers can safely pass either a bare
-#     project or a fully-qualified variant.
+# adastra_account_bare <input>
+#     Echoes the bare project name.
+#     - Input ending in ``_genoa`` / ``_mi250`` / ``_mi300`` / ``_hpda``
+#       has the suffix stripped.
+#     - Any other input is echoed unchanged (no validation — we don't
+#       know all project naming conventions, only the suffix list).
+#     - Idempotent: bare → bare; suffixed → bare; bare-with-underscore
+#       (unlikely but possible) → unchanged.
 #
 # Usage:
 #     # shellcheck source=_lib/account.sh
 #     source "$(dirname "$0")/_lib/account.sh"
-#     account="$(adastra_account_for_constraint "$BASE" "$CONSTRAINT")"
+#     account_for_sbatch="$(adastra_account_bare "$USER_INPUT")"
 # =============================================================================
 
-adastra_account_for_constraint() {
-    local base="$1" constraint="$2"
-    local lc
-    lc="$(printf '%s' "$constraint" | tr '[:upper:]' '[:lower:]')"
-    # Idempotency: leave a value that already carries a known Adastra
-    # constraint suffix unchanged.  Refusing to "fix" a wrong suffix is
-    # deliberate — it would mask a user mistake instead of surfacing it.
-    if [[ "$base" =~ _(genoa|mi250|mi300|hpda)$ ]]; then
-        printf '%s\n' "$base"
+adastra_account_bare() {
+    local input="$1"
+    if [[ "$input" =~ ^(.+)_(genoa|mi250|mi300|hpda)$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
     else
-        printf '%s_%s\n' "$base" "$lc"
+        printf '%s\n' "$input"
     fi
 }

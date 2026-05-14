@@ -74,17 +74,17 @@ case "$S_RUN_CONSTRAINT" in
     ;;
 esac
 
-# Adastra accounts are per-constraint variants — derive the right one
-# from the bare project passed via -A (idempotent for already-suffixed
-# values).  See _lib/account.sh for the convention.
+# Adastra's SLURM auto-routes the bare project to the per-constraint
+# billing pool internally.  Defensively strip a suffix the user may
+# have pasted from sacctmgr output — see _lib/account.sh.
 PATH_PARENT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=_lib/account.sh
 source "$PATH_PARENT/_lib/account.sh"
-S_RUN_ACCOUNT_FULL="$(adastra_account_for_constraint "$S_RUN_ACCOUNT" "$S_RUN_CONSTRAINT")"
+S_RUN_ACCOUNT="$(adastra_account_bare "$S_RUN_ACCOUNT")"
 
 echo "salloc options (Adastra, shared mode — no --exclusive):"
 echo "  --constraint=$S_RUN_CONSTRAINT"
-echo "  --account=$S_RUN_ACCOUNT_FULL  (auto-derived from -A $S_RUN_ACCOUNT)"
+echo "  --account=$S_RUN_ACCOUNT  (bare; SLURM routes to <project>_<lc(constraint)> internally)"
 echo "  --nodes=$S_RUN_NODES"
 echo "  --ntasks-per-node=1"
 echo "  --cpus-per-task=$S_RUN_CPU_PER_TASK"
@@ -97,7 +97,7 @@ echo
 
 salloc \
   --constraint="$S_RUN_CONSTRAINT" \
-  --account="$S_RUN_ACCOUNT_FULL" \
+  --account="$S_RUN_ACCOUNT" \
   --nodes="$S_RUN_NODES" \
   --ntasks-per-node=1 \
   --cpus-per-task="$S_RUN_CPU_PER_TASK" \
