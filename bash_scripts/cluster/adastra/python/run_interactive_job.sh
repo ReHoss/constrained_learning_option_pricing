@@ -20,7 +20,7 @@
 
 NAME_PROJECT="constrained_learning_option_pricing"
 
-WORKDIR="${WORKDIR:?WORKDIR env var is not set — are you on Adastra and is a project active (myproject -l)?}"
+WORKDIR="${WORKDIR:?WORKDIR env var is not set — are you on an Adastra login node?}"
 PATH_PROJECT_PARENT_DIR_REL="${PATH_PROJECT_PARENT_DIR_REL:-pycharm_remote_project}"
 PATH_CONTENT_ROOT="${PATH_CONTENT_ROOT:-$WORKDIR/$PATH_PROJECT_PARENT_DIR_REL/$NAME_PROJECT}"
 
@@ -55,7 +55,8 @@ while getopts 'A:c:t:n:g:' flag; do
 done
 
 if [ -z "$S_RUN_ACCOUNT" ]; then
-  echo "Missing -A <account>.  Run 'myproject -l' on Adastra to list available projects."
+  echo "Missing -A <account>.  Discover yours with:"
+  echo "  sacctmgr -nP list assoc where user=\$USER format=user,account,partition,defaultqos"
   exit 1
 fi
 

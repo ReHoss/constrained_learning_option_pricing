@@ -15,10 +15,14 @@
 #   * ``--qos=`` is NEVER passed — Adastra's scheduler picks the QoS
 #     automatically from the requested wall-time + node count.  The docs
 #     explicitly warn against ``--qos=`` (see CLAUDE.md / Adastra section).
-#   * ``--account=<project>`` is mandatory.  Run ``myproject -l`` once on
-#     the login node to discover available projects; ``myproject <name>``
-#     also switches ``$WORKDIR`` / ``$SCRATCHDIR`` / ``$STOREDIR`` /
-#     ``$HOMEDIR`` to that project's storage tree.
+#   * ``--account=<project>`` is mandatory.  Adastra does NOT ship IDRIS's
+#     ``myproject`` helper — discover your accounts via
+#         sacctmgr -nP list assoc where user=$USER \
+#                  format=user,account,partition,defaultqos
+#     ``$WORKDIR=/lus/work/<group>/<project>/<user>`` also reveals the
+#     active project (third path component).  Note that non-billed hardware
+#     uses a *suffixed* account variant: pass ``cad14975_hpda`` (not
+#     ``cad14975``) when sbatch'ing to ``--constraint=HPDA``.
 #   * GPU specification uses ``--gpus-per-node=N`` (the official example
 #     spelling), not ``--gres=gpu:N``.
 #   * Job arrays are temporarily capped at 11 tasks (CINES bug workaround,
@@ -86,13 +90,20 @@ S_BATCH_EXCLUSIVE=1                    # 1 → pass --exclusive; 0 → shared mo
 
 # SLURM resource defaults — FINALIZE phase (HPDA, non-billed).
 S_BATCH_FINALIZE_CONSTRAINT="HPDA"
-S_BATCH_FINALIZE_ACCOUNT=""            # may be required even on HPDA when the
-                                       # user has multiple eDARI projects;
-                                       # defaults to S_BATCH_ACCOUNT if unset.
+S_BATCH_FINALIZE_ACCOUNT=""            # left empty → auto-derived below as
+                                       # ``${S_BATCH_ACCOUNT}_hpda`` (the
+                                       # non-billed account variant Adastra
+                                       # requires on --constraint=HPDA, akin
+                                       # to Jean Zay's ``akz@cpu`` twin).
+                                       # Override with --finalize-account
+                                       # if your project lacks the _hpda
+                                       # variant (then HPDA finalize is not
+                                       # available — point at GENOA shared).
 S_BATCH_FINALIZE_GPUS=0                # HPDA is for CPU replot; bump to 1 for GPU.
 
-# Project location on Adastra's $WORKDIR.  See ``myproject -l`` for the
-# active project; ``$WORKDIR`` is auto-set to /lus/work/<group>/<user>.
+# Project location on Adastra's $WORKDIR.  $WORKDIR is auto-set by the
+# CINES login environment to /lus/work/<group>/<project>/<user>; the third
+# path component is the active project name (use it for --account).
 PATH_PROJECT_PARENT_DIR_REL="pycharm_remote_project"
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
@@ -131,21 +142,30 @@ if [[ -z "$INIT_ARGS" ]]; then
     exit 1
 fi
 if [[ -z "$S_BATCH_ACCOUNT" ]]; then
-    echo "Error: --account is required on Adastra (run 'myproject -l' to list)." >&2
+    echo "Error: --account is required on Adastra." >&2
+    echo "       Discover yours with: sacctmgr -nP list assoc where user=\$USER format=user,account,partition,defaultqos" >&2
+    echo "       Non-billed HPDA finalize uses the suffixed variant, e.g. cad14975_hpda." >&2
     exit 1
 fi
 
-# Default finalize account to the main one if not overridden — keeps HPDA
-# submissions valid for users with multiple eDARI projects attached.
+# When --finalize-account was not given, auto-derive the HPDA account
+# variant for non-billed finalize.  Adastra's accounting requires the
+# suffixed form (e.g. cad14975_hpda) on --constraint=HPDA — the bare
+# project name will be rejected.  If the project has no _hpda variant,
+# pass --finalize-account explicitly (or change --finalize-constraint).
 if [[ -z "$S_BATCH_FINALIZE_ACCOUNT" ]]; then
-    S_BATCH_FINALIZE_ACCOUNT="$S_BATCH_ACCOUNT"
+    if [[ "$S_BATCH_FINALIZE_CONSTRAINT" == "HPDA" ]]; then
+        S_BATCH_FINALIZE_ACCOUNT="${S_BATCH_ACCOUNT}_hpda"
+    else
+        S_BATCH_FINALIZE_ACCOUNT="$S_BATCH_ACCOUNT"
+    fi
 fi
 
 # ── Locate the project on Adastra's $WORKDIR ────────────────────────────────
-# $WORKDIR is provided by the CINES login environment (set by the active
-# myproject); /lus/work/<group>/<user>.  We don't fall back to anything else
-# because mis-locating the project would silently submit stale code.
-WORKDIR="${WORKDIR:?WORKDIR env var is not set — are you on Adastra and is a project active (myproject -l)?}"
+# $WORKDIR is set by the CINES login environment to
+# /lus/work/<group>/<project>/<user>.  We don't fall back to anything
+# else because mis-locating the project would silently submit stale code.
+WORKDIR="${WORKDIR:?WORKDIR env var is not set — are you on an Adastra login node? Expected /lus/work/<group>/<project>/<user>.}"
 PATH_CONTENT_ROOT="$WORKDIR/$PATH_PROJECT_PARENT_DIR_REL/$NAME_PROJECT"
 PATH_PYTHON_SCRIPT="$PATH_CONTENT_ROOT/$PYTHON_SCRIPT_REL"
 PATH_VENV_BIN="$PATH_CONTENT_ROOT/venv/$V_ENV_NAME/bin/activate"

@@ -30,7 +30,7 @@
 NAME_PROJECT="constrained_learning_option_pricing"
 NAME_JOB_SCRIPT="run_python_script.slurm"
 
-WORKDIR="${WORKDIR:?WORKDIR env var is not set — are you on Adastra and is a project active (myproject -l)?}"
+WORKDIR="${WORKDIR:?WORKDIR env var is not set — are you on an Adastra login node?}"
 
 PATH_PARENT=$(
   cd "$(dirname "${BASH_SOURCE[0]}")" || exit
@@ -63,7 +63,8 @@ if [ -z "${PATH_PYTHON_SCRIPT:-}" ]; then
   exit 1
 fi
 if [ -z "$S_BATCH_ACCOUNT" ]; then
-  echo "Missing -A <account>.  Run 'myproject -l' on Adastra to list available projects."
+  echo "Missing -A <account>.  Discover yours with:"
+  echo "  sacctmgr -nP list assoc where user=\$USER format=user,account,partition,defaultqos"
   exit 1
 fi
 

@@ -19,16 +19,21 @@
 #   - Adastra selects hardware via ``--constraint``; this launcher uses
 #     ``GENOA`` (CPU) and never passes ``--qos`` (Adastra picks it
 #     automatically — see CLAUDE.md / Adastra section).
-#   - ``--account`` is mandatory; list available projects with ``myproject -l``.
+#   - ``--account`` is mandatory; Adastra does NOT ship ``myproject`` —
+#     discover projects with
+#         sacctmgr -nP list assoc where user=$USER format=user,account,partition,defaultqos
+#     (the active project is also visible as the third component of
+#      $WORKDIR=/lus/work/<group>/<project>/<user>).
 #   - Shared mode (omit ``--exclusive``) is enabled by default for CPU work
 #     so a 4-core job bills only 8 cores instead of a whole 192-core node.
 
 NAME_PROJECT="constrained_learning_option_pricing"
 NAME_JOB_SCRIPT="run_python_script.slurm"
 
-# WORKDIR is set by the CINES login environment from the active myproject
-# (it points to /lus/work/<group>/<user>).  Fail loudly if missing.
-WORKDIR="${WORKDIR:?WORKDIR env var is not set — are you on Adastra and is a project active (myproject -l)?}"
+# WORKDIR is set by the CINES login environment to
+# /lus/work/<group>/<project>/<user>.  Fail loudly if missing — that
+# usually means we're not on a CINES login node.
+WORKDIR="${WORKDIR:?WORKDIR env var is not set — are you on an Adastra login node?}"
 
 PATH_PARENT=$(
   cd "$(dirname "${BASH_SOURCE[0]}")" || exit
@@ -63,7 +68,8 @@ if [ -z "${PATH_PYTHON_SCRIPT:-}" ]; then
   exit 1
 fi
 if [ -z "$S_BATCH_ACCOUNT" ]; then
-  echo "Missing -A <account>.  Run 'myproject -l' on Adastra to list available projects."
+  echo "Missing -A <account>.  Discover yours with:"
+  echo "  sacctmgr -nP list assoc where user=\$USER format=user,account,partition,defaultqos"
   exit 1
 fi
 
