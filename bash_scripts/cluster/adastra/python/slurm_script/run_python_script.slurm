@@ -28,6 +28,19 @@ done
 
 PATH_PARENT=$( cd "$(dirname "${BASH_SOURCE[0]}")" || exit ; pwd -P )
 
+# --- Adastra module loads — REQUIRED before sourcing the venv --------------
+# The sbatch shell is non-interactive and does NOT source /etc/profile.d/,
+# so cray-python + the ROCm runtime must be loaded explicitly.  See the
+# matching block in slurm_job_array/job_array_batch_xp.slurm for the
+# rationale (Python ABI match + torch==2.9.1+rocm6.4 ROCm matching).
+# Loading amd-mixed on a GENOA-only run is harmless (unused libs on
+# LD_LIBRARY_PATH); this keeps a single worker script reusable across
+# constraints.
+module load cray-python/3.11.7 amd-mixed/6.4.3
+echo "module list (after explicit loads):"
+module list 2>&1 || true
+echo
+
 # --- Activate the project venv (pure venv, no conda) -----------------------
 PATH_VENV_BIN="$PATH_CONTENT_ROOT"/venv/"$V_ENV_NAME"/bin/activate
 echo "PATH_VENV_BIN: $PATH_VENV_BIN"

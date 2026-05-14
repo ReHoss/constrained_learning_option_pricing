@@ -31,6 +31,26 @@ PATH_PARENT=$( cd "$(dirname "${BASH_SOURCE[0]}")" || exit ; pwd -P )
 PATH_CONTENT_ROOT="$WORKDIR/$PATH_PROJECT_PARENT_DIR_REL/$NAME_PROJECT"
 PATH_VENV_BIN="$PATH_CONTENT_ROOT/venv/$V_ENV_NAME/bin/activate"
 
+# ── Adastra module loads — REQUIRED before sourcing the venv ────────────────
+# The sbatch shell is non-interactive and does NOT source /etc/profile.d/,
+# so cray-python and the ROCm runtime must be loaded explicitly here:
+#
+#   * cray-python/3.11.7   — the venv was built against this Python ABI;
+#                            without it the python shim on the compute node
+#                            either is missing entirely (system python is
+#                            3.9, rejected by the project's pyproject.toml
+#                            requires-python>=3.10) or points to the wrong
+#                            interpreter.
+#   * amd-mixed/6.4.3      — ROCm runtime matching the torch==2.9.1+rocm6.4
+#                            wheel installed in the venv (CINES-prescribed
+#                            pin, see https://dci.dci-gitlab.cines.fr/webextranet/software_stack/libraries/index.html#installing-pytorch-for-amd-gpus).
+#                            Harmless to load on GENOA (no GPU) — just adds
+#                            unused libs to LD_LIBRARY_PATH.
+module load cray-python/3.11.7 amd-mixed/6.4.3
+echo "module list (after explicit loads):"
+module list 2>&1 || true
+echo
+
 echo "PATH_VENV_BIN: $PATH_VENV_BIN"
 echo
 # shellcheck source=/dev/null

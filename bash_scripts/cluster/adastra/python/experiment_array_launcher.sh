@@ -304,7 +304,7 @@ if [[ -n "$FINALIZE_ARGS" ]]; then
         --cpus-per-task=8 \
         --threads-per-core=1 \
         "${FINALIZE_OPT_FLAGS[@]+"${FINALIZE_OPT_FLAGS[@]}"}" \
-        --wrap "cd '$PATH_CONTENT_ROOT' && source '$PATH_VENV_BIN' && python '$PATH_PYTHON_SCRIPT' $FINALIZE_ARGS_RESOLVED")
+        --wrap "module load cray-python/3.11.7 && cd '$PATH_CONTENT_ROOT' && source '$PATH_VENV_BIN' && python '$PATH_PYTHON_SCRIPT' $FINALIZE_ARGS_RESOLVED")
     echo "  FINALIZE job id: $FINALIZE_JOB_ID"
 else
     echo "Phase 3: skipped (no --finalize-args supplied)."
