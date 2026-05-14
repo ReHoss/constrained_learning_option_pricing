@@ -121,7 +121,7 @@ while (( $# )); do
         --python-script)        PYTHON_SCRIPT_REL="$2";          shift 2 ;;
         --init-args)            INIT_ARGS="$2";                  shift 2 ;;
         --finalize-args)        FINALIZE_ARGS="$2";              shift 2 ;;
-        --account)              S_BATCH_ACCOUNT="$2";            shift 2 ;;
+        -A|--account)           S_BATCH_ACCOUNT="$2";            shift 2 ;;
         --constraint)           S_BATCH_CONSTRAINT="$2";         shift 2 ;;
         --time)                 S_BATCH_TIME="$2";               shift 2 ;;
         --time-finalize)        S_BATCH_TIME_FINALIZE="$2";      shift 2 ;;
