@@ -2255,6 +2255,15 @@ def _plot_mollifier_shapes(ablation_dir: Path, mode: str,
 
     def _draw_panel(ax, t_val: float, s_lo: float, s_hi: float,
                     title: str, show_legend: bool = False) -> None:
+        """Draw one bermudan-mollifier panel.
+
+        ``show_legend`` is preserved for API compatibility but legends are now
+        emitted at the figure level (outside the axes box) per the user-level
+        CLAUDE.md convention — see the fig.legend(...) call after all panels
+        have been drawn.  Curves carry their ``label=`` so handles propagate
+        to ax.get_legend_handles_labels().
+        """
+        del show_legend  # legend is figure-level now; argument kept for API
         mask = (S_full >= s_lo) & (S_full <= s_hi)
         S = S_full[mask]
         ax.plot(S, V_target[mask], color="k", linewidth=2.5,
@@ -2277,10 +2286,14 @@ def _plot_mollifier_shapes(ablation_dir: Path, mode: str,
         ax.set_ylabel(r"$g_2^B(s, t)$")
         ax.set_title(title, fontsize=10)
         ax.grid(True, alpha=0.3)
-        if show_legend:
-            ax.legend(fontsize=7, loc="upper right")
 
-    fig, axes = plt.subplots(3, 2, figsize=(14, 14))
+    # Figure widened from 14 -> 18 inches to leave a right-side gutter for
+    # external legends (per the user-level CLAUDE.md "legends outside the
+    # axes box" convention).  Rows 1-2 use a single fig-level legend on the
+    # right; row 3 uses per-panel external legends.  Width ratios [1, 1]
+    # with subplots_adjust(right=0.78) reserves ~22 % of the figure for the
+    # legend strip.
+    fig, axes = plt.subplots(3, 2, figsize=(18, 14))
     _draw_panel(axes[0, 0], 0.0, 60.0, 140.0,
                 rf"$t = 0$ (maximum interior smoothing)",  show_legend=True)
     _draw_panel(axes[0, 1], t1,  60.0, 140.0,
@@ -2332,7 +2345,9 @@ def _plot_mollifier_shapes(ablation_dir: Path, mode: str,
         ax.set_title(r"Abstract — smoothings of $\mathrm{ReLU}(x) = \max(x, 0)$",
                      fontsize=10)
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=7, loc="upper left")
+        # External legend, anchored to the right of the axes box.
+        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0),
+                  fontsize=7, frameon=True)
 
     def _draw_abstract_abs(ax) -> None:
         ax.plot(x_abs, np.abs(x_abs),
@@ -2349,7 +2364,9 @@ def _plot_mollifier_shapes(ablation_dir: Path, mode: str,
         ax.set_title(r"Abstract — Chen–Mangasarian smoothing of $|x|$",
                      fontsize=10)
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=7, loc="upper center")
+        # External legend, anchored to the right of the axes box.
+        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0),
+                  fontsize=7, frameon=True)
 
     _draw_abstract_relu(axes[2, 0])
     _draw_abstract_abs(axes[2, 1])
@@ -2367,7 +2384,18 @@ def _plot_mollifier_shapes(ablation_dir: Path, mode: str,
         rf"$r={float(p3.r)}$, $\sigma={float(p3.sigma)}$, $T={float(p3.T)}$, $t_1={t1}$",
         fontsize=11,
     )
-    fig.tight_layout()
+    # Single figure-level legend for rows 1-2 (same curves across all four
+    # panels).  Handles are pulled from any of the bermudan panels — they
+    # all share the same labelled artists.  Anchored to the right edge of
+    # the figure, vertically aligned with rows 1-2.
+    handles_bermudan, labels_bermudan = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles_bermudan, labels_bermudan,
+               loc="upper left", bbox_to_anchor=(0.80, 0.92),
+               fontsize=8, frameon=True, title="Bermudan curves (rows 1–2)")
+    # Leave ~22 % of the figure width for the right gutter (legends).  The
+    # row 3 panels each have their own bbox-anchored legend at (1.02, 1.0),
+    # so the per-axes legends also live in this gutter.
+    fig.tight_layout(rect=[0, 0, 0.78, 1])
     formula = "\n".join([
         r"Bermudan terminal: $V_{\mathrm{target}}(s) = \max((K-s)^+, V^E_{\mathrm{BS}}(s, t_1))$ — single kink at $s = s^*$",
         r"Identity: $\max(a, b) = \frac{1}{2}(a + b + |a - b|)$;  every mollifier replaces $|\cdot|$ by a smooth surrogate",
