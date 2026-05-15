@@ -1577,7 +1577,7 @@ def _plot_variant(res: dict, vdir: Path) -> None:
     axes[1, 1].grid(True, alpha=0.3)
 
     fig.suptitle(f"{label}\n{_SUPTITLE_PARAMS}", fontsize=10)
-    fig.tight_layout(rect=[0, 0.20, 1, 1])
+    fig.tight_layout(rect=[0, 0.20, 0.80, 1])
     _add_formula_box(
         fig, _FORMULA_LF_B + "\n" + _FORMULA_TC + "\n" + _FORMULA_GRAD,
         bottom_margin=0.22,
@@ -1599,10 +1599,11 @@ def _plot_variant(res: dict, vdir: Path) -> None:
         ax.set_xlabel(r"$t$  (Stage B time)")
         ax.set_ylabel(r"$\mathbb{E}_{S=K}[|\mathcal{F}[V_\theta]|]$")
         ax.set_title(r"Mean PDE residual along $S=K$")
-        ax.legend(fontsize=9)
+        ax.legend(fontsize=9, loc="upper left",
+                  bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
         ax.grid(True, alpha=0.3)
         fig.suptitle(f"{label}\n{_SUPTITLE_PARAMS}", fontsize=10)
-        fig.tight_layout(rect=[0, 0.18, 1, 1])
+        fig.tight_layout(rect=[0, 0.18, 0.80, 1])
         _add_formula_box(fig, _FORMULA_PDE_PROFILE, bottom_margin=0.20)
         fig.savefig(out / "pde_residual_by_t.png", dpi=150)
         plt.close(fig)
@@ -1656,7 +1657,8 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
         ax.set_title(title)
-        ax.legend(fontsize=9)
+        ax.legend(fontsize=9, loc="upper left",
+                  bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
         ax.grid(True, alpha=0.3)
 
     # ------------------------------------------------------------------
@@ -1667,7 +1669,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
                   "Iteration (Stage B)", r"$\mathcal{L}_f$",
                   r"PDE residual loss $\mathcal{L}_f$" + f"  ({iters_b} iters)")
     fig.suptitle(f"Formulation ablation — PDE residual\n{_SUPTITLE_PARAMS}", fontsize=10)
-    fig.tight_layout(rect=[0, 0.18, 1, 1])
+    fig.tight_layout(rect=[0, 0.18, 0.80, 1])
     _add_formula_box(fig, _FORMULA_LF_B, bottom_margin=0.20)
     fig.savefig(comp_dir / "form_loss_pde.png", dpi=150)
     plt.close(fig)
@@ -1693,10 +1695,11 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
     ax.set_xlabel("Iteration (Stage B)")
     ax.set_ylabel(r"$\mathcal{L}_{tc}$")
     ax.set_title(r"TC penalty loss $\mathcal{L}_{tc}$  (hard BC: identically $0$)")
-    ax.legend(fontsize=9)
+    ax.legend(fontsize=9, loc="upper left",
+              bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
     ax.grid(True, alpha=0.3)
     fig.suptitle(f"Formulation ablation — TC loss\n{_SUPTITLE_PARAMS}", fontsize=10)
-    fig.tight_layout(rect=[0, 0.20, 1, 1])
+    fig.tight_layout(rect=[0, 0.20, 0.80, 1])
     _add_formula_box(fig, _FORMULA_TC, bottom_margin=0.22)
     fig.savefig(comp_dir / "form_loss_tc.png", dpi=150)
     plt.close(fig)
@@ -1711,7 +1714,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
                   r"$\|\nabla_\theta\mathcal{L}\|_2$",
                   "Gradient norm — instability signature")
     fig.suptitle(f"Formulation ablation — Gradient norm\n{_SUPTITLE_PARAMS}", fontsize=10)
-    fig.tight_layout(rect=[0, 0.14, 1, 1])
+    fig.tight_layout(rect=[0, 0.14, 0.80, 1])
     _add_formula_box(fig, _FORMULA_GRAD, bottom_margin=0.16)
     fig.savefig(comp_dir / "form_grad_norm.png", dpi=150)
     plt.close(fig)
@@ -1738,10 +1741,11 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
     ax.set_xlabel("Asset price $S$")
     ax.set_ylabel("Price at $t=0$")
     ax.set_title(r"$V_\theta(S,0)$ vs $V^{\mathrm{BT}}(S,0)$  —  all variants")
-    ax.legend(fontsize=9)
+    ax.legend(fontsize=9, loc="upper left",
+              bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
     ax.grid(True, alpha=0.3)
     fig.suptitle(f"Formulation ablation — Pricing comparison\n{_SUPTITLE_PARAMS}", fontsize=10)
-    fig.tight_layout(rect=[0, 0.18, 1, 1])
+    fig.tight_layout(rect=[0, 0.18, 0.80, 1])
     _add_formula_box(fig, _FORMULA_TC, bottom_margin=0.20)
     fig.savefig(comp_dir / "form_prices.png", dpi=150)
     plt.close(fig)
@@ -1766,10 +1770,11 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
     ax.set_xlabel("Asset price $S$")
     ax.set_ylabel(r"$|V_\theta(S,0) - V^{\mathrm{BT}}(S,0)|$")
     ax.set_title(r"Pointwise error vs $V^{\mathrm{BT}}$ at $t=0$")
-    ax.legend(fontsize=9)
+    ax.legend(fontsize=9, loc="upper left",
+              bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
     ax.grid(True, alpha=0.3)
     fig.suptitle(f"Formulation ablation — Error vs BT\n{_SUPTITLE_PARAMS}", fontsize=10)
-    fig.tight_layout(rect=[0, 0.14, 1, 1])
+    fig.tight_layout(rect=[0, 0.14, 0.80, 1])
     _add_formula_box(fig, _FORMULA_TC, bottom_margin=0.16)
     fig.savefig(comp_dir / "form_error_vs_bt.png", dpi=150)
     plt.close(fig)
@@ -1794,10 +1799,11 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
         ax.set_xlabel(r"$t$  (Stage B time)")
         ax.set_ylabel(r"$\mathbb{E}_{S=K}[|\mathcal{F}[V_\theta]|]$")
         ax.set_title(r"Mean PDE residual along $S=K$  (Stage B interval)")
-        ax.legend(fontsize=9)
+        ax.legend(fontsize=9, loc="upper left",
+                  bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
         ax.grid(True, alpha=0.3)
         fig.suptitle(f"Formulation ablation — PDE profile\n{_SUPTITLE_PARAMS}", fontsize=10)
-        fig.tight_layout(rect=[0, 0.18, 1, 1])
+        fig.tight_layout(rect=[0, 0.18, 0.80, 1])
         _add_formula_box(fig, _FORMULA_PDE_PROFILE, bottom_margin=0.20)
         fig.savefig(comp_dir / "form_pde_residual_by_t.png", dpi=150)
         plt.close(fig)
@@ -1829,7 +1835,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
                             bar_rect.get_height() * 1.02,
                             f"{val:.2e}", ha="center", va="bottom", fontsize=8)
             fig.suptitle(f"Formulation ablation — TC error\n{_SUPTITLE_PARAMS}", fontsize=10)
-            fig.tight_layout(rect=[0, 0.18, 1, 1])
+            fig.tight_layout(rect=[0, 0.18, 0.80, 1])
             _add_formula_box(fig, _FORMULA_TC_ERROR, bottom_margin=0.20)
             fig.savefig(comp_dir / "form_tc_error_at_t1.png", dpi=150)
             plt.close(fig)
@@ -1845,7 +1851,10 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
             and res["metrics"].get("greeks") is not None
         ]
         if greek_results:
-            fig, (ax_d, ax_g) = plt.subplots(1, 2, figsize=(14, 6))
+            # Widened 14 -> 18 inches: two panels, each with an external
+            # legend on its right edge; tight_layout was warning that the
+            # original width couldn't accommodate the legend strip.
+            fig, (ax_d, ax_g) = plt.subplots(1, 2, figsize=(18, 6))
             # BT reference from the first variant that has it (same for all).
             ref = greek_results[0]["metrics"]["greeks"]
             ax_d.plot(ref["s"], ref["bt_delta"], "k--", linewidth=1.6,
@@ -1874,10 +1883,16 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
             ax_g.set_ylabel(r"$\Gamma = \partial^2 V/\partial S^2$")
             ax_d.set_title(r"Delta at $t=0$  (vs BT reference)")
             ax_g.set_title(r"Gamma at $t=0$  (vs BT reference)")
-            ax_d.legend(fontsize=8); ax_d.grid(True, alpha=0.3)
-            ax_g.legend(fontsize=8); ax_g.grid(True, alpha=0.3)
+            ax_d.grid(True, alpha=0.3)
+            ax_g.grid(True, alpha=0.3)
+            ax_d.legend(fontsize=8, loc="upper left",
+                        bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
+            ax_g.legend(fontsize=8, loc="upper left",
+                        bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
             fig.suptitle(f"Formulation ablation — Greeks vs BT\n{_SUPTITLE_PARAMS}", fontsize=10)
-            fig.tight_layout(rect=[0, 0.08, 1, 1])
+            # Reserve right ~22 % of the figure for the two external legends
+            # (one per panel, anchored to the right of each axes).
+            fig.tight_layout(rect=[0, 0.08, 0.78, 1])
             fig.text(0.5, 0.01,
                      r"$\Delta$ via autograd: $\partial V_\theta/\partial S$. "
                      r"$\Gamma$ via autograd: $\partial^2 V_\theta/\partial S^2$. "
@@ -1992,12 +2007,19 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
                 ax.set_ylabel(r"$V_\theta(S, t)$")
             ax.set_title(rf"$t = {t_val:.3f}$")
             ax.grid(True, alpha=0.3)
-            ax.legend(fontsize=7)
+        # Single figure-level legend (all panels carry the same curve set:
+        # one variant per coloured line + the BT reference per slice).
+        # Pulled from the right-most panel because it usually has the most
+        # references on (BT @ t1 / V_target).
+        handles_pby, labels_pby = axes[-1].get_legend_handles_labels()
+        fig.legend(handles_pby, labels_pby,
+                   loc="upper left", bbox_to_anchor=(0.82, 0.95),
+                   fontsize=7, frameon=True)
         fig.suptitle(
             f"Formulation ablation — Price by time slices\n{_SUPTITLE_PARAMS}",
             fontsize=10,
         )
-        fig.tight_layout(rect=[0, 0.08, 1, 1])
+        fig.tight_layout(rect=[0, 0.08, 0.80, 1])
         fig.text(
             0.5, 0.01,
             r"Reference at every $t$: bermudan binomial tree ($N=2000$) on the "
@@ -2097,13 +2119,19 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
             if k == 0:
                 ax_d.set_ylabel(r"$\Delta = \partial V/\partial S$")
                 ax_g.set_ylabel(r"$\Gamma = \partial^2 V/\partial S^2$")
-            ax_d.legend(fontsize=7)
-            ax_g.legend(fontsize=7)
+        # Single figure-level legend for Greeks-by-t (same logic as
+        # form_prices_by_t — every panel shares the variant set; ax_d and
+        # ax_g carry the same coloured curves with different y-axes).
+        # Pull handles from one panel (top-right has BT @ t1 reference).
+        handles_gby, labels_gby = axes[0, -1].get_legend_handles_labels()
+        fig.legend(handles_gby, labels_gby,
+                   loc="upper left", bbox_to_anchor=(0.82, 0.95),
+                   fontsize=7, frameon=True)
         fig.suptitle(
             f"Formulation ablation — Greeks by time slices\n{_SUPTITLE_PARAMS}",
             fontsize=10,
         )
-        fig.tight_layout(rect=[0, 0.06, 1, 1])
+        fig.tight_layout(rect=[0, 0.06, 0.80, 1])
         fig.text(
             0.5, 0.01,
             r"$\Delta, \Gamma$ via autograd on $V_\theta$.  References at every "
