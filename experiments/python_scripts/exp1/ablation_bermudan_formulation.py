@@ -2122,6 +2122,25 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
             ax_g.axvline(p3.K, color="gray", linestyle=":", linewidth=0.8)
             _add_s_star_line(ax_d, s_star, with_label=(k == 0))
             _add_s_star_line(ax_g, s_star, with_label=False)
+            # Y-axis clipping anchored to the BT control curve.  At t = t_1
+            # the naïve-max variant's Γ has a Dirac-like spike at s* (its
+            # Δ has a hard step) which auto-scales the y-axis far beyond
+            # the other mollifier curves' bounded bell-curves; the result
+            # is that 4 of 5 curves get visually flattened to y ≈ 0.  By
+            # pinning the y-limits to the BT reference's range (with a
+            # 50 % margin) we let the naïve spike extend off-plot while
+            # keeping every other variant in the visible window.  At
+            # t < t_1 the BT and predicted Γ are of similar amplitude so
+            # the clipping has no practical effect.
+            if has_per_slice_ref:
+                for ref_curve, ax in [(ref_delta_by_t[k], ax_d),
+                                       (ref_gamma_by_t[k], ax_g)]:
+                    ref_min = float(np.nanmin(ref_curve))
+                    ref_max = float(np.nanmax(ref_curve))
+                    span    = ref_max - ref_min
+                    if span > 1e-9:
+                        margin = 0.50 * span
+                        ax.set_ylim(ref_min - margin, ref_max + margin)
             ax_d.set_title(rf"$t = {t_val:.3f}$")
             ax_d.grid(True, alpha=0.3)
             ax_g.set_xlabel(r"Asset price $S$")
