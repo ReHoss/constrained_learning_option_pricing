@@ -2280,7 +2280,7 @@ def _plot_mollifier_shapes(ablation_dir: Path, mode: str,
         if show_legend:
             ax.legend(fontsize=7, loc="upper right")
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(3, 2, figsize=(14, 14))
     _draw_panel(axes[0, 0], 0.0, 60.0, 140.0,
                 rf"$t = 0$ (maximum interior smoothing)",  show_legend=True)
     _draw_panel(axes[0, 1], t1,  60.0, 140.0,
@@ -2295,6 +2295,64 @@ def _plot_mollifier_shapes(ablation_dir: Path, mode: str,
                     rf"$t = 0$, ATM zoom $s \in [K-10, K+10]$")
         _draw_panel(axes[1, 1], t1, K - 10.0, K + 10.0,
                     rf"$t = t_1$, ATM zoom")
+
+    # ── Row 3: abstract smoothers, independent of the bermudan problem ───────
+    # The mollifier identity max(a, b) = 0.5 (a + b + |a - b|) decouples the
+    # smoothing of the max into the smoothing of |.|, applied to the
+    # difference x = a - b.  Plot the two underlying smoothers on a clean
+    # x-axis so the reader can see the convergence to the exact non-smooth
+    # function as eps -> 0 / beta -> infty.
+    #
+    # Left panel:   ReLU(x) = max(x, 0)  and its smoothings
+    #   - softplus(x) / beta = (1/beta) log(1 + exp(beta x))
+    #   - CM:        0.5 (x + sqrt(x^2 + eps^2))
+    # Right panel:  |x|                 and its CM smoothing
+    #   - CM-abs:    sqrt(x^2 + eps^2)
+    x_abs = np.linspace(-3.0, 3.0, 1000)
+
+    def _draw_abstract_relu(ax) -> None:
+        ax.plot(x_abs, np.maximum(x_abs, 0.0),
+                color="k", linewidth=2.5,
+                label=r"Exact $\mathrm{ReLU}(x) = \max(x, 0)$", zorder=10)
+        # Softplus family at the catalogue's beta (100) plus visual sweep.
+        for beta_val, color in [(1.0, "#90caf9"), (5.0, "#42a5f5"), (100.0, "#0d47a1")]:
+            sp = np.log1p(np.exp(beta_val * x_abs)) / beta_val
+            ax.plot(x_abs, sp, color=color, linewidth=1.6,
+                    label=rf"Softplus, $\beta = {beta_val:g}$")
+        # CM family.  Use both the catalogue eps and a smaller / larger one
+        # to show the convergence.
+        for eps_val, color in [(2.0, "#f48fb1"), (1.0, "#c2185b"), (0.2, "#880e4f")]:
+            cm = 0.5 * (x_abs + np.sqrt(x_abs * x_abs + eps_val * eps_val))
+            ax.plot(x_abs, cm, color=color, linewidth=1.6,
+                    label=rf"CM-ReLU, $\varepsilon = {eps_val:g}$")
+        ax.axhline(0.0, color="gray", linestyle=":", linewidth=0.7, alpha=0.6)
+        ax.axvline(0.0, color="gray", linestyle=":", linewidth=0.7, alpha=0.6)
+        ax.set_xlabel(r"$x$")
+        ax.set_ylabel(r"smooth-$\mathrm{ReLU}(x)$")
+        ax.set_title(r"Abstract — smoothings of $\mathrm{ReLU}(x) = \max(x, 0)$",
+                     fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=7, loc="upper left")
+
+    def _draw_abstract_abs(ax) -> None:
+        ax.plot(x_abs, np.abs(x_abs),
+                color="k", linewidth=2.5,
+                label=r"Exact $|x|$", zorder=10)
+        for eps_val, color in [(2.0, "#a5d6a7"), (1.0, "#388e3c"), (0.2, "#1b5e20")]:
+            cm = np.sqrt(x_abs * x_abs + eps_val * eps_val)
+            ax.plot(x_abs, cm, color=color, linewidth=1.6,
+                    label=rf"$\sqrt{{x^2 + \varepsilon^2}}$, $\varepsilon = {eps_val:g}$")
+        ax.axhline(0.0, color="gray", linestyle=":", linewidth=0.7, alpha=0.6)
+        ax.axvline(0.0, color="gray", linestyle=":", linewidth=0.7, alpha=0.6)
+        ax.set_xlabel(r"$x$")
+        ax.set_ylabel(r"smooth-$|x|$")
+        ax.set_title(r"Abstract — Chen–Mangasarian smoothing of $|x|$",
+                     fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=7, loc="upper center")
+
+    _draw_abstract_relu(axes[2, 0])
+    _draw_abstract_abs(axes[2, 1])
 
     # Mode is informational only; older runs predate the metadata field so
     # rather than emitting a misleading "tc-enforcement" default, infer the
