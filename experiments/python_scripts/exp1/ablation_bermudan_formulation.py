@@ -1756,31 +1756,62 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
     logger.info("[OK] form_prices.png")
 
     # ------------------------------------------------------------------
-    # Plot 5 — Pointwise absolute error vs BT at t=0
+    # Plot 5 — Pointwise absolute + relative error vs BT at t=0
     # ------------------------------------------------------------------
-    fig, ax = plt.subplots(figsize=(10, 6))
+    # Two side-by-side panels: absolute error (linear y) and relative
+    # error (log y).  Relative error uses a price-floor at 1 % of the
+    # max |V^BT| so the deep-OTM tail (where V^BT -> 0) doesn't blow
+    # up by 0/0; the floor keeps the curve well-defined across the
+    # whole S grid while preserving the relative ranking where prices
+    # are not vanishing.
+    fig, (ax_abs, ax_rel) = plt.subplots(1, 2, figsize=(16, 6), sharex=True)
     for i, res in enumerate(results):
         prices = res.get("etcnn_b_prices")
         bt     = res.get("bt_prices")
         s_arr  = res.get("s_eval_arr")
         if prices is None or bt is None or s_arr is None:
             continue
-        err = np.abs(prices - bt)
-        mae = float(res.get("mae_bt", np.mean(err)))
-        ax.plot(s_arr, err,
-                label=rf"{labels[i]}  ($\mathrm{{MAE}}={mae:.2e}$)",
-                color=colors[i], linestyle=linestyles[i], linewidth=linewidths[i])
-    _add_s_star_line(ax, s_star)
-    ax.set_xlabel("Asset price $S$")
-    ax.set_ylabel(r"$|V_\theta(S,0) - V^{\mathrm{BT}}(S,0)|$")
-    ax.set_title(r"Pointwise error vs $V^{\mathrm{BT}}$ at $t=0$")
-    ax.legend(fontsize=8, loc="upper center",
-              bbox_to_anchor=(0.5, -0.18), ncol=3,
-              frameon=True, borderaxespad=0)
-    ax.grid(True, alpha=0.3)
+        err_abs = np.abs(prices - bt)
+        mae     = float(res.get("mae_bt", np.mean(err_abs)))
+        rel_l2  = float(res.get("metrics", {}).get("rel_l2_bt", float("nan"))
+                        if res.get("metrics") is not None
+                        else res.get("rel_l2_bt", float("nan")))
+        bt_max  = max(float(np.nanmax(np.abs(bt))), 1e-12)
+        denom   = np.maximum(np.abs(bt), 0.01 * bt_max)
+        err_rel = err_abs / denom
+        label_combined = (
+            rf"{labels[i]}  ($\mathrm{{MAE}}={mae:.2e}$, "
+            rf"$\varepsilon_{{L^2}}={rel_l2:.2e}$)"
+        )
+        ax_abs.plot(s_arr, err_abs,
+                    label=label_combined,
+                    color=colors[i], linestyle=linestyles[i],
+                    linewidth=linewidths[i])
+        ax_rel.plot(s_arr, err_rel,
+                    color=colors[i], linestyle=linestyles[i],
+                    linewidth=linewidths[i])
+    _add_s_star_line(ax_abs, s_star)
+    _add_s_star_line(ax_rel, s_star, with_label=False)
+    ax_abs.set_xlabel("Asset price $S$")
+    ax_abs.set_ylabel(r"$|V_\theta(S,0) - V^{\mathrm{BT}}(S,0)|$")
+    ax_abs.set_title(r"Absolute error vs $V^{\mathrm{BT}}$ at $t=0$")
+    ax_abs.grid(True, alpha=0.3)
+    ax_rel.set_xlabel("Asset price $S$")
+    ax_rel.set_ylabel(
+        r"$|V_\theta - V^{\mathrm{BT}}|\,/\,\max(|V^{\mathrm{BT}}|,\,0.01\,|V^{\mathrm{BT}}|_{\max})$"
+    )
+    ax_rel.set_title(r"Relative error vs $V^{\mathrm{BT}}$ at $t=0$")
+    ax_rel.set_yscale("log")
+    ax_rel.grid(True, alpha=0.3, which="both")
+    # Fig-level legend below both panels — both panels share the same
+    # variants; only the y-quantity differs.
+    h_eb, l_eb = ax_abs.get_legend_handles_labels()
+    fig.legend(h_eb, l_eb,
+               loc="lower center", bbox_to_anchor=(0.5, 0.10),
+               ncol=2, fontsize=8, frameon=True)
     fig.suptitle(f"Formulation ablation — Error vs BT\n{_SUPTITLE_PARAMS}", fontsize=10)
-    fig.tight_layout(rect=[0, 0.26, 1, 1])
-    _add_formula_box(fig, _FORMULA_TC, bottom_margin=0.28)
+    fig.tight_layout(rect=[0, 0.28, 1, 1])
+    _add_formula_box(fig, _FORMULA_TC, bottom_margin=0.30)
     fig.savefig(comp_dir / "form_error_vs_bt.png", dpi=150)
     plt.close(fig)
     logger.info("[OK] form_error_vs_bt.png")
