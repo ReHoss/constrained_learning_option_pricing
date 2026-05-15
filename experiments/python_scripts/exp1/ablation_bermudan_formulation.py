@@ -193,7 +193,10 @@ VARIANTS: list[dict] = [
         "noise_n_modes":  8,        # number of Fourier modes
         "noise_seed":     0,        # fixed seed so the perturbation is reproducible across runs
         "color":          "#7b1fa2",  # purple-700 — distinct from the noise-free cm_time green
-        "linestyle":      "--",
+        # Solid line — dashed / dotted are reserved for ground-truth overlays
+        # (BT controls, V_target, payoff (K-s)+, V^E_BS).  This is a trained
+        # model, not a reference, so it stays solid.
+        "linestyle":      "-",
         "linewidth":      2.0,
     },
     # ── Mode: noise-sweep ────────────────────────────────────────────────────
