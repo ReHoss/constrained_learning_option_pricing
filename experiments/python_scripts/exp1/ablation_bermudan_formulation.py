@@ -1233,6 +1233,39 @@ def compute_metrics_stage_b(
             ref_price_t1 = None
             ref_delta_t1 = None
             ref_gamma_t1 = None
+        # BT control curve at **every** t_slice — not only at t=0 and t=t1.
+        # For t in [0, t1] the BT is evaluated on the shifted interval
+        # [0, T - t] with the single exercise relocated to (t1 - t); for
+        # t > t1 it collapses to a pure European put.  Reuses the t=0 BT
+        # (already computed as bt_prices) and the analytical V_target at
+        # t=t1 (when v_target_fn is provided, which it always is in
+        # --analytical-stage-a mode and for the mollifier-mode variants).
+        n_t_slices = len(_T_SLICES_BERMUDAN)
+        ref_price_by_t = np.zeros((n_t_slices, len(s_eval_arr)), dtype=np.float64)
+        ref_delta_by_t = np.zeros_like(ref_price_by_t)
+        ref_gamma_by_t = np.zeros_like(ref_price_by_t)
+        ref_present_by_t = [False] * n_t_slices
+        for k, t_val in enumerate(_T_SLICES_BERMUDAN):
+            if abs(t_val - 0.0) < 1e-12:
+                ref_p = ref_price_t0
+            elif abs(t_val - p3.t1) < 1e-12 and ref_price_t1 is not None:
+                ref_p = ref_price_t1
+            else:
+                # Recompute BT on the shifted interval.  ~50 BT calls of
+                # N=2000 each — small (~5 s on CPU) and runs once per
+                # variant at metrics time.
+                try:
+                    ref_p = _bermudan_put_at_t(s_eval_arr, float(t_val), N=2000)
+                except Exception as exc:
+                    logger.warning(
+                        f"compute_metrics_stage_b: BT@t={t_val:.3f} "
+                        f"failed ({exc}); slice reference omitted."
+                    )
+                    continue
+            ref_present_by_t[k] = True
+            ref_price_by_t[k] = ref_p
+            ref_delta_by_t[k] = np.gradient(ref_p, s_eval_arr)
+            ref_gamma_by_t[k] = np.gradient(ref_delta_by_t[k], s_eval_arr)
         slices.update({
             "ref_price_t0": ref_price_t0,
             "ref_delta_t0": ref_delta_t0,
@@ -1240,6 +1273,12 @@ def compute_metrics_stage_b(
             "ref_price_t1": ref_price_t1,
             "ref_delta_t1": ref_delta_t1,
             "ref_gamma_t1": ref_gamma_t1,
+            # Multi-time BT controls: arrays of shape (n_t_slices, n_s)
+            # plus a per-slice presence mask.
+            "ref_price_by_t":   ref_price_by_t,
+            "ref_delta_by_t":   ref_delta_by_t,
+            "ref_gamma_by_t":   ref_gamma_by_t,
+            "ref_present_by_t": ref_present_by_t,
         })
     except Exception as exc:
         logger.warning(f"compute_metrics_stage_b: slice evaluation failed ({exc})")
@@ -1264,6 +1303,52 @@ def compute_metrics_stage_b(
 # ---------------------------------------------------------------------------
 # Evaluate a trained model vs binomial tree
 # ---------------------------------------------------------------------------
+
+def _bermudan_put_at_t(s_grid: np.ndarray, t: float, *, N: int = 2000) -> np.ndarray:
+    """Bermudan-put price reference at (s, t) on the entire ``s_grid``.
+
+    The Bermudan option allows a single exercise at ``p3.t1``.  By the
+    BSM-PDE time-translation invariance on intervals between exercise dates:
+
+    * For ``t in [0, t1]`` (Stage B domain) the price equals a binomial-tree
+      evaluation on the **shifted** interval ``[0, T - t]`` with the single
+      exercise relocated to ``t1 - t``.  At ``t = t1`` the BT collapses to
+      one backward step from the terminal payoff that crosses the exercise
+      gate immediately, recovering the Bermudan target
+      ``V_target(s) = max((K-s)+, V^E_BS(s, t1))`` to BT-discretisation
+      accuracy.
+    * For ``t > t1`` the exercise opportunity has passed and the option is
+      a pure European put on ``[t, T]``.
+
+    This lets the canonical multi-time slice plots
+    (``form_prices_by_t.png``, ``form_greeks_by_t.png``) carry a BT control
+    curve at **every** ``t_slice``, not only at ``t = 0`` and ``t = t1``.
+
+    Args:
+        s_grid:  Uniform asset-price grid (numpy).
+        t:       Evaluation time in ``[0, T]``.
+        N:       Binomial-tree time steps (default 2000, matches
+                 ``_evaluate_vs_binomial_tree``).
+
+    Returns:
+        1-D numpy array of prices, shape ``(len(s_grid),)``.
+    """
+    from learning_option_pricing.solvers.binomial_tree import (
+        bermuda_put_binomial_tree,
+        european_put_binomial_tree,
+    )
+    if t >= p3.t1:
+        return np.array([
+            european_put_binomial_tree(float(s), p3.K, p3.r, p3.sigma, p3.T - t, N=N)
+            for s in s_grid
+        ])
+    return np.array([
+        bermuda_put_binomial_tree(
+            float(s), p3.K, p3.r, p3.sigma, p3.T - t, [p3.t1 - t], N=N,
+        )
+        for s in s_grid
+    ])
+
 
 def _evaluate_vs_binomial_tree(model: torch.nn.Module) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
     """Evaluate model at t=0 and compute MAE and relative L2 vs BT.
@@ -1355,6 +1440,16 @@ def _save_variant_results(res: dict, vdir: Path) -> None:
                     "slice_ref_delta_t1": np.asarray(slices["ref_delta_t1"]),
                     "slice_ref_gamma_t1": np.asarray(slices["ref_gamma_t1"]),
                 })
+            # Multi-time BT references (one row per t_slice).  Older runs
+            # without this key still load fine — the plotter falls back to
+            # the legacy t=0 / t=t1-only references when these are missing.
+            if slices.get("ref_price_by_t") is not None:
+                payload.update({
+                    "slice_ref_price_by_t":   np.asarray(slices["ref_price_by_t"]),
+                    "slice_ref_delta_by_t":   np.asarray(slices["ref_delta_by_t"]),
+                    "slice_ref_gamma_by_t":   np.asarray(slices["ref_gamma_by_t"]),
+                    "slice_ref_present_by_t": np.asarray(slices["ref_present_by_t"], dtype=bool),
+                })
         np.savez_compressed(vdir / "metrics.npz", **payload)
 
 
@@ -1415,6 +1510,16 @@ def _load_variant_results(vdir: Path, summary_entry: dict, style: dict) -> dict:
                 slices.update({"ref_price_t1": None,
                                "ref_delta_t1": None,
                                "ref_gamma_t1": None})
+            # Multi-time BT references (one row per t_slice).  Older
+            # metrics.npz files don't carry these — the plotter then
+            # falls back to ref_*_t0 / ref_*_t1 (boundary-only).
+            if "slice_ref_price_by_t" in m.files:
+                slices.update({
+                    "ref_price_by_t":   m["slice_ref_price_by_t"],
+                    "ref_delta_by_t":   m["slice_ref_delta_by_t"],
+                    "ref_gamma_by_t":   m["slice_ref_gamma_by_t"],
+                    "ref_present_by_t": m["slice_ref_present_by_t"].tolist(),
+                })
             metrics["slices"] = slices
         else:
             metrics["slices"] = None
@@ -1821,19 +1926,53 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
              if r["metrics"]["slices"].get("ref_gamma_t1") is not None),
             None,
         )
+        # Per-slice BT-reference array if the metrics.npz carries it.  Pulled
+        # from any of the slice_results (they share the same reference grid).
+        ref_price_by_t = next(
+            (np.asarray(r["metrics"]["slices"].get("ref_price_by_t"))
+             for r in slice_results
+             if r["metrics"]["slices"].get("ref_price_by_t") is not None),
+            None,
+        )
+        ref_present_by_t = next(
+            (list(r["metrics"]["slices"].get("ref_present_by_t", []))
+             for r in slice_results
+             if r["metrics"]["slices"].get("ref_present_by_t") is not None),
+            None,
+        )
+
         fig, axes = plt.subplots(1, n_t, figsize=(5 * n_t, 5), sharey=True)
         if n_t == 1:
             axes = [axes]
         for k, t_val in enumerate(t_slices):
             ax = axes[k]
-            # Reference overlays where they exist.
-            if k == 0:
-                ax.plot(s_ax, ref0["ref_price_t0"], "k--", linewidth=1.8,
-                        label=r"$V^{\mathrm{BT}}(S,0)$", zorder=10)
+            # Reference overlay at this slice.  Preference order:
+            #   (1) per-slice BT (multi-t control — new in 2026-05-15),
+            #   (2) legacy t=0 BT for k==0,
+            #   (3) legacy t=t1 V_target.
+            ref_label_at_t = None
+            ref_curve_at_t = None
+            if (ref_price_by_t is not None
+                    and ref_present_by_t is not None
+                    and k < len(ref_present_by_t)
+                    and bool(ref_present_by_t[k])):
+                ref_curve_at_t = ref_price_by_t[k]
+                if abs(float(t_val) - 0.0) < 1e-9:
+                    ref_label_at_t = r"$V^{\mathrm{BT}}(S,\,0)$"
+                elif abs(float(t_val) - float(p3.t1)) < 1e-9:
+                    ref_label_at_t = (r"$V^{\mathrm{BT}}(S,\,t_1)$"
+                                       r" $=V_{\mathrm{target}}$")
+                else:
+                    ref_label_at_t = rf"$V^{{\mathrm{{BT}}}}(S,\,{float(t_val):.3f})$"
+            elif k == 0:
+                ref_curve_at_t = ref0["ref_price_t0"]
+                ref_label_at_t = r"$V^{\mathrm{BT}}(S,0)$"
             elif np.isclose(t_val, p3.t1) and ref_t1 is not None:
-                ax.plot(s_ax, ref_t1, "k--", linewidth=1.8,
-                        label=r"$V_{\mathrm{target}}(S)$  (analytical)",
-                        zorder=10)
+                ref_curve_at_t = ref_t1
+                ref_label_at_t = r"$V_{\mathrm{target}}(S)$  (analytical)"
+            if ref_curve_at_t is not None:
+                ax.plot(s_ax, ref_curve_at_t, "k--", linewidth=1.8,
+                        label=ref_label_at_t, zorder=10)
             # Predicted curves, all variants.
             for res in slice_results:
                 sl = res["metrics"]["slices"]
@@ -1858,10 +1997,11 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
         fig.tight_layout(rect=[0, 0.08, 1, 1])
         fig.text(
             0.5, 0.01,
-            r"References: BT (binomial tree, $N=2000$) at $t=0$;  "
-            r"$V_{\mathrm{target}}(S)=\max(\Phi(S), V^{\mathrm{eur}}(S, t_1))$ "
-            r"at $t=t_1$ (analytical Stage A only).  No analytical reference "
-            r"at intermediate $t$.",
+            r"Reference at every $t$: bermudan binomial tree ($N=2000$) on the "
+            r"shifted interval $[t,\,T]$ with the single exercise at $t_1$. "
+            r"At $t=t_1$ this collapses to "
+            r"$V_{\mathrm{target}}(S)=\max(\Phi(S),\, V^{\mathrm{eur}}(S, t_1))$, "
+            r"at $t>t_1$ to a pure European put.",
             ha="center", va="bottom", fontsize=8, bbox=_BOX_STYLE,
         )
         fig.savefig(comp_dir / "form_prices_by_t.png", dpi=150)
@@ -1877,12 +2017,50 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
     # at t=0, V_target-FD refs at t=t1; intermediate t shows predicted
     # curves only.
     if slice_results:
+        # Per-slice multi-t BT references for Delta / Gamma (FD on the
+        # shifted-BT price curve).  Same fallback chain as form_prices_by_t.
+        ref_delta_by_t = next(
+            (np.asarray(r["metrics"]["slices"].get("ref_delta_by_t"))
+             for r in slice_results
+             if r["metrics"]["slices"].get("ref_delta_by_t") is not None),
+            None,
+        )
+        ref_gamma_by_t = next(
+            (np.asarray(r["metrics"]["slices"].get("ref_gamma_by_t"))
+             for r in slice_results
+             if r["metrics"]["slices"].get("ref_gamma_by_t") is not None),
+            None,
+        )
+        ref_present_by_t = next(
+            (list(r["metrics"]["slices"].get("ref_present_by_t", []))
+             for r in slice_results
+             if r["metrics"]["slices"].get("ref_present_by_t") is not None),
+            None,
+        )
+
         fig, axes = plt.subplots(2, n_t, figsize=(5 * n_t, 9), sharex=True)
         if n_t == 1:
             axes = axes.reshape(2, 1)
         for k, t_val in enumerate(t_slices):
             ax_d, ax_g = axes[0, k], axes[1, k]
-            if k == 0:
+            # Reference overlay at this slice (same priority as in
+            # form_prices_by_t): per-slice BT first, then legacy boundary.
+            has_per_slice_ref = (
+                ref_delta_by_t is not None
+                and ref_gamma_by_t is not None
+                and ref_present_by_t is not None
+                and k < len(ref_present_by_t)
+                and bool(ref_present_by_t[k])
+            )
+            if has_per_slice_ref:
+                t_lbl = rf"\,t={float(t_val):.3f}"
+                ax_d.plot(s_ax, ref_delta_by_t[k], "k--", linewidth=1.6,
+                          label=rf"$\Delta^{{\mathrm{{BT}}}}({t_lbl})$",
+                          zorder=10)
+                ax_g.plot(s_ax, ref_gamma_by_t[k], "k--", linewidth=1.6,
+                          label=rf"$\Gamma^{{\mathrm{{BT}}}}({t_lbl})$",
+                          zorder=10)
+            elif k == 0:
                 ax_d.plot(s_ax, ref0["ref_delta_t0"], "k--", linewidth=1.6,
                           label=r"$\Delta^{\mathrm{BT}}$", zorder=10)
                 ax_g.plot(s_ax, ref0["ref_gamma_t0"], "k--", linewidth=1.6,
@@ -1925,10 +2103,10 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
         fig.tight_layout(rect=[0, 0.06, 1, 1])
         fig.text(
             0.5, 0.01,
-            r"$\Delta, \Gamma$ via autograd on $V_\theta$.  References at "
-            r"$t=0$: finite differences on $V^{\mathrm{BT}}$.  References at "
-            r"$t=t_1$: finite differences on $V_{\mathrm{target}}$ "
-            r"(analytical Stage A only).",
+            r"$\Delta, \Gamma$ via autograd on $V_\theta$.  References at every "
+            r"$t$: finite differences on the bermudan BT price ($N=2000$) on "
+            r"the shifted interval $[t,\,T]$ with the single exercise at $t_1$. "
+            r"At $t=t_1$ this collapses to FD on $V_{\mathrm{target}}$.",
             ha="center", va="bottom", fontsize=8, bbox=_BOX_STYLE,
         )
         fig.savefig(comp_dir / "form_greeks_by_t.png", dpi=150)
@@ -1990,6 +2168,163 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
 # ---------------------------------------------------------------------------
 # Replot mode
 # ---------------------------------------------------------------------------
+
+def _plot_mollifier_shapes(ablation_dir: Path, mode: str,
+                             variants_meta: list[dict],
+                             excluded: set[str], output_subdir: str = "comparison",
+                             s_star: float | None = None) -> None:
+    """Diagnostic figure: overlay every mollifier $g_2^B(s,t)$ used in the run.
+
+    Re-instantiates each variant's mollifier via :func:`_build_mollifier_g2`
+    (purely analytical — no trained model needed) and plots:
+
+    * Row 1: $g_2^B(s, t=0)$ — maximum interior smoothing.
+    * Row 2: $g_2^B(s, t=t_1)$ — boundary recovery.
+    * Cols : full range $[60, 140]$ and zoom around $s^* \pm 5$.
+
+    Saved as ``<output_subdir>/mollifier_shapes.png``.  Skipped when the
+    run carries no mollifier variants (e.g. pure ``tc-enforcement`` mode).
+
+    Args:
+        ablation_dir:  Run dir (used only to locate the output subfolder).
+        mode:          Ablation mode read from metadata.yaml — used only
+                       for the figure title.  The gate that decides whether
+                       to draw is *not* this string (older runs predate the
+                       field) but the presence of variants with a
+                       ``mollifier_*`` tc_type in the catalogue.
+        variants_meta: List of variant metadata dicts (from metadata.yaml's
+                       ``variants`` field).  Each must carry at least ``name``,
+                       ``tc_type`` and the per-variant style (color / label).
+        excluded:      Variant names to skip (from ``--exclude-variant``).
+        output_subdir: Subfolder of ``ablation_dir`` where the figure lands.
+        s_star:        Optional exercise-boundary marker; recomputed
+                       analytically if missing.
+    """
+    # Re-derive s* analytically if the caller didn't supply it.
+    if s_star is None:
+        try:
+            s_star = _compute_s_star_bermudan_analytical()
+        except Exception as exc:
+            logger.warning(f"_plot_mollifier_shapes: cannot recompute s* ({exc})")
+            s_star = float("nan")
+
+    K  = float(p3.K)
+    t1 = float(p3.t1)
+
+    # Restrict to variants whose tc_type triggers the mollifier path AND that
+    # weren't excluded.  The catalogue is the source of truth for hyper-
+    # parameters (``moll_eps``, ``noise_sigma_frac``, etc.) — the metadata
+    # only carries the variant *names*, so we look up each one in
+    # ``_STYLE_BY_NAME`` to get the full config.
+    mollifier_tc_types = {
+        "mollifier_naive", "mollifier_softplus",
+        "mollifier_cm_static", "mollifier_cm_time", "mollifier_cm_time_noisy",
+    }
+    plot_variants: list[dict] = []
+    for v_meta in variants_meta:
+        if v_meta["name"] in excluded:
+            continue
+        cat = _STYLE_BY_NAME.get(v_meta["name"])
+        if cat is None or cat.get("tc_type") not in mollifier_tc_types:
+            continue
+        plot_variants.append(cat)
+    if not plot_variants:
+        logger.info(
+            f"_plot_mollifier_shapes: mode={mode!r} but no mollifier "
+            f"variants survived the exclusion filter — skipping."
+        )
+        return
+
+    # Reference grids.
+    S_full = np.linspace(60.0, 140.0, 1000)
+    S_t    = torch.tensor(S_full, dtype=torch.get_default_dtype())
+    phi    = np.maximum(K - S_full, 0.0)
+    with torch.no_grad():
+        V_E = _bs_european_put_torch(S_t, t1).cpu().numpy()
+    V_target = np.maximum(phi, V_E)
+
+    def _eval_g2(variant_cfg: dict, t_val: float) -> np.ndarray:
+        """Re-build g_2^B from the catalogue entry and evaluate at (S_full, t_val)."""
+        g2_fn = _build_mollifier_g2(variant_cfg)
+        t_tensor = torch.full_like(S_t, float(t_val))
+        with torch.no_grad():
+            return g2_fn(S_t, t_tensor).cpu().numpy()
+
+    def _draw_panel(ax, t_val: float, s_lo: float, s_hi: float,
+                    title: str, show_legend: bool = False) -> None:
+        mask = (S_full >= s_lo) & (S_full <= s_hi)
+        S = S_full[mask]
+        ax.plot(S, V_target[mask], color="k", linewidth=2.5,
+                label=r"Exact $V_{\mathrm{target}} = \max((K-s)^+,\, V^E_{\mathrm{BS}}(s,t_1))$",
+                zorder=10)
+        ax.plot(S, phi[mask], color="gray", linestyle=":", linewidth=1.0,
+                alpha=0.7, label=r"$(K-s)^+$", zorder=5)
+        ax.plot(S, V_E[mask], color="gray", linestyle="--", linewidth=1.0,
+                alpha=0.7, label=r"$V^E_{\mathrm{BS}}(s, t_1)$", zorder=5)
+        for v in plot_variants:
+            vals = _eval_g2(v, t_val)[mask]
+            ax.plot(S, vals,
+                    color=v["color"], linestyle=v["linestyle"],
+                    linewidth=v["linewidth"], label=v["label"])
+        if not math.isnan(s_star):
+            ax.axvline(s_star, color="red", linestyle=":", linewidth=1.0, alpha=0.8)
+        if s_lo <= K <= s_hi:
+            ax.axvline(K, color="gray", linestyle=":", linewidth=0.8, alpha=0.5)
+        ax.set_xlabel(r"$s$")
+        ax.set_ylabel(r"$g_2^B(s, t)$")
+        ax.set_title(title, fontsize=10)
+        ax.grid(True, alpha=0.3)
+        if show_legend:
+            ax.legend(fontsize=7, loc="upper right")
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    _draw_panel(axes[0, 0], 0.0, 60.0, 140.0,
+                rf"$t = 0$ (maximum interior smoothing)",  show_legend=True)
+    _draw_panel(axes[0, 1], t1,  60.0, 140.0,
+                rf"$t = t_1 = {t1}$ (boundary)")
+    if not math.isnan(s_star):
+        _draw_panel(axes[1, 0], 0.0, s_star - 5.0, s_star + 5.0,
+                    rf"$t = 0$, zoom around $s^* \approx {s_star:.2f}$")
+        _draw_panel(axes[1, 1], t1, s_star - 5.0, s_star + 5.0,
+                    rf"$t = t_1$, zoom around $s^*$")
+    else:
+        _draw_panel(axes[1, 0], 0.0, K - 10.0, K + 10.0,
+                    rf"$t = 0$, ATM zoom $s \in [K-10, K+10]$")
+        _draw_panel(axes[1, 1], t1, K - 10.0, K + 10.0,
+                    rf"$t = t_1$, ATM zoom")
+
+    # Mode is informational only; older runs predate the metadata field so
+    # rather than emitting a misleading "tc-enforcement" default, infer the
+    # mode from the variant set when it's missing.
+    mollifier_modes = {v.get("mode") for v in plot_variants if v.get("mode")}
+    if mode == "tc-enforcement" and mollifier_modes:
+        mode_for_title = ", ".join(sorted(mollifier_modes))
+    else:
+        mode_for_title = mode
+    fig.suptitle(
+        rf"Mollifier $g_2^B(s, t)$ shapes — mode={mode_for_title}, $K={K:.0f}$, "
+        rf"$r={float(p3.r)}$, $\sigma={float(p3.sigma)}$, $T={float(p3.T)}$, $t_1={t1}$",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    formula = "\n".join([
+        r"Bermudan terminal: $V_{\mathrm{target}}(s) = \max((K-s)^+, V^E_{\mathrm{BS}}(s, t_1))$ — single kink at $s = s^*$",
+        r"Identity: $\max(a, b) = \frac{1}{2}(a + b + |a - b|)$;  every mollifier replaces $|\cdot|$ by a smooth surrogate",
+        r"Naïve: exact max ($C^0$ at $s^*$) | Softplus: $\frac{1}{\beta}\ln(e^{\beta a}+e^{\beta b})$",
+        r"CM static: $\frac{1}{2}(a + b + \sqrt{(a-b)^2 + \varepsilon^2})$ | CM time-dep: $\varepsilon \to \varepsilon(t)=\varepsilon_0(t_1-t)/t_1$ (exact at $t_1$)",
+        r"CM time-dep + noisy: $V^E \to V^E + \xi(s)$, $\xi$ a smooth Gaussian random field (single fixed realisation per variant)",
+    ])
+    fig.subplots_adjust(bottom=0.20)
+    fig.text(0.5, 0.01, formula, ha="center", va="bottom", fontsize=8,
+             bbox=_BOX_STYLE, linespacing=1.6)
+
+    out_dir = ablation_dir / output_subdir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "mollifier_shapes.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    logger.info(f"[OK] mollifier_shapes.png  ({len(plot_variants)} mollifiers; mode={mode!r})")
+
 
 def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> None:
     """Regenerate all plots from a saved run directory (no retraining).
@@ -2093,6 +2428,82 @@ def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> No
 
     logger.info(f"Loaded {len(results)} variants from {ablation_dir}")
 
+    # ── Backward-compat: regenerate per-slice BT references if absent ────────
+    # Older metrics.npz files predate the multi-time-BT reference (added on
+    # 2026-05-15) and only carry ref_*_t0 / ref_*_t1.  Compute the missing
+    # ref_*_by_t once here so old runs benefit from the new control curve
+    # in form_{prices,greeks}_by_t.png without having to retrain.  The
+    # cost is O(n_t_slices × n_s × N) BT calls — ~5 s on CPU.
+    def _slices_missing_ref_by_t(res: dict) -> bool:
+        m = res.get("metrics")
+        if not m or m.get("slices") is None:
+            return False
+        sl = m["slices"]
+        return sl.get("ref_price_by_t") is None
+
+    needs_regen = [r for r in results if _slices_missing_ref_by_t(r)]
+    if needs_regen and results:
+        first_slices = next(
+            (r["metrics"]["slices"] for r in results
+             if r.get("metrics") and r["metrics"].get("slices") is not None),
+            None,
+        )
+        if first_slices is not None:
+            t_slices_arr = list(first_slices["t_slices"])
+            s_eval_arr   = np.asarray(first_slices["ref_price_t0"]) * 0  # placeholder for shape
+            # Recover the original s_eval grid from the variant we just loaded.
+            # ``_evaluate_vs_binomial_tree`` always uses np.linspace(60, 140, 81),
+            # but we resolve it defensively from the saved price slices shape.
+            n_s_eval = len(first_slices["ref_price_t0"])
+            s_eval_arr = np.linspace(60.0, 140.0, n_s_eval)
+
+            logger.info(
+                f"Regenerating multi-time BT references for {len(needs_regen)} "
+                f"variant(s) at {len(t_slices_arr)} t-slices "
+                f"(t={[float(t) for t in t_slices_arr]}) — first-time backfill."
+            )
+            ref_price_by_t = np.zeros((len(t_slices_arr), n_s_eval), dtype=np.float64)
+            ref_delta_by_t = np.zeros_like(ref_price_by_t)
+            ref_gamma_by_t = np.zeros_like(ref_price_by_t)
+            ref_present_by_t = [False] * len(t_slices_arr)
+            for k, t_val in enumerate(t_slices_arr):
+                try:
+                    ref_p = _bermudan_put_at_t(s_eval_arr, float(t_val), N=2000)
+                    ref_price_by_t[k] = ref_p
+                    ref_delta_by_t[k] = np.gradient(ref_p, s_eval_arr)
+                    ref_gamma_by_t[k] = np.gradient(ref_delta_by_t[k], s_eval_arr)
+                    ref_present_by_t[k] = True
+                except Exception as exc:
+                    logger.warning(
+                        f"  BT regen failed at t={t_val:.3f} ({exc}); skipping."
+                    )
+            # Inject into every loaded variant's slices dict so the plotters
+            # downstream pick them up.  Also persist back to the metrics.npz
+            # so subsequent replots skip the regen.
+            for res in needs_regen:
+                sl = res["metrics"]["slices"]
+                sl["ref_price_by_t"]   = ref_price_by_t
+                sl["ref_delta_by_t"]   = ref_delta_by_t
+                sl["ref_gamma_by_t"]   = ref_gamma_by_t
+                sl["ref_present_by_t"] = ref_present_by_t
+            for v_meta in variants_meta:
+                vname = v_meta["name"]
+                if vname in excluded:
+                    continue
+                metrics_path = ablation_dir / f"variant_{vname}" / "metrics.npz"
+                if not metrics_path.exists():
+                    continue
+                with np.load(metrics_path) as m_in:
+                    payload = {k: m_in[k] for k in m_in.files}
+                if "slice_ref_price_by_t" in payload:
+                    continue  # already present — variant came from a fresh run
+                payload["slice_ref_price_by_t"]   = ref_price_by_t
+                payload["slice_ref_delta_by_t"]   = ref_delta_by_t
+                payload["slice_ref_gamma_by_t"]   = ref_gamma_by_t
+                payload["slice_ref_present_by_t"] = np.asarray(ref_present_by_t, dtype=bool)
+                np.savez_compressed(metrics_path, **payload)
+            logger.info("  Multi-time BT references regenerated and persisted.")
+
     if not extra_exclude:
         output_subdir = "comparison"
     else:
@@ -2105,6 +2516,16 @@ def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> No
 
     _plot_comparison(results, ablation_dir, iters_b,
                      output_subdir=output_subdir, s_star=s_star)
+
+    # Diagnostic figure showing the analytical shape of every mollifier
+    # g_2^B used in the run.  Pure analytical — needs no trained model
+    # — so runs even for the filtered ``--exclude-variant`` views.
+    # Restricted to modes whose variants carry a mollifier ansatz.
+    _plot_mollifier_shapes(
+        ablation_dir, mode=metadata.get("mode", "tc-enforcement"),
+        variants_meta=variants_meta, excluded=excluded,
+        output_subdir=output_subdir, s_star=s_star,
+    )
     if not extra_exclude:
         for res in results:
             _plot_variant(res, ablation_dir / f"variant_{res['name']}")
