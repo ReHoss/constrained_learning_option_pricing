@@ -1110,7 +1110,13 @@ def compute_metrics_stage_b(
         hist_b:       Training history (must contain "grad_norm").
         bt_prices:    Binomial-tree prices at s_eval_arr, t=0.
         s_eval_arr:   1-D asset-price evaluation grid.
-        v_target_fn:  Optional callable for TC error at t=t1 (soft variants only).
+        v_target_fn:  Optional callable s -> Ψ_k(s) = max(Φ(s), V^E(s, t₁)).
+                      When provided, tc_mae = mean |V̂(s,t₁) − Ψ_k(s)|, measuring
+                      the actual mismatch against the exact terminal condition.
+                      Pass None only for the "hard" ETCNN variant where g₂ = Ψ_k
+                      exactly (tc_mae would be 0 by construction and the eval is
+                      redundant).  For mollifier variants, always pass v_target_fn
+                      so the mollification bias is recorded.
 
     Returns:
         Dict with rel_l2_bt, rel_l2_atm, rel_l2_delta, gei, tc_mae, pde_residual_t.
@@ -1195,7 +1201,7 @@ def compute_metrics_stage_b(
             logger.warning(f"compute_metrics_stage_b: TC MAE failed ({exc})")
             tc_mae = float("nan")
     else:
-        tc_mae = 0.0  # hard BC: exactly 0 by construction
+        tc_mae = 0.0  # "hard" ETCNN only: g₂ = Ψ_k exactly, so V̂(·,t₁) ≡ Ψ_k
 
     # --- PDE residual profile along S=K for t in [0, t1] -------------------
     n_profile = 25
@@ -3343,7 +3349,17 @@ def main() -> None:
             hist_b=hist_b,
             bt_prices=bt_prices,
             s_eval_arr=s_eval_arr,
-            v_target_fn=v_target_fn if tc_type == "soft" else None,
+            # For "soft" variants, v_target_fn measures the penalty target mismatch.
+            # For "mollifier_*" variants, pass v_target_fn as well so tc_mae
+            # measures the mollification bias ‖V̂(·,t₁) − max(Φ,V^E)(·)‖,
+            # not the trivially-zero ‖V̂(·,t₁) − g₂_b(·,t₁)‖.
+            # For "hard" (exact ETCNN, g₂ = max(Φ,V^E) exactly), tc_mae = 0 is
+            # correct — pass None to skip the redundant computation.
+            v_target_fn=(
+                v_target_fn
+                if tc_type in ("soft",) or tc_type.startswith("mollifier_")
+                else None
+            ),
         )
         logger.info(
             f"  [{vname}] metrics: "
