@@ -6,13 +6,17 @@
 #   bash python_script_launcher.sh \
 #       -A <account>                                    \
 #       -p <path/to/script.py>                          \
-#       -a "<space-separated args for the python script>"
+#       -a "<space-separated args for the python script>" \
+#       [-c <constraint>] [-t <HH:MM:SS>]
 #
 # Example:
 #   bash python_script_launcher.sh \
 #       -A bae1234 \
 #       -p experiments/python_scripts/exp_singularity_european_call/ablation_singularity_logS.py \
 #       -a "--mode compare-boundary-singularity-european-call --add-variant naive --resume"
+#
+# Smoke test on non-billed HPDA (L40, shared):
+#   bash python_script_launcher.sh -A bae1234 -p ... -a "..." -c HPDA -t 00:10:00
 #
 # Notes:
 #   - For GPU work use python_script_launcher_gpu.sh (constraint=MI250).
@@ -27,7 +31,7 @@
 #   - Shared mode (omit ``--exclusive``) is enabled by default for CPU work
 #     so a 4-core job bills only 8 cores instead of a whole 192-core node.
 
-NAME_PROJECT="constrained_learning_option_pricing"
+NAME_PROJECT="learning_option_pricing"
 NAME_JOB_SCRIPT="run_python_script.slurm"
 
 # WORKDIR is set by the CINES login environment to
@@ -52,13 +56,24 @@ echo
 source "$PATH_VENV_BIN" && echo "Activation of virtual environment: $V_ENV_NAME"
 echo
 
+# --- sbatch defaults (overridable via CLI flags below) ---
+# Constraint=GENOA selects the AMD EPYC 9654 scalar partition (192 cores/node).
+# Smallest shared-mode billing is 8 cores; we pick exactly 8 here so we do
+# not waste CPU-hours on a node we don't need exclusively.
+S_BATCH_CPU_PER_TASK=8
+S_BATCH_SLURM_NTASKS=1
+S_BATCH_TIME=05:00:00
+S_BATCH_CONSTRAINT=GENOA
+
 # Parse command-line options
 S_BATCH_ACCOUNT=""
-while getopts 'A:p:a:' flag; do
+while getopts 'A:p:a:c:t:' flag; do
   case "${flag}" in
   A) S_BATCH_ACCOUNT="${OPTARG}" ;;
   p) PATH_PYTHON_SCRIPT="${OPTARG}" ;;
   a) ARGS_PYTHON_SCRIPT="${OPTARG}" ;;
+  c) S_BATCH_CONSTRAINT="${OPTARG}" ;;
+  t) S_BATCH_TIME="${OPTARG}" ;;
   *) echo "Unexpected option ${flag}" && exit 1 ;;
   esac
 done
@@ -87,15 +102,6 @@ echo
 echo "PATH_PYTHON_SCRIPT: $PATH_PYTHON_SCRIPT"
 echo "ARGS_PYTHON_SCRIPT: ${ARGS_PYTHON_SCRIPT:-}"
 echo
-
-# --- sbatch options (Adastra GENOA, shared mode) ---
-# Constraint=GENOA selects the AMD EPYC 9654 scalar partition (192 cores/node).
-# Smallest shared-mode billing is 8 cores; we pick exactly 8 here so we do
-# not waste CPU-hours on a node we don't need exclusively.
-S_BATCH_CPU_PER_TASK=8
-S_BATCH_SLURM_NTASKS=1
-S_BATCH_TIME=05:00:00
-S_BATCH_CONSTRAINT=GENOA
 
 # Adastra's SLURM auto-routes the bare project to the per-constraint
 # billing pool internally; passing the suffixed form (e.g. _genoa) is

@@ -5,17 +5,24 @@
 # Usage:
 #   bash python_script_launcher_gpu.sh \
 #       -p <path/to/script.py> \
-#       -a "<space-separated args for the python script>"
+#       -a "<space-separated args for the python script>" \
+#       [-q <qos>] [-t <HH:MM:SS>] [-A <account>]
 #
-# Example (one variant of the singularity ablation, 1 GPU, 4h):
-#   bash python_script_launcher_gpu.sh \
-#       -p experiments/python_scripts/exp_singularity_european_call/ablation_singularity_logS.py \
-#       -a "--mode compare-boundary-singularity-european-call --add-variant vpinn_lbfgs_full_batch --resume"
+# Examples:
+#   # Default (V100, qos_gpu-t3, 2h)
+#   bash python_script_launcher_gpu.sh -p .../train.py -a "..."
+#
+#   # Smoke test on the dev QoS (higher priority, 2h cap)
+#   bash python_script_launcher_gpu.sh -p .../train.py -a "..." \
+#       -q qos_gpu-dev -t 00:10:00
+#
+#   # A100 allocation
+#   bash python_script_launcher_gpu.sh -p .../train.py -a "..." -A akz@a100
 #
 # Reuses the slurm script slurm_script/run_python_script.slurm (the same one
 # used by the CPU launcher) — only the sbatch options differ here.
 
-NAME_PROJECT="constrained_learning_option_pricing"
+NAME_PROJECT="learning_option_pricing"
 NAME_JOB_SCRIPT="run_python_script.slurm"
 
 # Alias for workdir on Jean Zay
@@ -35,11 +42,27 @@ echo
 source "$PATH_VENV_BIN" && echo "Activation of virtual environment: $V_ENV_NAME"
 echo
 
+# --- sbatch defaults (overridable via CLI flags below) ---
+# 4 cores is the standard ratio for 1 GPU on the V100 partition (40 cores / 4 GPUs).
+S_BATCH_CPU_PER_TASK=4
+# 1 GPU per job — variants are submitted independently to run in parallel.
+S_BATCH_GPUS=1
+# Time: most variants converge in <2h on V100; bump to 19:59:00 for long runs.
+S_BATCH_TIME=02:00:00
+# QoS: qos_gpu-t3 → 20h max ; qos_gpu-dev → 2h, higher priority for testing.
+S_BATCH_QOS=qos_gpu-t3
+# Account: depends on your allocation — check `idracct` on Jean Zay.
+# Forms: <project>@v100, <project>@a100, <project>@h100
+S_BATCH_ACCOUNT=akz@v100
+
 # Parse command-line options
-while getopts 'p:a:' flag; do
+while getopts 'p:a:q:t:A:' flag; do
   case "${flag}" in
   p) PATH_PYTHON_SCRIPT="${OPTARG}" ;;
   a) ARGS_PYTHON_SCRIPT="${OPTARG}" ;;
+  q) S_BATCH_QOS="${OPTARG}" ;;
+  t) S_BATCH_TIME="${OPTARG}" ;;
+  A) S_BATCH_ACCOUNT="${OPTARG}" ;;
   *) echo "Unexpected option ${flag}" && exit 1 ;;
   esac
 done
@@ -58,7 +81,9 @@ echo
 #   --variant NAME           (single-variant standalone run)
 #   --add-variant NAME:DIR   (append to existing ablation dir)
 # In both cases we keep just NAME (the part before the first colon).
-VARIANT_TAG=$(echo "$ARGS_PYTHON_SCRIPT" | grep -oP '(?<=--(add-)?variant )\S+' | head -n1 | cut -d: -f1)
+# `\K` resets the match-start so the regex stays fixed-length (some PCRE
+# builds reject variable-length lookbehind with a warning otherwise).
+VARIANT_TAG=$(echo "$ARGS_PYTHON_SCRIPT" | grep -oP -- '--(?:add-)?variant +\K\S+' | head -n1 | cut -d: -f1)
 PATH_LOG_DIR="$WORKDIR"/logs/$NAME_PROJECT/"$BASENAME_SCRIPT"/$(date +"%Y-%m-%d_%H-%M-%S")${VARIANT_TAG:+_$VARIANT_TAG}
 echo "Log directory: $PATH_LOG_DIR"
 echo
@@ -70,22 +95,10 @@ echo "PATH_PYTHON_SCRIPT: $PATH_PYTHON_SCRIPT"
 echo "ARGS_PYTHON_SCRIPT: $ARGS_PYTHON_SCRIPT"
 echo
 
-# --- sbatch options (Jean Zay GPU partition) ---
-# 4 cores is the standard ratio for 1 GPU on the V100 partition (40 cores / 4 GPUs).
-S_BATCH_CPU_PER_TASK=4
-# 1 GPU per job — variants are submitted independently to run in parallel.
-S_BATCH_GPUS=1
-# Time: most variants converge in <2h on V100; bump to 19:59:00 for L-BFGS-3000.
-S_BATCH_TIME=02:00:00
-# QoS: qos_gpu-t3 → 20h max ; qos_gpu-dev → 2h, higher priority for testing.
-S_BATCH_QOS=qos_gpu-t3
-# Account: depends on your allocation — check `idracct` on Jean Zay.
-# Forms: <project>@v100, <project>@a100, <project>@h100
-S_BATCH_ACCOUNT=akz@v100
 S_BATCH_NODES=1
 S_BATCH_N_TASKS_PER_NODE=1
 # Resume-friendly: SLURM will requeue the job on preemption/time-limit; the
-# Python script's --resume flag picks up from the last checkpoint.
+# Python script's --resume flag (if present) picks up from the last checkpoint.
 S_BATCH_REQUEUE="--requeue"
 
 echo "sbatch options:"

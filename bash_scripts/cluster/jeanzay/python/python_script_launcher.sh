@@ -5,12 +5,19 @@
 # Usage:
 #   bash python_script_launcher.sh \
 #       -p <path/to/script.py> \
-#       -a "<space-separated args for the python script>"
+#       -a "<space-separated args for the python script>" \
+#       [-q <qos>] [-t <HH:MM:SS>] [-P <partition>]
 #
-# Example:
-#   bash python_script_launcher.sh \
-#       -p experiments/python_scripts/exp_singularity_european_call/ablation_singularity_logS.py \
-#       -a "--mode compare-boundary-singularity-european-call --add-variant naive --resume"
+# Examples:
+#   # Default (cpu_p1 + qos_cpu-t3, 5h)
+#   bash python_script_launcher.sh -p .../train.py -a "--device cpu"
+#
+#   # Smoke test on the dev QoS (higher priority, 2h cap)
+#   bash python_script_launcher.sh -p .../train.py -a "--debug" \
+#       -q qos_cpu-dev -t 00:10:00
+#
+#   # Non-billed prepost partition for replot / aggregation
+#   bash python_script_launcher.sh -p .../replot.py -a "..." -P prepost -t 01:00:00
 #
 # Notes:
 #   - For GPU work, use python_script_launcher_gpu.sh instead.
@@ -19,7 +26,7 @@
 #     activated via `source bin/activate` (no conda).
 
 # Name of the project — must match the directory name on the cluster
-NAME_PROJECT="constrained_learning_option_pricing"
+NAME_PROJECT="learning_option_pricing"
 # Name of the slurm job script to launch
 NAME_JOB_SCRIPT="run_python_script.slurm"
 
@@ -45,11 +52,26 @@ source "$PATH_VENV_BIN" && echo "Activation of virtual environment: $V_ENV_NAME"
 echo
 
 
+# --- sbatch defaults (overridable via CLI flags below) ---
+S_BATCH_CPU_PER_TASK=4
+S_BATCH_SLURM_NTASKS=1
+S_BATCH_TIME=05:00:00
+# Partition: cpu_p1 (general) or prepost (4h max, large memory, no GPU)
+S_BATCH_PARTITION=cpu_p1
+S_BATCH_QOS=qos_cpu-t3
+# Account: depends on your allocation — check `idracct` on Jean Zay
+# Typical forms: <project>@cpu, <project>@v100, <project>@a100, <project>@h100
+S_BATCH_ACCOUNT=akz@cpu
+
 # Parse command-line options
-while getopts 'p:a:' flag; do
+while getopts 'p:a:q:t:P:A:' flag; do
   case "${flag}" in
   p) PATH_PYTHON_SCRIPT="${OPTARG}" ;;
   a) ARGS_PYTHON_SCRIPT="${OPTARG}" ;;
+  q) S_BATCH_QOS="${OPTARG}" ;;
+  t) S_BATCH_TIME="${OPTARG}" ;;
+  P) S_BATCH_PARTITION="${OPTARG}" ;;
+  A) S_BATCH_ACCOUNT="${OPTARG}" ;;
   *) echo "Unexpected option ${flag}" && exit 1 ;;
   esac
 done
@@ -76,17 +98,6 @@ echo
 echo "PATH_PYTHON_SCRIPT: $PATH_PYTHON_SCRIPT"
 echo "ARGS_PYTHON_SCRIPT: $ARGS_PYTHON_SCRIPT"
 echo
-
-# --- sbatch options (Jean Zay CPU partition) ---
-S_BATCH_CPU_PER_TASK=4
-S_BATCH_SLURM_NTASKS=1
-S_BATCH_TIME=05:00:00
-# Partition: cpu_p1 (general) or prepost (4h max, large memory, no GPU)
-S_BATCH_PARTITION=cpu_p1
-S_BATCH_QOS=qos_cpu-t3
-# Account: depends on your allocation — check `idracct` on Jean Zay
-# Typical forms: <project>@cpu, <project>@v100, <project>@a100, <project>@h100
-S_BATCH_ACCOUNT=akz@cpu
 
 echo "sbatch options:"
 echo "  --job-name=$BASENAME_SCRIPT"

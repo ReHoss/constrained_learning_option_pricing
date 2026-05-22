@@ -6,13 +6,17 @@
 #   bash python_script_launcher_gpu.sh \
 #       -A <account>                                    \
 #       -p <path/to/script.py>                          \
-#       -a "<space-separated args for the python script>"
+#       -a "<space-separated args for the python script>" \
+#       [-c <constraint>] [-t <HH:MM:SS>] [-g <gpus-per-node>]
 #
-# Example (one variant of an ablation, 1 GCD, 4h):
+# Example (1 GCD, 2h):
 #   bash python_script_launcher_gpu.sh \
 #       -A bae1234 \
 #       -p experiments/python_scripts/exp_singularity_european_call/ablation_singularity_logS.py \
 #       -a "--mode compare-boundary-singularity-european-call --add-variant vpinn_lbfgs_full_batch --resume"
+#
+# Smoke test (constraint=MI250, 10 min):
+#   bash python_script_launcher_gpu.sh -A bae1234 -p ... -a "..." -t 00:10:00
 #
 # Reuses slurm_script/run_python_script.slurm (same script as the CPU
 # launcher) — only the sbatch options differ.
@@ -27,7 +31,7 @@
 #     CUDA wheel will not work; the diagnostic block in the SLURM script
 #     prints the HIP version so this is visible at the top of the log.
 
-NAME_PROJECT="constrained_learning_option_pricing"
+NAME_PROJECT="learning_option_pricing"
 NAME_JOB_SCRIPT="run_python_script.slurm"
 
 WORKDIR="${WORKDIR:?WORKDIR env var is not set — are you on an Adastra login node?}"
@@ -47,13 +51,25 @@ echo
 source "$PATH_VENV_BIN" && echo "Activation of virtual environment: $V_ENV_NAME"
 echo
 
+# --- sbatch defaults (Adastra MI250, shared mode, 1 GCD) ---
+# MI250 has 64 host cores / 8 GCDs = 8 cores per GCD; reserving exactly that
+# avoids wasted GPU-hours when the job uses only 1 GCD.
+S_BATCH_CPU_PER_TASK=8
+S_BATCH_GPUS_PER_NODE=1
+S_BATCH_TIME=02:00:00
+S_BATCH_CONSTRAINT=MI250
+S_BATCH_REQUEUE="--requeue"
+
 # Parse command-line options
 S_BATCH_ACCOUNT=""
-while getopts 'A:p:a:' flag; do
+while getopts 'A:p:a:c:t:g:' flag; do
   case "${flag}" in
   A) S_BATCH_ACCOUNT="${OPTARG}" ;;
   p) PATH_PYTHON_SCRIPT="${OPTARG}" ;;
   a) ARGS_PYTHON_SCRIPT="${OPTARG}" ;;
+  c) S_BATCH_CONSTRAINT="${OPTARG}" ;;
+  t) S_BATCH_TIME="${OPTARG}" ;;
+  g) S_BATCH_GPUS_PER_NODE="${OPTARG}" ;;
   *) echo "Unexpected option ${flag}" && exit 1 ;;
   esac
 done
@@ -73,7 +89,9 @@ echo "Script basename: $BASENAME_SCRIPT"
 echo
 
 # Per-variant log subdirectory so concurrent submissions do not clash.
-VARIANT_TAG=$(echo "${ARGS_PYTHON_SCRIPT:-}" | grep -oP '(?<=--(add-)?variant )\S+' | head -n1 | cut -d: -f1)
+# `\K` resets the match-start so the regex stays fixed-length (some PCRE
+# builds reject variable-length lookbehind with a warning otherwise).
+VARIANT_TAG=$(echo "${ARGS_PYTHON_SCRIPT:-}" | grep -oP -- '--(?:add-)?variant +\K\S+' | head -n1 | cut -d: -f1)
 PATH_LOG_DIR="$WORKDIR"/logs/$NAME_PROJECT/"$BASENAME_SCRIPT"/$(date +"%Y-%m-%d_%H-%M-%S")${VARIANT_TAG:+_$VARIANT_TAG}
 echo "Log directory: $PATH_LOG_DIR"
 echo
@@ -84,15 +102,6 @@ echo
 echo "PATH_PYTHON_SCRIPT: $PATH_PYTHON_SCRIPT"
 echo "ARGS_PYTHON_SCRIPT: ${ARGS_PYTHON_SCRIPT:-}"
 echo
-
-# --- sbatch options (Adastra MI250, shared mode, 1 GCD) ---
-# MI250 has 64 host cores / 8 GCDs = 8 cores per GCD; reserving exactly that
-# avoids wasted GPU-hours when the job uses only 1 GCD.
-S_BATCH_CPU_PER_TASK=8
-S_BATCH_GPUS_PER_NODE=1
-S_BATCH_TIME=02:00:00
-S_BATCH_CONSTRAINT=MI250
-S_BATCH_REQUEUE="--requeue"
 
 # Adastra's SLURM auto-routes the bare project to the per-constraint
 # billing pool internally; passing the suffixed form (e.g. _mi250) is
