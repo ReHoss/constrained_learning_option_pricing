@@ -168,7 +168,44 @@ Parallelism: one array task per `(ic, variant, seed)` triple writing to a shared
 
 ---
 
-## 5. `pure heat` vs the already-implemented `call` (singularity study)
+## 5. Results (3 seeds per IC, 20000 iterations)
+
+Aggregated by `aggregate_seeds.py` (figures under
+`data/ablation_ansatz_forms/aggregate_seeds/`). Relative $L^2$ error against the
+exact solution, mean over seeds $\{0,1,2\}$:
+
+| | hard $\Psi{=}g$ lin | hard $\Psi{=}g$ exp | hard $\Psi{=}\lambda g$ lin | hard $\Psi{=}\lambda g$ exp | soft PINN | pure NN |
+|---|---|---|---|---|---|---|
+| sine | 6.7e-2 | 1.1e-1 | 1.0e-1 | **6.5e-2** | 1.9e-1 | 9.3e-1 |
+| theta3 | **1.5e-3** | 1.5e-3 | 6.7e-3 | 1.9e-3 | 2.9e-2 | 9.6e-1 |
+| call | 1.5e-1 | 1.7e-1 | **8.0e-2** | 9.0e-2 | 4.8e-3 | 1.0e0 |
+
+Stylised facts:
+
+1. **Terminal enforcement.** All four hard forms achieve $\mathcal{L}_{\rm tc}=0$
+   exactly (by construction); the soft PINN leaves a small residual
+   ($5\times10^{-3}$–$2\times10^{-2}$); the `pure_nn` control fails
+   ($\approx 1$) — the residual-only inverse problem is non-identifiable
+   without terminal data.
+2. **Hard $\gg$ soft on smooth/periodic data** (sine, theta3), by 3–20×.
+3. **Soft wins on the sharp call payoff** (4.8e-3 vs $\geq 8$e-2 for the hard
+   forms): the smoothed-payoff extension has a large $g''$, so the hard ansatz
+   carries a large extension-forcing floor $\mathbb{E}[(\mathcal{P}\Psi)^2]$ the
+   network must cancel — a quantified instance of Remark *the extension is not
+   innocuous*.
+4. **The forcing floor predicts the hard-form ranking** (`floor_vs_accuracy.png`):
+   across every IC the lower-floor extension is the more accurate one. The
+   `theta3` reversal — where the *constant* extension $\Psi=g$ beats the blended
+   $\Psi=\lambda g$ — follows because $\vartheta_3$ has a nonzero mean, so the
+   blended form injects a spurious $\lambda'(t)\,g \approx g/T$ forcing that the
+   constant form avoids; for the zero-mean sine and the sharp-$g''$ call the
+   constant form's $\tfrac{\sigma^2}{2}g''$ dominates instead and blending lowers
+   the floor.
+
+These observations are empirical (3 seeds, fixed network capacity and 20000
+Adam iterations); seed variance is shown as error bars in `rel_l2_by_ic.png`.
+
+## 6. `pure heat` vs the already-implemented `call` (singularity study)
 
 The singularity experiment (`exp_singularity_european_call`) solves the
 **Black–Scholes operator in log-price** coordinates,
