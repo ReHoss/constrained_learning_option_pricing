@@ -72,6 +72,50 @@ def derive_seed(master_seed: int, role: str) -> int:
 
 
 # ===========================================================================
+# Transient-CUDA retry (gpu_p13 array tasks occasionally land on a busy GPU)
+# ===========================================================================
+
+def cuda_retry(fn, *, attempts: int = 6, base_delay: float = 10.0):
+    """Call ``fn()``, retrying on transient CUDA "device busy/unavailable" errors.
+
+    On shared multi-GPU nodes an array task can touch a GPU that is momentarily
+    busy, raising ``CUDA error: CUDA-capable device(s) is/are busy or
+    unavailable`` at the first device access (model ``.to(device)`` or the first
+    allocation).  The condition is transient, so we retry with a linear backoff
+    before giving up; non-CUDA errors propagate immediately.
+    """
+    import time as _time
+
+    import torch
+
+    last_exc = None
+    for k in range(attempts):
+        try:
+            return fn()
+        except RuntimeError as exc:
+            msg = str(exc).lower()
+            transient = "cuda" in msg and (
+                "busy" in msg or "unavailable" in msg or "initialization" in msg
+            )
+            if not transient:
+                raise
+            last_exc = exc
+            delay = base_delay * (k + 1)
+            logger.warning(
+                "transient CUDA error (attempt %d/%d): %s; retrying in %.0fs",
+                k + 1, attempts, exc, delay,
+            )
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            _time.sleep(delay)
+    raise RuntimeError(
+        f"CUDA still unavailable after {attempts} attempts"
+    ) from last_exc
+
+
+# ===========================================================================
 # Problem assembly (operator, domain, terminal datum, exact reference)
 # ===========================================================================
 
@@ -242,7 +286,9 @@ def train_variant(variant, problem, hparams, *, num_iterations, seed, device, lo
 
     model_seed = derive_seed(seed, "model_init")
     sampler_seed = derive_seed(seed, "sampler")
-    model = build_ansatz(variant, problem, hparams, model_seed=model_seed).to(device)
+    model = cuda_retry(
+        lambda: build_ansatz(variant, problem, hparams, model_seed=model_seed).to(device)
+    )
     sample_interior, sample_terminal, sample_boundary = make_samplers(
         problem, hparams, sampler_seed=sampler_seed, device=device
     )
@@ -595,6 +641,11 @@ def main(argv=None) -> int:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
         device = torch.device(args.device)
+
+    # Probe the GPU once up front so a momentarily-busy device is waited out
+    # before any training work, rather than failing the task mid-build.
+    if device.type == "cuda":
+        cuda_retry(lambda: torch.zeros(1, device=device))
 
     logger.info("=" * 72)
     logger.info("ANSATZ-FORM ABLATION (backward heat equation)")
