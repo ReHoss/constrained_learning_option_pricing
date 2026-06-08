@@ -1,0 +1,220 @@
+"""Torch-free catalogue for the four-form / three-IC ansatz study.
+
+This module is imported on cluster login nodes during the ``--init-only`` phase
+of the array launcher, so it must remain free of any heavy import (no ``torch``,
+no ``numpy``): it only defines plain-Python configuration dictionaries.
+
+The study compares four terminal-condition enforcement *forms* on three
+backward-heat *initial (terminal) conditions*:
+
+Forms (all trained -> solid stroke per the repository plot convention):
+    * ``hard_constant`` -- u = (1 - lambda) Phi + g          (eq:bermudan-ansatz)
+    * ``hard_blended``  -- u = (1 - lambda) Phi + lambda g    (eq:bermudan-ansatz-alt)
+    * ``soft_pinn``     -- u = Phi, terminal mismatch penalised in the loss
+    * ``pure_nn``       -- u = Phi, no terminal handling (non-identifiable control)
+
+The ``linear`` / ``exponential`` blending sweep applies only to the two hard
+forms; the soft forms carry ``blending = None``.
+
+Initial (terminal) conditions, all under the pure heat operator
+``P u = d_t u + (sigma^2 / 2) d_xx u``:
+    * ``sine``   -- g(x) = sin(pi x) + c sin(f pi x) on [0, 1]      (Dirichlet)
+    * ``theta3`` -- g(x) = 1 + 2 sum e^{-n^2} cos(pi n x) on [-1, 1] (cosine series)
+    * ``call``   -- smoothed call payoff in x = ln S on [ln 60, ln 160]
+
+The runner must assert ``RUNNER_SCRIPT_STEM == Path(__file__).stem`` so the
+output-folder-from-filename invariant cannot silently drift.
+"""
+from __future__ import annotations
+
+import math
+
+# The runner script's filename stem (without extension).  Asserted by the runner.
+RUNNER_SCRIPT_STEM = "ablation_ansatz_forms"
+
+
+# ---------------------------------------------------------------------------
+# Method variants (identical across the three initial conditions)
+# ---------------------------------------------------------------------------
+
+METHOD_VARIANTS: list[dict] = [
+    {
+        "name": "hard_constant_linear",
+        "form": "hard_constant",
+        "blending": "linear",
+        "color": "#1f77b4",  # blue
+        "label": r"hard, $\Psi=g$, linear $\lambda$",
+    },
+    {
+        "name": "hard_constant_exp",
+        "form": "hard_constant",
+        "blending": "exponential",
+        "color": "#17becf",  # cyan
+        "label": r"hard, $\Psi=g$, exp.\ $\lambda$",
+    },
+    {
+        "name": "hard_blended_linear",
+        "form": "hard_blended",
+        "blending": "linear",
+        "color": "#2ca02c",  # green
+        "label": r"hard, $\Psi=\lambda g$, linear $\lambda$",
+    },
+    {
+        "name": "hard_blended_exp",
+        "form": "hard_blended",
+        "blending": "exponential",
+        "color": "#8c564b",  # brown
+        "label": r"hard, $\Psi=\lambda g$, exp.\ $\lambda$",
+    },
+    {
+        "name": "soft_pinn",
+        "form": "soft_pinn",
+        "blending": None,
+        "color": "#ff7f0e",  # orange
+        "label": r"soft PINN (terminal penalty)",
+    },
+    {
+        "name": "pure_nn",
+        "form": "pure_nn",
+        "blending": None,
+        "color": "#d62728",  # red
+        "label": r"pure NN (no terminal handling)",
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Initial-condition (problem) configurations
+# ---------------------------------------------------------------------------
+
+IC_CONFIGS: dict[str, dict] = {
+    # The PDE is posed on all of R; ``x_lo``/``x_hi`` only delimit the support of
+    # the Monte-Carlo sampling measure for the residual + terminal terms (no
+    # lateral boundary condition is imposed).  Accuracy metrics are reported on
+    # the inner evaluation window ``x_eval_lo``/``x_eval_hi``, leaving a buffer of
+    # a few diffusion lengths so the edge under-determination does not pollute
+    # them.  For the periodic ICs the window is a natural period cell, so the
+    # eval window can be the full cell.
+    "sine": {
+        "reference": "sine",
+        "sigma": 1.0,
+        "T": 0.1,
+        "x_lo": 0.0,
+        "x_hi": 1.0,
+        "x_eval_lo": 0.0,
+        "x_eval_hi": 1.0,
+        # Terminal datum g(x) = sin(pi x) + c sin(f pi x); integer f keeps the
+        # exact solution homogeneous-Dirichlet (u = 0) on the period boundary.
+        "params": {"c": 0.5, "f": 4.0},
+        "label": (
+            r"$g(x)=\sin(\pi x)+0.5\,\sin(4\pi x)$, "
+            r"$\mathcal{P}u=\partial_t u+\frac{\sigma^2}{2}\partial_{xx}u$, $\sigma=1$"
+        ),
+    },
+    "theta3": {
+        "reference": "theta3",
+        "sigma": 1.0,
+        "T": 0.1,
+        "x_lo": -1.0,
+        "x_hi": 1.0,
+        "x_eval_lo": -1.0,
+        "x_eval_hi": 1.0,
+        "params": {"n_modes": 6},
+        "label": (
+            r"$g(x)=\vartheta_3(x/2,e^{-1})=1+2\sum_{n\geq1}e^{-n^2}\cos(\pi n x)$, "
+            r"$\sigma=1$"
+        ),
+    },
+    "call": {
+        "reference": "call",
+        "sigma": 0.25,
+        "T": 1.0,
+        # Sampling window wider than the evaluation window (genuine truncation
+        # of R): buffer ~ 4 sigma sqrt(T) = 1.0 in log-price on the left.
+        "x_lo": math.log(20.0),
+        "x_hi": math.log(200.0),
+        "x_eval_lo": math.log(60.0),
+        "x_eval_hi": math.log(140.0),
+        "K": 100.0,
+        # beta controls the softplus smoothing of the (e^x - K)^+ payoff.
+        "params": {"beta": 100.0},
+        "label": (
+            r"$g_\beta(x)=\mathrm{softplus}_\beta(e^x-K)-\frac{\log 2}{\beta}$, "
+            r"$K=100$, $\beta=100$, $\sigma=0.25$"
+        ),
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Default optimisation hyperparameters (shared across forms for fair comparison)
+# ---------------------------------------------------------------------------
+
+DEFAULT_HPARAMS: dict = {
+    # ResNet backbone
+    "net_width": 64,
+    "net_blocks": 4,
+    "net_layers_per_block": 2,
+    # Optimisation
+    "learning_rate": 1e-3,
+    "num_iterations": 20000,
+    # Collocation
+    "n_interior": 4096,  # PDE residual collocation points per step
+    "n_terminal": 1024,  # terminal-condition points (soft form / diagnostics)
+    "n_boundary": 256,  # spatial-boundary points (Dirichlet enforcement)
+    # Loss weight.  For the hard forms and the pure-NN control only the PDE
+    # residual is active.  For the soft form the total is
+    # a * L_pde + (1 - a) * L_tc  (the note's weighted convention).  No
+    # spatial-boundary term enters the loss; boundary drift is monitored as a
+    # diagnostic only.
+    "soft_pde_weight_a": 0.5,
+}
+
+
+# ---------------------------------------------------------------------------
+# Accessors
+# ---------------------------------------------------------------------------
+
+def ic_names() -> list[str]:
+    """Return the available initial-condition identifiers."""
+    return list(IC_CONFIGS.keys())
+
+
+def variant_names() -> list[str]:
+    """Return the available method-variant names."""
+    return [v["name"] for v in METHOD_VARIANTS]
+
+
+def variant_by_name(name: str) -> dict:
+    """Return the method-variant dict for ``name`` (raises if unknown)."""
+    for v in METHOD_VARIANTS:
+        if v["name"] == name:
+            return v
+    raise KeyError(f"Unknown variant {name!r}. Available: {variant_names()}")
+
+
+def ic_by_name(name: str) -> dict:
+    """Return the IC config dict for ``name`` (raises if unknown)."""
+    if name not in IC_CONFIGS:
+        raise KeyError(f"Unknown IC {name!r}. Available: {ic_names()}")
+    return IC_CONFIGS[name]
+
+
+def array_tasks(ic_filter: list[str] | None = None) -> list[dict]:
+    """Enumerate ``(ic, variant)`` task descriptors for the job array.
+
+    Each descriptor is ``{"ic": <ic_name>, "variant": <variant_name>}``; the
+    seed axis is applied on top by the launcher (one array per seed, or a seed
+    column).  Pass ``ic_filter`` to restrict to a subset of ICs.
+
+    Returns:
+        A list of task descriptors, ICs in catalogue order, variants nested.
+    """
+    ics = ic_filter if ic_filter is not None else ic_names()
+    tasks: list[dict] = []
+    for ic in ics:
+        if ic not in IC_CONFIGS:
+            raise KeyError(f"Unknown IC {ic!r}. Available: {ic_names()}")
+        for v in METHOD_VARIANTS:
+            tasks.append({"ic": ic, "variant": v["name"]})
+    return tasks
