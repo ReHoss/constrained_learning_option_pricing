@@ -19,11 +19,11 @@ import warnings
 import matplotlib.pyplot as plt
 
 
-def formula_box(fig, text):
+def formula_box(fig, text, fontsize=8):
     """Add a LaTeX text block below the figure; return the artist (or None)."""
     if not text:
         return None
-    return fig.text(0.5, 0.012, text, ha="center", va="bottom", fontsize=8,
+    return fig.text(0.5, 0.012, text, ha="center", va="bottom", fontsize=fontsize,
                     bbox=dict(boxstyle="round", facecolor="#f5f5f5",
                               edgecolor="#bbbbbb"))
 
@@ -84,11 +84,12 @@ def check_layout(fig, fname, *, legends=(), formula=None, axes=()):
                     break
 
 
-def finalize_figure(fig, path, *, legends=(), formula=None, axes=(), dpi=140):
+def finalize_figure(fig, path, *, legends=(), formula=None, axes=(), dpi=140,
+                    formula_fontsize=8):
     """Add the formula box, check the layout, and save including all legends."""
     fname = os.path.basename(str(path))
     legs = [lg for lg in legends if lg is not None]
-    formula_art = formula_box(fig, formula) if formula else None
+    formula_art = formula_box(fig, formula, fontsize=formula_fontsize) if formula else None
     extra = legs + ([formula_art] if formula_art is not None else [])
     check_layout(fig, fname, legends=legs, formula=formula_art, axes=axes)
     fig.savefig(path, dpi=dpi, bbox_inches="tight", bbox_extra_artists=extra)

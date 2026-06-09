@@ -113,11 +113,20 @@ def _plot_loss_components(out_dir, runs, label):
         ax.grid(True, which="both", alpha=0.3)
     handles, labels = axes[0, 0].get_legend_handles_labels()
     leg = fig.legend(handles, labels, loc="lower center", ncol=3, fontsize=7,
-                     frameon=True, bbox_to_anchor=(0.5, 0.085))
+                     frameon=True, bbox_to_anchor=(0.5, 0.14))
     fig.suptitle("Loss components per ansatz form", fontsize=11)
-    fig.tight_layout(rect=[0, 0.20, 1, 0.97])
+    fig.tight_layout(rect=[0, 0.30, 1, 0.97])
+    components_formula = (
+        label + "\n"
+        r"optimised: $\mathcal{L}_{\rm pde}=\mathbb{E}_\mu[(\mathcal{P}\hat u)^2]$"
+        r" (soft form also penalises terminal mismatch $\mathcal{L}_{\rm tc}$)" + "\n"
+        r"diagnostics (not in loss): terminal $\mathbb{E}_x[(\hat u(x,T)-g)^2]$,  "
+        r"boundary drift $\mathbb{E}_{t\sim U[0,T]}[(\hat u(x_b,t)-u^\star(x_b,t))^2]$, "
+        r"$x_b\in\{x_{\rm lo},x_{\rm hi}\}$"
+    )
     finalize_figure(fig, out_dir / "loss_components.png", legends=[leg],
-                    axes=list(axes.flat), formula=label, dpi=130)
+                    axes=list(axes.flat), formula=components_formula, dpi=130,
+                    formula_fontsize=7)
 
 
 def _plot_loss_decomposition(out_dir, runs, label):
