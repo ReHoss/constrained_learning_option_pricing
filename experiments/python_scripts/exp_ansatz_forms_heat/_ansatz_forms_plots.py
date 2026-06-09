@@ -107,9 +107,10 @@ def _plot_loss_components(out_dir, runs, label):
                 continue
             v = entry["variant"]
             y = np.clip(h[key], 1e-30, None)
-            ax.semilogy(h["iter"], y, "-", color=v["color"], label=v["label"], lw=1.3)
+            ax.loglog(h["iter"], y, "-", marker=".", ms=3,
+                      color=v["color"], label=v["label"], lw=1.3)
         ax.set_title(title, fontsize=9)
-        ax.set_xlabel("iteration")
+        ax.set_xlabel("iteration (log scale; iter 1 at left)")
         ax.grid(True, which="both", alpha=0.3)
     handles, labels = axes[0, 0].get_legend_handles_labels()
     leg = fig.legend(handles, labels, loc="lower center", ncol=3, fontsize=7,
@@ -145,10 +146,10 @@ def _plot_loss_decomposition(out_dir, runs, label):
             h = entry["hist"]
             v = entry["variant"]
             y = np.abs(h[key]) if key == "cross_term" else h[key]
-            ax.semilogy(h["iter"], np.clip(y, 1e-30, None), "-",
-                        color=v["color"], label=v["label"], lw=1.3)
+            ax.loglog(h["iter"], np.clip(y, 1e-30, None), "-", marker=".", ms=3,
+                      color=v["color"], label=v["label"], lw=1.3)
         ax.set_title(title, fontsize=9)
-        ax.set_xlabel("iteration")
+        ax.set_xlabel("iteration (log scale; iter 1 at left)")
         ax.grid(True, which="both", alpha=0.3)
     if not any_data:
         plt.close(fig)

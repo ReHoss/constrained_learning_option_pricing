@@ -345,7 +345,11 @@ def train_variant(variant, problem, hparams, *, num_iterations, seed, device, lo
             best_iter = it
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
-        if it == 1 or it % log_every == 0 or it == num_iterations:
+        # Log densely over the first 100 iterations (the transient where the
+        # network learns to cancel the forcing happens fast) then every
+        # log_every; this makes iteration 1 and the early dynamics resolvable on
+        # a log-iteration axis.
+        if it <= 100 or it % log_every == 0 or it == num_iterations:
             # Diagnostics (never enter the loss): terminal mismatch of the trial
             # solution and spatial-boundary drift vs the exact reference.
             with torch.no_grad():
