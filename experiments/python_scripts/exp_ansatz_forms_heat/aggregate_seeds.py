@@ -186,26 +186,36 @@ def write_summary(agg, path):
 
 
 def main(argv=None) -> int:
-    from learning_option_pricing.utils.run_context import script_data_dir
+    from learning_option_pricing.utils.run_context import script_data_dir, utc_timestamp
 
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-root", type=str, default=None,
-                        help="Folder holding the per-(IC,seed) ablation dirs "
-                             "(default: data/ablation_ansatz_forms).")
+                        help="Folder holding the per-(IC,seed) ablation dirs to "
+                             "aggregate (default: data/ablation_ansatz_forms).")
     parser.add_argument("--out-dir", type=str, default=None,
-                        help="Where to write the aggregate figures "
-                             "(default: <data-root>/aggregate_seeds).")
+                        help="Where to write the aggregate figures (default: a "
+                             "timestamped folder under data/aggregate_seeds/).")
     args = parser.parse_args(argv)
 
+    # Input: the ablation runner's data dir; Output: this script's own
+    # filename-derived data dir, in a fresh timestamped sub-folder (so each
+    # aggregation is a reproducible snapshot rather than overwriting in place).
     data_root = Path(args.data_root) if args.data_root else (
         script_data_dir(Path(__file__).parent / "ablation_ansatz_forms.py"))
-    out_dir = Path(args.out_dir) if args.out_dir else data_root / "aggregate_seeds"
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     agg, run_dirs = discover_runs(data_root)
     if not agg:
         raise SystemExit(f"No (non-debug) ablation runs found under {data_root}")
+
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+    else:
+        n_ics = len(agg)
+        n_seeds = max((len(agg[ic][v].get("rel_l2", []))
+                       for ic in agg for v in agg[ic]), default=0)
+        out_dir = script_data_dir(__file__) / f"{utc_timestamp()}_{n_ics}ic_{n_seeds}seed"
+    out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Aggregated {len(run_dirs)} run dirs over ICs {sorted(agg)} into {out_dir}")
 
     plot_rel_l2_by_ic(agg, out_dir)
