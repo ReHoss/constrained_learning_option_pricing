@@ -22,6 +22,7 @@ import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
 import _ansatz_forms_catalogue as cat  # noqa: E402
+from _figure_layout import finalize_figure  # noqa: E402
 
 HARD_VARIANTS = ("hard_constant_linear", "hard_constant_exp",
                  "hard_blended_linear", "hard_blended_exp")
@@ -69,14 +70,9 @@ def _assemble_summary(ablation_dir: Path, runs: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def _legend_right(ax):
-    """Place the legend in the right gutter, outside the data area."""
-    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=7, frameon=True)
-
-
-def _formula_box(fig, label: str):
-    if label:
-        fig.text(0.5, 0.005, label, ha="center", va="bottom", fontsize=8,
-                 bbox=dict(boxstyle="round", facecolor="#f5f5f5", edgecolor="#bbbbbb"))
+    """Place the legend in the right gutter, outside the data area; return it."""
+    return ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0),
+                     fontsize=7, frameon=True)
 
 
 def _mark_eval_window(ax, runs):
@@ -116,13 +112,12 @@ def _plot_loss_components(out_dir, runs, label):
         ax.set_xlabel("iteration")
         ax.grid(True, which="both", alpha=0.3)
     handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="center left", fontsize=7, frameon=True,
-               bbox_to_anchor=(0.83, 0.5))
+    leg = fig.legend(handles, labels, loc="lower center", ncol=3, fontsize=7,
+                     frameon=True, bbox_to_anchor=(0.5, 0.085))
     fig.suptitle("Loss components per ansatz form", fontsize=11)
-    fig.tight_layout(rect=[0, 0.06, 0.82, 0.97])
-    _formula_box(fig, label)
-    fig.savefig(out_dir / "loss_components.png", dpi=130, bbox_inches="tight")
-    plt.close(fig)
+    fig.tight_layout(rect=[0, 0.20, 1, 0.97])
+    finalize_figure(fig, out_dir / "loss_components.png", legends=[leg],
+                    axes=list(axes.flat), formula=label, dpi=130)
 
 
 def _plot_loss_decomposition(out_dir, runs, label):
@@ -150,15 +145,14 @@ def _plot_loss_decomposition(out_dir, runs, label):
         plt.close(fig)
         return
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=7, frameon=True,
-               bbox_to_anchor=(0.5, 0.07))
+    leg = fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=7,
+                     frameon=True, bbox_to_anchor=(0.5, 0.10))
     fig.suptitle(r"Stage-residual decomposition (hard forms): "
                  r"$\mathcal{L}=\mathbb{E}[R_\theta^2]+2\mathbb{E}[R_\theta\mathcal{P}\Psi]"
                  r"+\mathbb{E}[(\mathcal{P}\Psi)^2]$", fontsize=10)
-    fig.tight_layout(rect=[0, 0.18, 1, 0.95])
-    _formula_box(fig, label)
-    fig.savefig(out_dir / "loss_decomposition.png", dpi=130, bbox_inches="tight")
-    plt.close(fig)
+    fig.tight_layout(rect=[0, 0.22, 1, 0.95])
+    finalize_figure(fig, out_dir / "loss_decomposition.png", legends=[leg],
+                    axes=list(axes), formula=label, dpi=130)
 
 
 def _plot_solution_slice(out_dir, runs, label, tag, fname, title, ref_key, ref_label):
@@ -178,11 +172,10 @@ def _plot_solution_slice(out_dir, runs, label, tag, fname, title, ref_key, ref_l
     ax.set_xlabel("x")
     ax.set_ylabel("u")
     ax.grid(True, alpha=0.3)
-    _legend_right(ax)
-    fig.tight_layout(rect=[0, 0.08, 0.80, 1])
-    _formula_box(fig, label)
-    fig.savefig(out_dir / fname, dpi=130, bbox_inches="tight")
-    plt.close(fig)
+    leg = _legend_right(ax)
+    fig.tight_layout(rect=[0, 0.10, 0.80, 1])
+    finalize_figure(fig, out_dir / fname, legends=[leg], axes=[ax],
+                    formula=label, dpi=130)
 
 
 def _plot_error_t0(out_dir, runs, label):
@@ -200,11 +193,10 @@ def _plot_error_t0(out_dir, runs, label):
     ax.set_xlabel("x")
     ax.set_ylabel(r"$|\hat u - u^\star|$")
     ax.grid(True, which="both", alpha=0.3)
-    _legend_right(ax)
-    fig.tight_layout(rect=[0, 0.08, 0.80, 1])
-    _formula_box(fig, label)
-    fig.savefig(out_dir / "error_t0.png", dpi=130, bbox_inches="tight")
-    plt.close(fig)
+    leg = _legend_right(ax)
+    fig.tight_layout(rect=[0, 0.10, 0.80, 1])
+    finalize_figure(fig, out_dir / "error_t0.png", legends=[leg], axes=[ax],
+                    formula=label, dpi=130)
 
 
 def _plot_summary_metrics(out_dir, runs, label):
@@ -225,10 +217,9 @@ def _plot_summary_metrics(out_dir, runs, label):
         ax.set_xticklabels(names, rotation=45, ha="right", fontsize=6)
         ax.grid(True, axis="y", which="both", alpha=0.3)
     fig.suptitle("Summary metrics per form (lower is better)", fontsize=11)
-    fig.tight_layout(rect=[0, 0.05, 1, 0.95])
-    _formula_box(fig, label)
-    fig.savefig(out_dir / "summary_metrics.png", dpi=130, bbox_inches="tight")
-    plt.close(fig)
+    fig.tight_layout(rect=[0, 0.16, 1, 0.95])
+    finalize_figure(fig, out_dir / "summary_metrics.png", legends=[],
+                    axes=list(axes), formula=label, dpi=130)
 
 
 # ---------------------------------------------------------------------------
