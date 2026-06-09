@@ -36,7 +36,10 @@ import yaml  # noqa: E402
 import _ansatz_forms_catalogue as cat  # noqa: E402
 from _figure_layout import finalize_figure  # noqa: E402
 
-_RUN_RE = re.compile(r"Z_(?P<ic>[a-z0-9]+)_iters\d+$")
+# Per-(IC, seed) run dirs are named ``...Z_<ic>_iters<N>_seed<S>`` (the
+# ``_seed<S>`` suffix lets several seeds of one IC coexist legibly under ``ls``).
+# The suffix is optional so older runs produced before the convention still match.
+_RUN_RE = re.compile(r"Z_(?P<ic>[a-z0-9]+)_iters\d+(?:_seed\d+)?$")
 
 
 def discover_runs(data_root: Path) -> dict:
