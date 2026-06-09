@@ -82,6 +82,15 @@ def check_layout(fig, fname, *, legends=(), formula=None, axes=()):
                                   f"labels (may hide them) — increase the reserved "
                                   f"bottom margin.", stacklevel=2)
                     break
+        # 3. **Formula hidden by a legend** — a tall (multi-line) formula box can
+        #    rise into a bottom-anchored legend and disappear behind it.
+        for lg in legends:
+            lb = _bb(lg, r)
+            if fbb is not None and lb is not None and _overlaps(fbb, lb):
+                warnings.warn(f"[{fname}] the formula box overlaps a legend (may "
+                              f"hide the formula) — raise the legend anchor or "
+                              f"reserve more bottom margin.", stacklevel=2)
+                break
 
 
 def finalize_figure(fig, path, *, legends=(), formula=None, axes=(), dpi=140,

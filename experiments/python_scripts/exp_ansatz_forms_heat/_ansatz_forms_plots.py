@@ -155,16 +155,25 @@ def _plot_loss_decomposition(out_dir, runs, label):
         return
     handles, labels = axes[0].get_legend_handles_labels()
     leg = fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=7,
-                     frameon=True, bbox_to_anchor=(0.5, 0.10))
+                     frameon=True, bbox_to_anchor=(0.5, 0.26))
     fig.suptitle(r"Stage-residual decomposition (hard forms): "
                  r"$\mathcal{L}=\mathbb{E}[R_\theta^2]+2\mathbb{E}[R_\theta\mathcal{P}\Psi]"
                  r"+\mathbb{E}[(\mathcal{P}\Psi)^2]$", fontsize=10)
-    fig.tight_layout(rect=[0, 0.22, 1, 0.95])
+    fig.tight_layout(rect=[0, 0.34, 1, 0.95])
+    decomposition_formula = (
+        label + "\n"
+        r"hard ansatz $\hat u=\Psi+\phi\,R_\theta$: $\Psi$ extends the terminal datum $g$, "
+        r"$\phi$ vanishes at $t=T$, $R_\theta$ the network." + "\n"
+        r"$\mathbb{E}[(\mathcal{P}\Psi)^2]$ (floor) is $\theta$-independent: the irreducible "
+        r"loss lower bound set by how well $\Psi$ already solves the PDE"
+    )
     finalize_figure(fig, out_dir / "loss_decomposition.png", legends=[leg],
-                    axes=list(axes), formula=label, dpi=130)
+                    axes=list(axes), formula=decomposition_formula, dpi=130,
+                    formula_fontsize=7)
 
 
-def _plot_solution_slice(out_dir, runs, label, tag, fname, title, ref_key, ref_label):
+def _plot_solution_slice(out_dir, runs, label, tag, fname, title, ref_key,
+                         ref_label, desc=""):
     fig, ax = plt.subplots(figsize=(8, 5))
     ref_drawn = False
     for name, entry in runs.items():
@@ -182,9 +191,10 @@ def _plot_solution_slice(out_dir, runs, label, tag, fname, title, ref_key, ref_l
     ax.set_ylabel("u")
     ax.grid(True, alpha=0.3)
     leg = _legend_right(ax)
-    fig.tight_layout(rect=[0, 0.10, 0.80, 1])
+    fig.tight_layout(rect=[0, 0.12, 0.80, 1])
+    slice_formula = label + ("\n" + desc if desc else "")
     finalize_figure(fig, out_dir / fname, legends=[leg], axes=[ax],
-                    formula=label, dpi=130)
+                    formula=slice_formula, dpi=130, formula_fontsize=7)
 
 
 def _plot_error_t0(out_dir, runs, label):
@@ -203,9 +213,14 @@ def _plot_error_t0(out_dir, runs, label):
     ax.set_ylabel(r"$|\hat u - u^\star|$")
     ax.grid(True, which="both", alpha=0.3)
     leg = _legend_right(ax)
-    fig.tight_layout(rect=[0, 0.10, 0.80, 1])
+    fig.tight_layout(rect=[0, 0.13, 0.80, 1])
+    error_formula = (
+        label + "\n"
+        r"pointwise absolute error $|\hat u(x,0)-u^\star(x,0)|$ on the back-propagated "
+        r"$t=0$ slice (log axis); solid: trained forms; dotted: evaluation-window edges"
+    )
     finalize_figure(fig, out_dir / "error_t0.png", legends=[leg], axes=[ax],
-                    formula=label, dpi=130)
+                    formula=error_formula, dpi=130, formula_fontsize=7)
 
 
 def _plot_summary_metrics(out_dir, runs, label):
@@ -226,9 +241,17 @@ def _plot_summary_metrics(out_dir, runs, label):
         ax.set_xticklabels(names, rotation=45, ha="right", fontsize=6)
         ax.grid(True, axis="y", which="both", alpha=0.3)
     fig.suptitle("Summary metrics per form (lower is better)", fontsize=11)
-    fig.tight_layout(rect=[0, 0.16, 1, 0.95])
+    fig.tight_layout(rect=[0, 0.20, 1, 0.95])
+    summary_formula = (
+        label + "\n"
+        r"per-form relative $L^2$ error vs exact (log axis, one bar per ansatz form):" + "\n"
+        r"space-time $\|\hat u-u^\star\|_{L^2(\mathcal{X}_{\rm eval}\times[0,T])}/\|u^\star\|_{L^2}$;  "
+        r"the $t=0$ slice $\|\hat u(\cdot,0)-u^\star(\cdot,0)\|/\|u^\star(\cdot,0)\|$;  "
+        r"terminal $\|\hat u(\cdot,T)-g\|/\|g\|$ (hard forms $=0$ by construction)"
+    )
     finalize_figure(fig, out_dir / "summary_metrics.png", legends=[],
-                    axes=list(axes), formula=label, dpi=130)
+                    axes=list(axes), formula=summary_formula, dpi=130,
+                    formula_fontsize=7)
 
 
 # ---------------------------------------------------------------------------
@@ -253,11 +276,15 @@ def replot(ablation_dir: Path) -> None:
         out_dir, runs, label, tag="t0", fname="solution_t0.png",
         title=r"Trained solution vs exact at $t=0$ (propagated-back slice)",
         ref_key="u_ref_t0", ref_label=r"exact $u^\star(\cdot,0)$",
+        desc=(r"solid: trained $\hat u(\cdot,0)$ per ansatz form;  "
+              r"dashed: exact $u^\star(\cdot,0)$;  dotted: evaluation-window edges"),
     )
     _plot_solution_slice(
         out_dir, runs, label, tag="tT", fname="terminal_tT.png",
         title=r"Trained solution vs terminal datum at $t=T$",
         ref_key="g", ref_label=r"terminal datum $g$",
+        desc=(r"solid: trained $\hat u(\cdot,T)$ per ansatz form;  "
+              r"dashed: terminal datum $g$ ($\hat u(\cdot,T)=g$ exactly for the hard forms)"),
     )
     _plot_error_t0(out_dir, runs, label)
     _plot_summary_metrics(out_dir, runs, label)
