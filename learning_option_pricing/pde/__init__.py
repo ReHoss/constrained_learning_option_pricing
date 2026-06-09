@@ -17,6 +17,7 @@ from learning_option_pricing.pde.heat_references import (
     heat_theta3_exact,
     heat_theta3_terminal,
     smooth_call_payoff,
+    smooth_call_payoff_cm_time,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "heat_theta3_exact",
     "heat_theta3_terminal",
     "smooth_call_payoff",
+    "smooth_call_payoff_cm_time",
 ]

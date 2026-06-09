@@ -129,17 +129,20 @@ def build_problem(ic_name: str):
 
     from learning_option_pricing.pde import (
         heat_call_exact,
+        heat_call_payoff,
         heat_sine_exact,
         heat_sine_terminal,
         heat_theta3_exact,
         heat_theta3_terminal,
         smooth_call_payoff,
+        smooth_call_payoff_cm_time,
     )
 
     conf = cat.ic_by_name(ic_name)
     sigma = float(conf["sigma"])
     T = float(conf["T"])
     p = conf["params"]
+    extension_fn = None  # default: hard forms extend the terminal datum directly
 
     if ic_name == "sine":
         c, f = float(p["c"]), float(p["f"])
@@ -169,6 +172,22 @@ def build_problem(ic_name: str):
         def exact(x, t):
             return heat_call_exact(x, t, K=K, T=T, sigma=sigma)
 
+    elif ic_name == "call_cm":
+        K = float(conf["K"])
+        eps0 = float(p["eps0"])
+
+        # Terminal datum at t=T is the *true* payoff (no bias); the hard-form
+        # extension is the time-dependent CM smoothing (exact at t=T, smooth
+        # for t<T).
+        def terminal_datum(x):
+            return heat_call_payoff(x, K)
+
+        def extension_fn(x, t):
+            return smooth_call_payoff_cm_time(x, t, K=K, T=T, eps0=eps0)
+
+        def exact(x, t):
+            return heat_call_exact(x, t, K=K, T=T, sigma=sigma)
+
     else:  # pragma: no cover - guarded by argparse choices
         raise ValueError(f"Unknown IC {ic_name!r}")
 
@@ -180,6 +199,7 @@ def build_problem(ic_name: str):
         "x_eval_lo": float(conf["x_eval_lo"]),
         "x_eval_hi": float(conf["x_eval_hi"]),
         "terminal_datum": terminal_datum,
+        "extension_fn": extension_fn,
         "exact": exact,
         "label": conf["label"],
     }
@@ -227,6 +247,7 @@ def build_ansatz(variant: dict, problem: dict, hparams: dict, *, model_seed: int
         blending,
         form=form,
         normalizer=normalizer,
+        extension_fn=problem.get("extension_fn"),
     )
 
 

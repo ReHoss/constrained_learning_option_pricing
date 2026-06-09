@@ -143,6 +143,27 @@ IC_CONFIGS: dict[str, dict] = {
             r"$K=100$, $\beta=100$, $\sigma=0.25$"
         ),
     },
+    "call_cm": {
+        # Same call problem, but the hard-form extension is a time-dependent
+        # one-sided Chen--Mangasarian smoothing with vanishing bandwidth
+        # eps(t)=eps0 (T-t)/T: exact payoff at t=T (no terminal bias) and a
+        # smooth, bounded-residual extension for t<T.  Compare against "call"
+        # (static softplus) to separate terminal-bias from the forcing-floor.
+        "reference": "call_cm",
+        "sigma": 0.25,
+        "T": 1.0,
+        "x_lo": math.log(20.0),
+        "x_hi": math.log(200.0),
+        "x_eval_lo": math.log(60.0),
+        "x_eval_hi": math.log(140.0),
+        "K": 100.0,
+        "params": {"eps0": 10.0},
+        "label": (
+            r"$\Psi(x,t)=\frac{1}{2}[(e^x-K)+\sqrt{(e^x-K)^2+\varepsilon(t)^2}]$, "
+            r"$\varepsilon(t)=\varepsilon_0\frac{T-t}{T}$, $\varepsilon_0=10$, "
+            r"$K=100$, $\sigma=0.25$"
+        ),
+    },
 }
 
 

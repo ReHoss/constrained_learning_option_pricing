@@ -118,13 +118,20 @@ class BlendedTerminalAnsatz(nn.Module):
         network:        Free network :math:`\Phi_\theta`, mapping ``(batch, 2)``
                         inputs ``[x, t]`` to ``(batch, 1)``.
         terminal_datum: Callable ``g(x) -> Tensor`` giving the terminal datum;
-                        used only by the hard forms.
+                        used only by the hard forms (and only when
+                        ``extension_fn`` is not supplied).
         blending:       Callable ``lambda(t) -> Tensor`` with ``lambda(T) = 1``;
                         used only by the hard forms.  May be ``None`` for the
                         soft forms.
         form:           One of :data:`FORMS`.
         normalizer:     Optional callable applied to the raw ``(batch, 2)`` input
                         before the network (e.g. coordinate rescaling).
+        extension_fn:   Optional callable ``Psi_base(x, t) -> Tensor`` giving a
+                        time-dependent terminal-data extension on the strip
+                        (e.g. a vanishing-bandwidth Chen--Mangasarian smoothing,
+                        exact at ``t = T``).  When supplied it replaces the
+                        default ``g(x)`` extension for the hard forms; the
+                        ``hard_blended`` form then uses ``lambda(t) * Psi_base``.
     """
 
     def __init__(
@@ -135,12 +142,15 @@ class BlendedTerminalAnsatz(nn.Module):
         *,
         form: str,
         normalizer: Callable[[torch.Tensor], torch.Tensor] | None = None,
+        extension_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = None,
     ) -> None:
         if form not in FORMS:
             raise ValueError(f"Unknown form: {form!r}. Choose from {FORMS}.")
-        if form in HARD_FORMS and (terminal_datum is None or blending is None):
+        if form in HARD_FORMS and blending is None:
+            raise ValueError(f"form={form!r} requires a blending.")
+        if form in HARD_FORMS and terminal_datum is None and extension_fn is None:
             raise ValueError(
-                f"form={form!r} requires both terminal_datum and blending."
+                f"form={form!r} requires terminal_datum or extension_fn."
             )
         super().__init__()
         self.network = network
@@ -148,6 +158,7 @@ class BlendedTerminalAnsatz(nn.Module):
         self._blending = blending
         self.form = form
         self.normalizer = normalizer
+        self._extension_fn = extension_fn
 
     # -- components -------------------------------------------------------
 
@@ -159,17 +170,22 @@ class BlendedTerminalAnsatz(nn.Module):
     def extension(self, coord: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         r"""The terminal-data extension :math:`\Psi(x, t)`.
 
-        ``hard_constant`` -> :math:`g(x)`; ``hard_blended`` ->
-        :math:`\lambda(t)\,g(x)`; soft forms -> zeros.  ``coord`` and ``t`` are
-        ``(N, 1)`` (or broadcast-compatible) and may carry ``requires_grad`` so
-        the extension forcing :math:`\mathcal P\Psi` can be differentiated.
+        With the default (time-constant) extension, ``hard_constant`` ->
+        :math:`g(x)` and ``hard_blended`` -> :math:`\lambda(t)\,g(x)`.  When a
+        time-dependent ``extension_fn`` :math:`\Psi_{\rm base}(x, t)` is supplied
+        it replaces :math:`g(x)`: ``hard_constant`` -> :math:`\Psi_{\rm base}`,
+        ``hard_blended`` -> :math:`\lambda(t)\,\Psi_{\rm base}`.  Soft forms ->
+        zeros.  ``coord`` and ``t`` are ``(N, 1)`` (or broadcast-compatible) and
+        may carry ``requires_grad`` so the extension forcing
+        :math:`\mathcal P\Psi` can be differentiated.
         """
         if self.form in SOFT_FORMS:
             return torch.zeros_like(coord)
-        g = self._terminal_datum(coord)
+        base = (self._extension_fn(coord, t) if self._extension_fn is not None
+                else self._terminal_datum(coord))
         if self.form == "hard_blended":
-            return self._blending(t) * g
-        return g  # hard_constant
+            return self._blending(t) * base
+        return base  # hard_constant
 
     # -- forward ----------------------------------------------------------
 

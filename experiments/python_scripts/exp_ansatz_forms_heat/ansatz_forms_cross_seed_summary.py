@@ -143,7 +143,7 @@ def plot_terminal_mismatch(agg, out_dir):
 
 def plot_floor_vs_accuracy(agg, out_dir):
     hard = [v["name"] for v in cat.METHOD_VARIANTS if v["form"].startswith("hard")]
-    markers = {"sine": "o", "theta3": "s", "call": "^"}
+    markers = {"sine": "o", "theta3": "s", "call": "^", "call_cm": "D"}
     colors = {v["name"]: v["color"] for v in cat.METHOD_VARIANTS}
     fig, ax = plt.subplots(figsize=(8, 6))
     for ic in cat.ic_names():

@@ -19,6 +19,7 @@ from learning_option_pricing.pde import (
     heat_theta3_exact,
     heat_theta3_terminal,
     smooth_call_payoff,
+    smooth_call_payoff_cm_time,
 )
 
 
@@ -115,3 +116,25 @@ def test_smooth_call_converges_to_payoff():
     err_coarse = (smooth_call_payoff(x, K, beta=10.0) - payoff).abs().max()
     err_fine = (smooth_call_payoff(x, K, beta=1000.0) - payoff).abs().max()
     assert err_fine < err_coarse
+
+
+def test_cm_time_smoothing_exact_at_terminal():
+    # Vanishing bandwidth at t=T => exact payoff (no terminal bias).
+    K, T, eps0 = 100.0, 1.0, 10.0
+    x = torch.linspace(math.log(60.0), math.log(160.0), 80, dtype=torch.float64)
+    tT = torch.full_like(x, T)
+    got = smooth_call_payoff_cm_time(x, tT, K=K, T=T, eps0=eps0)
+    assert torch.allclose(got, heat_call_payoff(x, K), atol=1e-10)
+
+
+def test_cm_time_smoothing_smooth_interior():
+    # For t<T the kink at x=ln K is rounded: value strictly above the payoff.
+    K, T, eps0 = 100.0, 1.0, 10.0
+    x0 = torch.tensor([math.log(K)], dtype=torch.float64)
+    for t_val in (0.0, 0.5):
+        t = torch.full_like(x0, t_val)
+        val = smooth_call_payoff_cm_time(x0, t, K=K, T=T, eps0=eps0)
+        eps = eps0 * (T - t_val) / T
+        # at the kink (e^x = K): value = eps/2 > 0 = payoff
+        assert torch.allclose(val, torch.tensor([eps / 2], dtype=torch.float64), atol=1e-8)
+        assert val.item() > 0.0

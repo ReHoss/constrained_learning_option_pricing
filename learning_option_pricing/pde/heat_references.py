@@ -196,6 +196,43 @@ def smooth_call_payoff(x: torch.Tensor, K: float, *, beta: float) -> torch.Tenso
     return F.softplus(torch.exp(x) - K, beta=beta) - log2 / beta
 
 
+def smooth_call_payoff_cm_time(
+    x: torch.Tensor,
+    t: torch.Tensor,
+    *,
+    K: float,
+    T: float,
+    eps0: float,
+) -> torch.Tensor:
+    r"""Time-dependent one-sided Chen--Mangasarian smoothing of the call payoff.
+
+    .. math::
+
+        \Psi(x, t) = \tfrac12\Bigl[(e^x - K)
+            + \sqrt{(e^x - K)^2 + \varepsilon(t)^2}\Bigr],
+        \qquad \varepsilon(t) = \varepsilon_0\,\frac{T - t}{T}.
+
+    The bandwidth :math:`\varepsilon(t)` vanishes at the terminal time, so at
+    ``t = T`` this reduces **exactly** to the payoff :math:`(e^x - K)^+`
+    (no terminal bias), while for ``t < T`` it is a smooth ``C^\infty``
+    extension whose Black--Scholes/heat residual is bounded — the smoothing is
+    spread along the time axis rather than concentrated at the strike.  This
+    contrasts with the static :func:`smooth_call_payoff` (constant bandwidth,
+    never exact at ``t = T``).
+
+    Args:
+        x:    Log-price coordinate.
+        t:    Time coordinate.
+        K:    Strike.
+        T:    Terminal time.
+        eps0: Bandwidth at ``t = 0`` (price units); ``eps0 = 0`` recovers the
+              exact kinked payoff at all times.
+    """
+    diff = torch.exp(x) - K
+    eps = eps0 * (T - t) / T
+    return 0.5 * (diff + torch.sqrt(diff**2 + eps**2))
+
+
 def heat_call_exact(
     x: torch.Tensor,
     t: torch.Tensor,
