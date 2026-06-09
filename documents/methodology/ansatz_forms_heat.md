@@ -170,8 +170,8 @@ Parallelism: one array task per `(ic, variant, seed)` triple writing to a shared
 
 ## 5. Results (3 seeds per IC, 20000 iterations)
 
-Aggregated by `aggregate_seeds.py` (figures under
-`data/ablation_ansatz_forms/aggregate_seeds/`). Relative $L^2$ error against the
+Aggregated by `ansatz_forms_cross_seed_summary.py` (figures under
+`data/ansatz_forms_cross_seed_summary/<timestamp>_<n_ics>ic_<n_seeds>seed/`). Relative $L^2$ error against the
 exact solution, mean over seeds $\{0,1,2\}$:
 
 | | hard $\Psi{=}g$ lin | hard $\Psi{=}g$ exp | hard $\Psi{=}\lambda g$ lin | hard $\Psi{=}\lambda g$ exp | soft PINN | pure NN |

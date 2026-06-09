@@ -195,7 +195,7 @@ def main(argv=None) -> int:
                              "aggregate (default: data/ablation_ansatz_forms).")
     parser.add_argument("--out-dir", type=str, default=None,
                         help="Where to write the aggregate figures (default: a "
-                             "timestamped folder under data/aggregate_seeds/).")
+                             "timestamped folder under data/ansatz_forms_cross_seed_summary/).")
     args = parser.parse_args(argv)
 
     # Input: the ablation runner's data dir; Output: this script's own
