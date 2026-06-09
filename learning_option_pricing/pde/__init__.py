@@ -8,7 +8,7 @@ Black--Scholes machinery, so that the heat-equation study can be imported and
 unit-tested in isolation.
 """
 
-from learning_option_pricing.pde.operators import heat_operator
+from learning_option_pricing.pde.operators import heat_operator, heat_operator_parts
 from learning_option_pricing.pde.heat_references import (
     heat_call_exact,
     heat_call_payoff,
@@ -22,6 +22,7 @@ from learning_option_pricing.pde.heat_references import (
 
 __all__ = [
     "heat_operator",
+    "heat_operator_parts",
     "heat_call_exact",
     "heat_call_payoff",
     "heat_sine_exact",

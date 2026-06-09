@@ -140,9 +140,32 @@ these floors across the two hard forms is the quantitative core of the study. Th
 decomposition identity $\mathcal{P}\hat u = R_\theta + \mathcal{P}\Psi$ is verified
 numerically in `test/models/test_blended_ansatz.py`.
 
+### Forcing split by mechanism (blending-velocity vs damped-diffusion)
+
+The forcing $\mathcal{P}\Psi$ splits into its two operator parts
+$\mathcal{P}\Psi = \partial_t\Psi + \tfrac{\sigma^2}{2}\partial_{xx}\Psi$, and
+the floor is monitored separately along each:
+
+$$
+\underbrace{\mathbb{E}_\mu[(\partial_t\Psi)^2]}_{\text{blending-velocity}},
+\qquad
+\underbrace{\mathbb{E}_\mu[(\tfrac{\sigma^2}{2}\partial_{xx}\Psi)^2]}_{\text{damped diffusion}}.
+$$
+
+For the convex-combination form $\Psi=\lambda(t)\,g(x)$ these are
+$\mathbb{E}_\mu[(\lambda' g)^2]$ and $\mathbb{E}_\mu[(\lambda\tfrac{\sigma^2}{2}g'')^2]$;
+the first is large when $g$ has a **nonzero mean** (e.g. theta_3, where
+$\lambda' g \approx g/T$ injects a spurious forcing the constant form avoids),
+the second is large when $g''$ is **sharp** (e.g. the call payoff). The split is
+the channels `forcing_velocity` / `forcing_diffusion`, plotted in the bottom row
+of `loss_decomposition.png`; for a general (e.g. time-dependent CM) extension the
+same operator-part split applies via
+`learning_option_pricing.pde.heat_operator_parts`.
+
 Per-iteration history records: total loss, $\mathcal{L}_{\rm pde}$,
 $\mathcal{L}_{\rm tc}$ (diagnostic), boundary drift (diagnostic), the three
-decomposition channels, gradient norm and learning rate.
+decomposition channels, the two forcing sub-channels, gradient norm and learning
+rate.
 
 ---
 

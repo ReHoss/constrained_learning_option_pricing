@@ -319,7 +319,8 @@ def train_variant(variant, problem, hparams, *, num_iterations, seed, device, lo
 
     history = {k: [] for k in (
         "iter", "loss", "loss_pde", "loss_tc", "boundary_error",
-        "network_energy", "cross_term", "forcing_floor", "grad_norm", "lr",
+        "network_energy", "cross_term", "forcing_floor",
+        "forcing_velocity", "forcing_diffusion", "grad_norm", "lr",
     )}
     best_loss = float("inf")
     best_state = None
@@ -388,6 +389,8 @@ def train_variant(variant, problem, hparams, *, num_iterations, seed, device, lo
             history["network_energy"].append(decomp["network_energy"].item())
             history["cross_term"].append(decomp["cross_term"].item())
             history["forcing_floor"].append(decomp["forcing_floor"].item())
+            history["forcing_velocity"].append(decomp["forcing_velocity"].item())
+            history["forcing_diffusion"].append(decomp["forcing_diffusion"].item())
             history["grad_norm"].append(float(grad_norm))
             history["lr"].append(scheduler.get_last_lr()[0])
             logger.info(

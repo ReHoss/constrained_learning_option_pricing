@@ -42,7 +42,7 @@ from typing import Callable
 import torch
 import torch.nn as nn
 
-from learning_option_pricing.pde.operators import heat_operator
+from learning_option_pricing.pde.operators import heat_operator, heat_operator_parts
 
 FORMS = ("hard_constant", "hard_blended", "soft_pinn", "pure_nn")
 HARD_FORMS = ("hard_constant", "hard_blended")
@@ -252,6 +252,13 @@ def residual_decomposition(
         ``network_energy`` (:math:`\mathbb E[R_\theta^2]`), ``cross_term``
         (:math:`2\,\mathbb E[R_\theta\,\mathcal P\Psi]`), and
         ``forcing_floor`` (:math:`\mathbb E[(\mathcal P\Psi)^2]`).
+
+        The floor is further split by mechanism (the two operator parts of
+        :math:`\mathcal P\Psi = \partial_t\Psi + \tfrac{\sigma^2}{2}\partial_{xx}\Psi`):
+        ``forcing_velocity`` (:math:`\mathbb E[(\partial_t\Psi)^2]`, the
+        blending-velocity :math:`\lambda' g` for :math:`\Psi=\lambda g`) and
+        ``forcing_diffusion`` (:math:`\mathbb E[(\tfrac{\sigma^2}{2}\partial_{xx}\Psi)^2]`,
+        the damped diffusion :math:`\lambda\tfrac{\sigma^2}{2} g''`).
     """
     coord_col = coord.unsqueeze(-1)
     t_col = t.unsqueeze(-1)
@@ -264,6 +271,8 @@ def residual_decomposition(
         residual = p_phi
         network_contribution = p_phi
         extension_forcing = torch.zeros_like(p_phi)
+        forcing_velocity = torch.zeros_like(p_phi)
+        forcing_diffusion = torch.zeros_like(p_phi)
     else:
         lam = ansatz._blending(t)
         (lam_prime,) = torch.autograd.grad(
@@ -272,7 +281,8 @@ def residual_decomposition(
         network_contribution = (1.0 - lam) * p_phi - lam_prime * phi
 
         psi = ansatz.extension(coord_col, t_col).squeeze(-1)
-        extension_forcing = heat_operator(psi, coord, t, sigma)
+        forcing_velocity, forcing_diffusion = heat_operator_parts(psi, coord, t, sigma)
+        extension_forcing = forcing_velocity + forcing_diffusion
         residual = network_contribution + extension_forcing
 
     return {
@@ -283,4 +293,6 @@ def residual_decomposition(
         "network_energy": (network_contribution**2).mean(),
         "cross_term": 2.0 * (network_contribution * extension_forcing).mean(),
         "forcing_floor": (extension_forcing**2).mean(),
+        "forcing_velocity": (forcing_velocity**2).mean(),
+        "forcing_diffusion": (forcing_diffusion**2).mean(),
     }

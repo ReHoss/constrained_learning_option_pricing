@@ -131,13 +131,21 @@ def _plot_loss_components(out_dir, runs, label):
 
 
 def _plot_loss_decomposition(out_dir, runs, label):
-    """Network energy / |cross term| / forcing floor for the hard forms."""
-    channels = [("network_energy", r"$\mathbb{E}[R_\theta^2]$ (network energy)"),
-                ("cross_term", r"$|2\,\mathbb{E}[R_\theta\,\mathcal{P}\Psi]|$ (cross term)"),
-                ("forcing_floor", r"$\mathbb{E}[(\mathcal{P}\Psi)^2]$ (floor)")]
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+    """Decomposition channels for the hard forms, with the forcing floor split
+    by mechanism (blending-velocity vs damped-diffusion)."""
+    channels = [
+        ("network_energy", r"$\mathbb{E}[R_\theta^2]$ (network energy)"),
+        ("cross_term", r"$|2\,\mathbb{E}[R_\theta\,\mathcal{P}\Psi]|$ (cross term)"),
+        ("forcing_floor", r"$\mathbb{E}[(\mathcal{P}\Psi)^2]$ (floor)"),
+        ("forcing_velocity",
+         r"$\mathbb{E}[(\partial_t\Psi)^2]$ (blending-velocity $\lambda'g$)"),
+        ("forcing_diffusion",
+         r"$\mathbb{E}[(\frac{\sigma^2}{2}\partial_{xx}\Psi)^2]$ (damped diffusion $\lambda\frac{\sigma^2}{2}g''$)"),
+    ]
+    fig, axes = plt.subplots(2, 3, figsize=(13, 7.5))
+    flat = axes.flat
     any_data = False
-    for ax, (key, title) in zip(axes, channels):
+    for ax, (key, title) in zip(flat, channels):
         for name in HARD_VARIANTS:
             entry = runs.get(name)
             if entry is None or "hist" not in entry or key not in entry["hist"]:
@@ -151,25 +159,28 @@ def _plot_loss_decomposition(out_dir, runs, label):
         ax.set_title(title, fontsize=9)
         ax.set_xlabel("iteration (log scale; iter 1 at left)")
         ax.grid(True, which="both", alpha=0.3)
+    axes[1, 2].axis("off")  # 6th slot: only 5 channels
     if not any_data:
         plt.close(fig)
         return
-    handles, labels = axes[0].get_legend_handles_labels()
+    handles, labels = axes[0, 0].get_legend_handles_labels()
     leg = fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=7,
-                     frameon=True, bbox_to_anchor=(0.5, 0.26))
+                     frameon=True, bbox_to_anchor=(0.5, 0.13))
     fig.suptitle(r"Stage-residual decomposition (hard forms): "
                  r"$\mathcal{L}=\mathbb{E}[R_\theta^2]+2\mathbb{E}[R_\theta\mathcal{P}\Psi]"
-                 r"+\mathbb{E}[(\mathcal{P}\Psi)^2]$", fontsize=10)
-    fig.tight_layout(rect=[0, 0.34, 1, 0.95])
+                 r"+\mathbb{E}[(\mathcal{P}\Psi)^2]$;  "
+                 r"floor $=\mathbb{E}[(\partial_t\Psi+\frac{\sigma^2}{2}\partial_{xx}\Psi)^2]$",
+                 fontsize=10)
+    fig.tight_layout(rect=[0, 0.16, 1, 0.96])
     decomposition_formula = (
         label + "\n"
-        r"hard ansatz $\hat u=\Psi+\phi\,R_\theta$: $\Psi$ extends the terminal datum $g$, "
-        r"$\phi$ vanishes at $t=T$, $R_\theta$ the network." + "\n"
-        r"$\mathbb{E}[(\mathcal{P}\Psi)^2]$ (floor) is $\theta$-independent: the irreducible "
-        r"loss lower bound set by how well $\Psi$ already solves the PDE"
+        r"hard ansatz $\hat u=(1-\lambda)\Phi_\theta+\Psi$; floor split by operator part: "
+        r"blending-velocity $\partial_t\Psi$ vs damped-diffusion $\frac{\sigma^2}{2}\partial_{xx}\Psi$." + "\n"
+        r"For $\Psi=\lambda g$: $\partial_t\Psi=\lambda'g$ (large when $g$ has nonzero mean), "
+        r"$\frac{\sigma^2}{2}\partial_{xx}\Psi=\lambda\frac{\sigma^2}{2}g''$ (large when $g''$ is sharp)"
     )
     finalize_figure(fig, out_dir / "loss_decomposition.png", legends=[leg],
-                    axes=list(axes), formula=decomposition_formula, dpi=130,
+                    axes=list(flat), formula=decomposition_formula, dpi=130,
                     formula_fontsize=7)
 
 

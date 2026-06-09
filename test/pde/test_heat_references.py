@@ -14,6 +14,7 @@ from learning_option_pricing.pde import (
     heat_call_exact,
     heat_call_payoff,
     heat_operator,
+    heat_operator_parts,
     heat_sine_exact,
     heat_sine_terminal,
     heat_theta3_exact,
@@ -116,6 +117,20 @@ def test_smooth_call_converges_to_payoff():
     err_coarse = (smooth_call_payoff(x, K, beta=10.0) - payoff).abs().max()
     err_fine = (smooth_call_payoff(x, K, beta=1000.0) - payoff).abs().max()
     assert err_fine < err_coarse
+
+
+def test_heat_operator_parts_sum_and_values():
+    # u = sin(pi x) * exp(a t): d_t u = a u, (sigma^2/2) d_xx u = -(sigma^2/2) pi^2 u.
+    sigma, a = 0.7, 1.3
+    x = torch.linspace(0.1, 0.9, 50, dtype=torch.float64, requires_grad=True)
+    t = torch.linspace(0.0, 1.0, 50, dtype=torch.float64, requires_grad=True)
+    u = torch.sin(math.pi * x) * torch.exp(a * t)
+    time_part, diff_part = heat_operator_parts(u, x, t, sigma)
+    # parts sum to the full operator
+    assert torch.allclose(time_part + diff_part, heat_operator(u, x, t, sigma), atol=1e-10)
+    # analytic values
+    assert torch.allclose(time_part, a * u, atol=1e-8)
+    assert torch.allclose(diff_part, -0.5 * sigma**2 * math.pi**2 * u, atol=1e-8)
 
 
 def test_cm_time_smoothing_exact_at_terminal():

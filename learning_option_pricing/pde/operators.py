@@ -46,6 +46,33 @@ def heat_operator(
     Returns:
         The residual ``P u`` of shape ``(N,)``.
     """
+    time_part, diffusion_part = heat_operator_parts(u, x, t, sigma)
+    return time_part + diffusion_part
+
+
+def heat_operator_parts(
+    u: torch.Tensor,
+    x: torch.Tensor,
+    t: torch.Tensor,
+    sigma: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    r"""Return the two additive parts of :func:`heat_operator`.
+
+    ``P u = (du/dt) + (sigma^2/2) d^2u/dx^2`` is split into
+
+    * the **time part** ``du/dt`` and
+    * the **diffusion part** ``(sigma^2/2) d^2u/dx^2``,
+
+    whose sum is :func:`heat_operator`.  Applied to a terminal-data extension
+    :math:`\Psi`, the time part is the *blending-velocity* forcing
+    (:math:`\lambda' g` for :math:`\Psi = \lambda g`) and the diffusion part is
+    the *damped-diffusion* forcing (:math:`\lambda \tfrac{\sigma^2}{2} g''`),
+    letting the forcing floor be attributed by mechanism.  Fields independent of
+    ``x`` or ``t`` contribute a zero part (handled gracefully).
+
+    Returns:
+        ``(time_part, diffusion_part)``, each of shape ``(N,)``.
+    """
     (grad_u_t,) = torch.autograd.grad(
         u, (t,), grad_outputs=torch.ones_like(u), create_graph=True, allow_unused=True
     )
@@ -53,10 +80,9 @@ def heat_operator(
         u, (x,), grad_outputs=torch.ones_like(u), create_graph=True, allow_unused=True
     )
 
-    if grad_u_t is None:
-        grad_u_t = torch.zeros_like(t)
+    time_part = grad_u_t if grad_u_t is not None else torch.zeros_like(t)
     if grad_u_x is None:
-        grad_u_xx = torch.zeros_like(x)
+        diffusion_part = torch.zeros_like(x)
     else:
         (grad_u_xx,) = torch.autograd.grad(
             grad_u_x,
@@ -65,7 +91,7 @@ def heat_operator(
             create_graph=True,
             allow_unused=True,
         )
-        if grad_u_xx is None:
-            grad_u_xx = torch.zeros_like(x)
+        grad_u_xx = grad_u_xx if grad_u_xx is not None else torch.zeros_like(x)
+        diffusion_part = 0.5 * sigma**2 * grad_u_xx
 
-    return grad_u_t + 0.5 * sigma**2 * grad_u_xx
+    return time_part, diffusion_part
