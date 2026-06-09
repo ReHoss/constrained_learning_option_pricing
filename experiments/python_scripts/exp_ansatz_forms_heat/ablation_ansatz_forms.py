@@ -584,7 +584,8 @@ def main(argv=None) -> int:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S-%fZ")
         ablation_dir = (
             script_data_dir(__file__)
-            / f"{debug_prefix}{ts}_{args.ic}_iters{hparams['num_iterations']}"
+            / (f"{debug_prefix}{ts}_{args.ic}"
+               f"_iters{hparams['num_iterations']}_seed{args.seed}")
         )
     ablation_dir.mkdir(parents=True, exist_ok=True)
 
