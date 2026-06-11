@@ -9,12 +9,12 @@ backward-heat *initial (terminal) conditions*:
 
 Forms (all trained -> solid stroke per the repository plot convention):
     * ``hard_constant`` -- u = (1 - lambda) Phi + g          (eq:bermudan-ansatz)
-    * ``hard_blended``  -- u = (1 - lambda) Phi + lambda g    (eq:bermudan-ansatz-alt)
+    * ``hard_convex``  -- u = (1 - lambda) Phi + lambda g    (eq:bermudan-ansatz-alt)
     * ``soft_pinn``     -- u = Phi, terminal mismatch penalised in the loss
     * ``pure_nn``       -- u = Phi, no terminal handling (non-identifiable control)
 
-The ``linear`` / ``exponential`` blending sweep applies only to the two hard
-forms; the soft forms carry ``blending = None``.
+The ``linear`` / ``exponential`` interpolation-coefficient sweep applies only to the two hard
+forms; the soft forms carry ``interpolation = None``.
 
 Initial (terminal) conditions, all under the pure heat operator
 ``P u = d_t u + (sigma^2 / 2) d_xx u``:
@@ -41,42 +41,42 @@ METHOD_VARIANTS: list[dict] = [
     {
         "name": "hard_constant_linear",
         "form": "hard_constant",
-        "blending": "linear",
+        "interpolation": "linear",
         "color": "#1f77b4",  # blue
         "label": r"hard, $\Psi=g$, linear $\lambda$",
     },
     {
         "name": "hard_constant_exp",
         "form": "hard_constant",
-        "blending": "exponential",
+        "interpolation": "exponential",
         "color": "#17becf",  # cyan
         "label": r"hard, $\Psi=g$, exp.\ $\lambda$",
     },
     {
-        "name": "hard_blended_linear",
-        "form": "hard_blended",
-        "blending": "linear",
+        "name": "hard_convex_linear",
+        "form": "hard_convex",
+        "interpolation": "linear",
         "color": "#2ca02c",  # green
         "label": r"hard, $\Psi=\lambda g$, linear $\lambda$",
     },
     {
-        "name": "hard_blended_exp",
-        "form": "hard_blended",
-        "blending": "exponential",
+        "name": "hard_convex_exp",
+        "form": "hard_convex",
+        "interpolation": "exponential",
         "color": "#8c564b",  # brown
         "label": r"hard, $\Psi=\lambda g$, exp.\ $\lambda$",
     },
     {
         "name": "soft_pinn",
         "form": "soft_pinn",
-        "blending": None,
+        "interpolation": None,
         "color": "#ff7f0e",  # orange
         "label": r"soft PINN (terminal penalty)",
     },
     {
         "name": "pure_nn",
         "form": "pure_nn",
-        "blending": None,
+        "interpolation": None,
         "color": "#d62728",  # red
         "label": r"pure NN (no terminal handling)",
     },
@@ -226,6 +226,18 @@ def ic_names() -> list[str]:
 def variant_names() -> list[str]:
     """Return the available method-variant names."""
     return [v["name"] for v in METHOD_VARIANTS]
+
+
+# Variants kept in the data / summary but omitted from comparison plots: the
+# pure-NN control sits at rel L2 ~ 1 (non-identifiable, by design) and would
+# compress the log scale of the informative forms.  Its numbers stay in
+# summary.yaml / metrics; only the figures drop it.
+PLOT_EXCLUDE = ("pure_nn",)
+
+
+def plotted_variant_names() -> list[str]:
+    """Method-variant names shown in comparison plots (excludes PLOT_EXCLUDE)."""
+    return [v["name"] for v in METHOD_VARIANTS if v["name"] not in PLOT_EXCLUDE]
 
 
 def variant_by_name(name: str) -> dict:

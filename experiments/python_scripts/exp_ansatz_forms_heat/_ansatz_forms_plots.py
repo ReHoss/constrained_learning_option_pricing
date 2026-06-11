@@ -25,7 +25,7 @@ import _ansatz_forms_catalogue as cat  # noqa: E402
 from _figure_layout import finalize_figure  # noqa: E402
 
 HARD_VARIANTS = ("hard_constant_linear", "hard_constant_exp",
-                 "hard_blended_linear", "hard_blended_exp")
+                 "hard_convex_linear", "hard_convex_exp")
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +100,8 @@ def _plot_loss_components(out_dir, runs, label):
     fig, axes = plt.subplots(2, 2, figsize=(11, 8))
     for ax, (key, title) in zip(axes.flat, panels):
         for name, entry in runs.items():
+            if name in cat.PLOT_EXCLUDE:
+                continue
             if "hist" not in entry:
                 continue
             h = entry["hist"]
@@ -132,13 +134,13 @@ def _plot_loss_components(out_dir, runs, label):
 
 def _plot_loss_decomposition(out_dir, runs, label):
     """Decomposition channels for the hard forms, with the forcing floor split
-    by mechanism (blending-velocity vs damped-diffusion)."""
+    by mechanism (interpolation-velocity vs damped-diffusion)."""
     channels = [
         ("network_energy", r"$\mathbb{E}[R_\theta^2]$ (network energy)"),
         ("cross_term", r"$|2\,\mathbb{E}[R_\theta\,\mathcal{P}\Psi]|$ (cross term)"),
         ("forcing_floor", r"$\mathbb{E}[(\mathcal{P}\Psi)^2]$ (floor)"),
         ("forcing_velocity",
-         r"$\mathbb{E}[(\partial_t\Psi)^2]$ (blending-velocity $\lambda'g$)"),
+         r"$\mathbb{E}[(\partial_t\Psi)^2]$ (interpolation-velocity $\lambda'g$)"),
         ("forcing_diffusion",
          r"$\mathbb{E}[(\frac{\sigma^2}{2}\partial_{xx}\Psi)^2]$ (damped diffusion $\lambda\frac{\sigma^2}{2}g''$)"),
     ]
@@ -175,7 +177,7 @@ def _plot_loss_decomposition(out_dir, runs, label):
     decomposition_formula = (
         label + "\n"
         r"hard ansatz $\hat u=(1-\lambda)\Phi_\theta+\Psi$; floor split by operator part: "
-        r"blending-velocity $\partial_t\Psi$ vs damped-diffusion $\frac{\sigma^2}{2}\partial_{xx}\Psi$." + "\n"
+        r"interpolation-velocity $\partial_t\Psi$ vs damped-diffusion $\frac{\sigma^2}{2}\partial_{xx}\Psi$." + "\n"
         r"For $\Psi=\lambda g$: $\partial_t\Psi=\lambda'g$ (large when $g$ has nonzero mean), "
         r"$\frac{\sigma^2}{2}\partial_{xx}\Psi=\lambda\frac{\sigma^2}{2}g''$ (large when $g''$ is sharp)"
     )
@@ -189,6 +191,8 @@ def _plot_solution_slice(out_dir, runs, label, tag, fname, title, ref_key,
     fig, ax = plt.subplots(figsize=(8, 5))
     ref_drawn = False
     for name, entry in runs.items():
+        if name in cat.PLOT_EXCLUDE:
+            continue
         if "slices" not in entry:
             continue
         s = entry["slices"]
@@ -212,6 +216,8 @@ def _plot_solution_slice(out_dir, runs, label, tag, fname, title, ref_key,
 def _plot_error_t0(out_dir, runs, label):
     fig, ax = plt.subplots(figsize=(8, 5))
     for name, entry in runs.items():
+        if name in cat.PLOT_EXCLUDE:
+            continue
         if "slices" not in entry:
             continue
         s = entry["slices"]
@@ -239,7 +245,7 @@ def _plot_summary_metrics(out_dir, runs, label):
     keys = [("rel_l2", r"rel. $L^2$ (space-time)"),
             ("rel_l2_t0", r"rel. $L^2$ at $t=0$"),
             ("tc_l2", r"terminal rel. $L^2$ at $t=T$")]
-    names = [n for n in runs if "metrics" in runs[n]]
+    names = [n for n in runs if "metrics" in runs[n] and n not in cat.PLOT_EXCLUDE]
     if not names:
         return
     fig, axes = plt.subplots(1, 3, figsize=(13, 4))
@@ -311,6 +317,8 @@ def _plot_greeks(out_dir, runs, label):
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.6))
     ref_drawn = False
     for name, entry in runs.items():
+        if name in cat.PLOT_EXCLUDE:
+            continue
         s = entry.get("slices")
         if s is None or "nn_delta" not in s:
             continue

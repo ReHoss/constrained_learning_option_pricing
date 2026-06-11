@@ -82,7 +82,7 @@ def _mean_std(vals):
 
 def plot_rel_l2_by_ic(agg, out_dir):
     ics = [ic for ic in cat.ic_names() if ic in agg]
-    variants = cat.variant_names()
+    variants = cat.plotted_variant_names()
     colors = {v["name"]: v["color"] for v in cat.METHOD_VARIANTS}
     labels = {v["name"]: v["label"] for v in cat.METHOD_VARIANTS}
     fig, ax = plt.subplots(figsize=(11, 5.5))
@@ -115,7 +115,7 @@ def plot_rel_l2_by_ic(agg, out_dir):
 
 def plot_terminal_mismatch(agg, out_dir):
     ics = [ic for ic in cat.ic_names() if ic in agg]
-    variants = cat.variant_names()
+    variants = cat.plotted_variant_names()
     colors = {v["name"]: v["color"] for v in cat.METHOD_VARIANTS}
     labels = {v["name"]: v["label"] for v in cat.METHOD_VARIANTS}
     fig, ax = plt.subplots(figsize=(11, 5.5))
