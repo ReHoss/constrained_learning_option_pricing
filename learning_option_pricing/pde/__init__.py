@@ -10,8 +10,12 @@ unit-tested in isolation.
 
 from learning_option_pricing.pde.operators import heat_operator, heat_operator_parts
 from learning_option_pricing.pde.heat_references import (
+    chen_mangasarian_max,
     heat_call_exact,
     heat_call_payoff,
+    heat_propagate,
+    heat_put_exact,
+    heat_put_payoff,
     heat_sine_exact,
     heat_sine_terminal,
     heat_theta3_exact,
@@ -23,8 +27,12 @@ from learning_option_pricing.pde.heat_references import (
 __all__ = [
     "heat_operator",
     "heat_operator_parts",
+    "chen_mangasarian_max",
     "heat_call_exact",
     "heat_call_payoff",
+    "heat_propagate",
+    "heat_put_exact",
+    "heat_put_payoff",
     "heat_sine_exact",
     "heat_sine_terminal",
     "heat_theta3_exact",

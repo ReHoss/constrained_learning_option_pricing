@@ -196,6 +196,109 @@ def smooth_call_payoff(x: torch.Tensor, K: float, *, beta: float) -> torch.Tenso
     return F.softplus(torch.exp(x) - K, beta=beta) - log2 / beta
 
 
+def heat_put_payoff(x: torch.Tensor, K: float) -> torch.Tensor:
+    """Exact put payoff in log-price coordinates: ``(K - e^x)^+``."""
+    return torch.clamp(K - torch.exp(x), min=0.0)
+
+
+def heat_put_exact(
+    x: torch.Tensor,
+    t: torch.Tensor,
+    *,
+    K: float,
+    T: float,
+    sigma: float,
+) -> torch.Tensor:
+    r"""Exact pure-heat solution with the put payoff ``(K - e^x)^+`` at ``t = T``.
+
+    Under ``d_t u + (sigma^2/2) d_xx u = 0`` the solution is the Gaussian
+    convolution of the terminal payoff — a zero-rate Black--Scholes put with the
+    no-drift convexity correction:
+
+    .. math::
+
+        u(t, x) = K\,N(d) - e^{x + \sigma^2 \tau / 2}\,N(d - \sigma\sqrt{\tau}),
+        \qquad \tau = T - t,\quad d = \frac{\ln K - x}{\sigma\sqrt{\tau}}.
+
+    At ``tau = 0`` it reduces to the payoff.  This is the European *continuation*
+    value used in the Bermudan gluing.
+    """
+    tau = torch.clamp(T - t, min=1e-12)
+    sqrt_tau = sigma * torch.sqrt(tau)
+    d = (math.log(K) - x) / sqrt_tau
+    return K * _normal_cdf(d) - torch.exp(x + 0.5 * sigma**2 * tau) * _normal_cdf(d - sqrt_tau)
+
+
+def chen_mangasarian_max(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    eps: float,
+) -> torch.Tensor:
+    r"""Smooth Chen--Mangasarian approximation of ``max(a, b)``.
+
+    .. math::
+
+        M_\varepsilon(a, b) = \tfrac12\Bigl(a + b + \sqrt{(a-b)^2 + \varepsilon^2}\Bigr),
+
+    which is ``C^\infty`` and converges uniformly to ``max(a, b)`` as
+    ``eps -> 0`` (bias bounded by ``eps/2``).  Used to glue the exercise payoff
+    and the continuation value at a Bermudan exercise date.
+    """
+    return 0.5 * (a + b + torch.sqrt((a - b) ** 2 + eps**2))
+
+
+def heat_propagate(
+    g_fn,
+    x: torch.Tensor,
+    t: torch.Tensor,
+    *,
+    t_terminal: float,
+    sigma: float,
+    y_lo: float,
+    y_hi: float,
+    n_quad: int = 2000,
+) -> torch.Tensor:
+    r"""Exact backward-heat solution with a generic terminal datum ``g`` at
+    ``t_terminal``, by numerical Gaussian convolution.
+
+    Solves ``d_t u + (sigma^2/2) d_xx u = 0`` with ``u(\cdot, t_terminal) = g``:
+    the solution is the heat kernel applied to ``g`` over ``tau = t_terminal - t``,
+
+    .. math::
+
+        u(t, x) = \int_{\mathbb{R}} \frac{1}{\sigma\sqrt{2\pi\tau}}
+            \exp\!\Bigl(-\frac{(x-y)^2}{2\sigma^2\tau}\Bigr)\, g(y)\, dy,
+
+    approximated by a fixed trapezoidal grid ``y in [y_lo, y_hi]`` with
+    ``n_quad`` nodes.  Used as the machine-precision reference for the trained
+    Bermudan stage (no binomial tree needed).  At ``tau -> 0`` it returns ``g(x)``.
+
+    Args:
+        g_fn:       Callable ``g(y) -> Tensor`` (the terminal datum, e.g. the
+                    smoothed max of payoff and continuation).
+        x, t:       Query points (1-D tensors, broadcast-compatible).
+        t_terminal: Terminal time of the stage.
+        sigma:      Diffusion scale.
+        y_lo, y_hi: Quadrature support (must comfortably cover where ``g`` and the
+                    Gaussian mass live).
+        n_quad:     Number of quadrature nodes.
+    """
+    y = torch.linspace(y_lo, y_hi, n_quad, dtype=x.dtype, device=x.device)
+    dy = (y_hi - y_lo) / (n_quad - 1)
+    g_y = g_fn(y)  # (n_quad,)
+    raw_tau = t_terminal - t
+    # Below the grid-resolvable scale the Gaussian kernel collapses to a delta the
+    # fixed quadrature cannot represent; there the heat solution is just g(x)
+    # (the tau -> 0 limit u(., t_terminal) = g).  Require sigma*sqrt(tau) >= 5 dy.
+    tau_floor = (5.0 * dy / sigma) ** 2
+    tau = torch.clamp(raw_tau, min=tau_floor).unsqueeze(-1)  # (N, 1)
+    xc = x.unsqueeze(-1)  # (N, 1)
+    var = sigma**2 * tau
+    kernel = torch.exp(-((xc - y.unsqueeze(0)) ** 2) / (2.0 * var)) / torch.sqrt(2.0 * math.pi * var)
+    conv = (kernel * g_y.unsqueeze(0)).sum(dim=-1) * dy
+    return torch.where(raw_tau < tau_floor, g_fn(x), conv)
+
+
 def smooth_call_payoff_cm_time(
     x: torch.Tensor,
     t: torch.Tensor,

@@ -127,9 +127,15 @@ def build_problem(ic_name: str):
     """
     import torch  # local import keeps the catalogue/login path torch-free
 
+    import math
+
     from learning_option_pricing.pde import (
+        chen_mangasarian_max,
         heat_call_exact,
         heat_call_payoff,
+        heat_propagate,
+        heat_put_exact,
+        heat_put_payoff,
         heat_sine_exact,
         heat_sine_terminal,
         heat_theta3_exact,
@@ -187,6 +193,26 @@ def build_problem(ic_name: str):
 
         def exact(x, t):
             return heat_call_exact(x, t, K=K, T=T, sigma=sigma)
+
+    elif ic_name == "bermudan_put":
+        # Stage [0, t1]: framework T = t1 (the exercise date); the option matures
+        # at T_option.  Terminal datum = smoothed max of the put payoff and the
+        # European continuation; exact reference = Gaussian convolution of it.
+        K = float(conf["K"])
+        T_option = float(p["T_option"])
+        eps = float(p["eps"])
+        t1 = T  # framework terminal time == exercise date
+        y_lo, y_hi = math.log(5.0), math.log(600.0)
+
+        def continuation(x):
+            return heat_put_exact(x, torch.full_like(x, t1), K=K, T=T_option, sigma=sigma)
+
+        def terminal_datum(x):
+            return chen_mangasarian_max(heat_put_payoff(x, K), continuation(x), eps)
+
+        def exact(x, t):
+            return heat_propagate(terminal_datum, x, t, t_terminal=t1, sigma=sigma,
+                                  y_lo=y_lo, y_hi=y_hi)
 
     else:  # pragma: no cover - guarded by argparse choices
         raise ValueError(f"Unknown IC {ic_name!r}")

@@ -164,6 +164,28 @@ IC_CONFIGS: dict[str, dict] = {
             r"$K=100$, $\sigma=0.25$"
         ),
     },
+    "bermudan_put": {
+        # One backward-induction step of a Bermudan put: stage [0, t1] under the
+        # pure heat operator, terminal datum at t1 the Chen--Mangasarian-smoothed
+        # gluing of the exercise payoff (K-e^x)^+ and the European continuation
+        # value C(x) (analytic post-exercise stage [t1, T_option]).  The exact
+        # reference is the Gaussian convolution of that datum (no binomial tree).
+        # The framework "T" is the stage terminal = exercise date t1.
+        "reference": "bermudan_put",
+        "sigma": 0.25,
+        "T": 0.5,
+        "x_lo": math.log(20.0),
+        "x_hi": math.log(200.0),
+        "x_eval_lo": math.log(60.0),
+        "x_eval_hi": math.log(140.0),
+        "K": 100.0,
+        "params": {"T_option": 1.0, "eps": 2.0},
+        "label": (
+            r"Bermudan put, stage $[0,t_1]$: $g(x)=M_\varepsilon((K-e^x)^+,\,C(x))$, "
+            r"$C=$ European put at $t_1$; $K=100$, $\sigma=0.25$, $t_1=0.5$, "
+            r"$T=1$, $\varepsilon=2$"
+        ),
+    },
 }
 
 

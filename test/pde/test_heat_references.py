@@ -11,10 +11,14 @@ import math
 import torch
 
 from learning_option_pricing.pde import (
+    chen_mangasarian_max,
     heat_call_exact,
     heat_call_payoff,
     heat_operator,
     heat_operator_parts,
+    heat_propagate,
+    heat_put_exact,
+    heat_put_payoff,
     heat_sine_exact,
     heat_sine_terminal,
     heat_theta3_exact,
@@ -131,6 +135,61 @@ def test_heat_operator_parts_sum_and_values():
     # analytic values
     assert torch.allclose(time_part, a * u, atol=1e-8)
     assert torch.allclose(diff_part, -0.5 * sigma**2 * math.pi**2 * u, atol=1e-8)
+
+
+def test_put_exact_solves_heat_equation():
+    K, T, sigma = 100.0, 1.0, 0.25
+
+    def exact(x, t):
+        return heat_put_exact(x, t, K=K, T=T, sigma=sigma)
+
+    assert _residual_of_exact(exact, math.log(40.0), math.log(200.0), T, sigma) < 1e-6
+
+
+def test_put_exact_recovers_payoff_near_terminal():
+    K, T, sigma = 100.0, 1.0, 0.25
+    x = torch.linspace(math.log(40.0), math.log(200.0), 80, dtype=torch.float64)
+    t = torch.full_like(x, T - 1e-6)
+    assert torch.allclose(heat_put_exact(x, t, K=K, T=T, sigma=sigma),
+                          heat_put_payoff(x, K), atol=1e-2)
+
+
+def test_heat_propagate_matches_closed_form_put():
+    # numerical Gaussian convolution of the put payoff == analytic European put
+    K, T, sigma = 100.0, 1.0, 0.25
+
+    def payoff(y):
+        return heat_put_payoff(y, K)
+
+    x = torch.linspace(math.log(60.0), math.log(140.0), 50, dtype=torch.float64)
+    t = torch.full_like(x, 0.5)
+    num = heat_propagate(payoff, x, t, t_terminal=T, sigma=sigma,
+                         y_lo=math.log(5.0), y_hi=math.log(600.0), n_quad=4000)
+    cf = heat_put_exact(x, t, K=K, T=T, sigma=sigma)
+    assert (num - cf).norm() / cf.norm() < 1e-4
+
+
+def test_heat_propagate_returns_g_at_terminal():
+    # at tau -> 0 the convolution must return g(x) exactly (no delta-kernel garbage)
+    K, sigma, T = 100.0, 0.25, 0.5
+
+    def g(y):
+        return heat_put_payoff(y, K)
+
+    x = torch.linspace(math.log(40.0), math.log(160.0), 60, dtype=torch.float64)
+    t = torch.full_like(x, T)  # tau = 0
+    assert torch.allclose(
+        heat_propagate(g, x, t, t_terminal=T, sigma=sigma,
+                       y_lo=math.log(5.0), y_hi=math.log(600.0)),
+        g(x), atol=1e-10)
+
+
+def test_chen_mangasarian_max_converges():
+    a = torch.tensor([1.0, 5.0, 3.0], dtype=torch.float64)
+    b = torch.tensor([4.0, 2.0, 3.0], dtype=torch.float64)
+    coarse = (chen_mangasarian_max(a, b, 1.0) - torch.maximum(a, b)).abs().max()
+    fine = (chen_mangasarian_max(a, b, 0.01) - torch.maximum(a, b)).abs().max()
+    assert fine < coarse and fine < 1e-2
 
 
 def test_cm_time_smoothing_exact_at_terminal():
