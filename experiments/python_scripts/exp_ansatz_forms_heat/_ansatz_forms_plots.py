@@ -300,3 +300,39 @@ def replot(ablation_dir: Path) -> None:
     )
     _plot_error_t0(out_dir, runs, label)
     _plot_summary_metrics(out_dir, runs, label)
+    _plot_greeks(out_dir, runs, label)
+
+
+def _plot_greeks(out_dir, runs, label):
+    """Spot Delta and Gamma at t=0 vs the reference (option ICs only)."""
+    has = any("slices" in e and "nn_delta" in e["slices"] for e in runs.values())
+    if not has:
+        return
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.6))
+    ref_drawn = False
+    for name, entry in runs.items():
+        s = entry.get("slices")
+        if s is None or "nn_delta" not in s:
+            continue
+        v = entry["variant"]
+        axes[0].plot(s["spot"], s["nn_delta"], "-", color=v["color"], lw=1.3, label=v["label"])
+        axes[1].plot(s["spot"], s["nn_gamma"], "-", color=v["color"], lw=1.3, label=v["label"])
+        if not ref_drawn:
+            axes[0].plot(s["spot"], s["ref_delta"], "--", color="black", lw=1.4, label="exact")
+            axes[1].plot(s["spot"], s["ref_gamma"], "--", color="black", lw=1.4, label="exact")
+            ref_drawn = True
+    axes[0].set_title(r"$\Delta = \partial V/\partial S$ at $t=0$", fontsize=10)
+    axes[1].set_title(r"$\Gamma = \partial^2 V/\partial S^2$ at $t=0$", fontsize=10)
+    for ax in axes:
+        ax.set_xlabel("S"); ax.grid(True, alpha=0.3)
+    handles, labs = axes[0].get_legend_handles_labels()
+    leg = fig.legend(handles, labs, loc="lower center", ncol=4, fontsize=7,
+                     frameon=True, bbox_to_anchor=(0.5, 0.0))
+    fig.suptitle("Spot Greeks vs reference (trained solid, exact dashed)", fontsize=11)
+    fig.tight_layout(rect=[0, 0.14, 1, 0.95])
+    finalize_figure(fig, out_dir / "greeks.png", legends=[leg], axes=list(axes),
+                    formula=(label + "\n"
+                             r"$\Delta_S=e^{-x}\partial_x u$,  "
+                             r"$\Gamma_S=e^{-2x}(\partial_{xx}u-\partial_x u)$, $x=\ln S$; "
+                             r"autograd through the trained field vs the exact reference"),
+                    formula_fontsize=7)

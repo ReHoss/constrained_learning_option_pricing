@@ -228,6 +228,10 @@ def build_problem(ic_name: str):
         "extension_fn": extension_fn,
         "exact": exact,
         "label": conf["label"],
+        # Option ICs live in log-price x = ln S, so spot Greeks Delta_S, Gamma_S
+        # are meaningful and compared against the reference; the abstract ICs
+        # (sine, theta3) are not options.
+        "is_option": ic_name in ("call", "call_cm", "bermudan_put"),
     }
 
 
@@ -441,6 +445,23 @@ def train_variant(variant, problem, hparams, *, num_iterations, seed, device, lo
 # Metrics (vs exact reference)
 # ===========================================================================
 
+def spot_greeks(u_of_xt, x, t):
+    r"""Spot Delta and Gamma from a field u(x, t), x = ln S.
+
+    Delta_S = dV/dS = e^{-x} d_x u ;  Gamma_S = d^2V/dS^2 = e^{-2x}(d_xx u - d_x u).
+    ``u_of_xt`` is a callable ``(x, t) -> u`` (model forward or the exact ref).
+    """
+    import torch
+
+    x = x.clone().requires_grad_(True)
+    u = u_of_xt(x, t)
+    (ux,) = torch.autograd.grad(u.sum(), x, create_graph=True)
+    (uxx,) = torch.autograd.grad(ux.sum(), x, create_graph=False)
+    delta = (torch.exp(-x) * ux).detach()
+    gamma = (torch.exp(-2.0 * x) * (uxx - ux)).detach()
+    return delta, gamma
+
+
 def compute_metrics(model, problem, *, n_x=200, n_t=100):
     """Relative-L2 errors of the trained trial solution against the exact solution."""
     import numpy as np
@@ -476,11 +497,20 @@ def compute_metrics(model, problem, *, n_x=200, n_t=100):
         gT = problem["terminal_datum"](x0)
     tc_l2 = ((uT - gT).norm() / (gT.norm() + 1e-12)).item()
 
-    return {
-        "rel_l2": rel_l2,
-        "rel_l2_t0": rel_l2_t0,
-        "tc_l2": tc_l2,
-    }
+    out = {"rel_l2": rel_l2, "rel_l2_t0": rel_l2_t0, "tc_l2": tc_l2}
+
+    # Greeks at inception (t = 0) for the option ICs.
+    if problem.get("is_option"):
+        def u_nn(x, t):
+            return model(torch.stack([x, t], dim=1)).squeeze(-1)
+        xg = torch.linspace(x_lo, x_hi, n_x, device=device)
+        tg = torch.zeros(n_x, device=device)
+        nn_d, nn_g = spot_greeks(u_nn, xg, tg)
+        ref_d, ref_g = spot_greeks(problem["exact"], xg, tg)
+        out["rel_l2_delta"] = float((nn_d - ref_d).norm() / (ref_d.norm() + 1e-12))
+        out["rel_l2_gamma"] = float((nn_g - ref_g).norm() / (ref_g.norm() + 1e-12))
+
+    return out
 
 
 def compute_slices(model, problem, *, n_x=300):
@@ -510,6 +540,19 @@ def compute_slices(model, problem, *, n_x=300):
         out[f"u_ref_{tag}"] = u_ref.cpu().numpy()
     with torch.no_grad():
         out["g"] = problem["terminal_datum"](x).cpu().numpy()
+
+    # Spot Greeks at inception (t = 0), in S = e^x, for the option ICs.
+    if problem.get("is_option"):
+        def u_nn(xx, tt):
+            return model(torch.stack([xx, tt], dim=1)).squeeze(-1)
+        tg = torch.zeros(n_x, device=device)
+        nn_d, nn_g = spot_greeks(u_nn, x, tg)
+        ref_d, ref_g = spot_greeks(problem["exact"], x, tg)
+        out["spot"] = torch.exp(x).cpu().numpy()
+        out["nn_delta"] = nn_d.cpu().numpy()
+        out["ref_delta"] = ref_d.cpu().numpy()
+        out["nn_gamma"] = nn_g.cpu().numpy()
+        out["ref_gamma"] = ref_g.cpu().numpy()
     return out
 
 
