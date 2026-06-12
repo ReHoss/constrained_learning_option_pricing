@@ -7,9 +7,9 @@ from learning_option_pricing.models.etcnn import (
     InputNormalization,
     PINN,
 )
-from learning_option_pricing.models.blended_ansatz import (
-    BlendedTerminalAnsatz,
-    make_blending,
+from learning_option_pricing.models.terminal_ansatz import (
+    TerminalAnsatz,
+    make_interpolation_coefficient,
     residual_decomposition,
 )
 from learning_option_pricing.models.resnet import ResidualBlock, ResNet
@@ -18,11 +18,11 @@ __all__ = [
     "ETCNN",
     "AmericanPutETCNN",
     "BermudaETCNN",
-    "BlendedTerminalAnsatz",
+    "TerminalAnsatz",
     "InputNormalization",
     "PINN",
     "ResidualBlock",
     "ResNet",
-    "make_blending",
+    "make_interpolation_coefficient",
     "residual_decomposition",
 ]

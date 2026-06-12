@@ -1,4 +1,4 @@
-r"""Time-blended trial solutions for terminal-condition enforcement.
+r"""Trial solutions for terminal-condition enforcement.
 
 This module implements the four ansatz forms compared in the boundary-constrained
 learning study (report
@@ -12,27 +12,27 @@ network as :math:`\Phi_\theta(x, t)`, the interpolation coefficient as
 ``form``            trial solution :math:`\hat u(x, t)`         terminal handling
 ==================  ==========================================  ==================
 ``hard_constant``   :math:`(1 - \lambda)\,\Phi_\theta + g`       exact (eq:bermudan-ansatz)
-``hard_blended``    :math:`(1 - \lambda)\,\Phi_\theta + \lambda g`  exact (eq:bermudan-ansatz-alt)
+``hard_convex``    :math:`(1 - \lambda)\,\Phi_\theta + \lambda g`  exact (eq:bermudan-ansatz-alt)
 ``soft_pinn``       :math:`\Phi_\theta`                          penalty in loss
 ``pure_nn``         :math:`\Phi_\theta`                          none (control)
 ==================  ==========================================  ==================
 
 The two hard forms differ only in the *terminal-data extension*
 :math:`\Psi`: ``hard_constant`` uses the time-constant extension
-:math:`\Psi = g`, while ``hard_blended`` damps it as
+:math:`\Psi = g`, while ``hard_convex`` damps it as
 :math:`\Psi = \lambda(t)\,g`.  ``soft_pinn`` and ``pure_nn`` share the bare
 network forward; they are distinguished only by whether the training loop adds
 the terminal-mismatch penalty (``soft_pinn``) or omits it entirely (``pure_nn``,
 a deliberately non-identifiable control).
 
-**Blending and the source note.**  ``cal_notes/example_heat.tex`` writes the
-exponential blending as :math:`b(t) = 1 - e^{-(T-t)}`, which gives
+**Interpolation coefficient and the source note.**  ``cal_notes/example_heat.tex`` writes the
+exponential interpolation coefficient as :math:`b(t) = 1 - e^{-(T-t)}`, which gives
 :math:`b(T) = 0` and therefore does *not* enforce the terminal condition by
 construction.  The mathematically consistent exponential interpolation
 coefficient with :math:`\lambda(T) = 1` (so hard enforcement is preserved) is
 :math:`\lambda(t) = e^{-\gamma (T - t)}`; at the eigenvalue-matched rate
 :math:`\gamma = \sigma^2 \pi^2 / 2` it reproduces the note's "ideal" single-mode
-blending.  :func:`make_blending` implements this consistent family.
+interpolation coefficient.  :func:`make_interpolation_coefficient` implements this consistent family.
 """
 from __future__ import annotations
 
@@ -44,18 +44,18 @@ import torch.nn as nn
 
 from learning_option_pricing.pde.operators import heat_operator, heat_operator_parts
 
-FORMS = ("hard_constant", "hard_blended", "soft_pinn", "pure_nn")
-HARD_FORMS = ("hard_constant", "hard_blended")
+FORMS = ("hard_constant", "hard_convex", "soft_pinn", "pure_nn")
+HARD_FORMS = ("hard_constant", "hard_convex")
 SOFT_FORMS = ("soft_pinn", "pure_nn")
 
-BLENDINGS = ("linear", "exponential")
+INTERPOLATION_KINDS = ("linear", "exponential")
 
 
 # ---------------------------------------------------------------------------
 # Interpolation coefficient lambda(t)
 # ---------------------------------------------------------------------------
 
-def make_blending(
+def make_interpolation_coefficient(
     kind: str,
     *,
     T: float,
@@ -67,7 +67,7 @@ def make_blending(
     :math:`\lambda(T) = 1`.
 
     The network prefactor in the hard ansatz is :math:`1 - \lambda(t)`, which
-    vanishes at :math:`t = T`; for the blended form the extension weight is
+    vanishes at :math:`t = T`; for the convex-combination form the extension weight is
     :math:`\lambda(t)`.
 
     Args:
@@ -87,7 +87,7 @@ def make_blending(
     if kind == "linear":
         span = T - t_start
         if span <= 0.0:
-            raise ValueError(f"Linear blending needs T > t_start; got {T=}, {t_start=}.")
+            raise ValueError(f"Linear interpolation coefficient needs T > t_start; got {T=}, {t_start=}.")
 
         def _lambda_linear(t: torch.Tensor) -> torch.Tensor:
             return (t - t_start) / span
@@ -97,21 +97,21 @@ def make_blending(
     if kind == "exponential":
         rate = gamma if gamma is not None else 0.5 * sigma**2 * math.pi**2
         if rate <= 0.0:
-            raise ValueError(f"Exponential blending needs gamma > 0; got {rate}.")
+            raise ValueError(f"Exponential interpolation coefficient needs gamma > 0; got {rate}.")
 
         def _lambda_exp(t: torch.Tensor) -> torch.Tensor:
             return torch.exp(-rate * (T - t))
 
         return _lambda_exp
 
-    raise ValueError(f"Unknown blending kind: {kind!r}. Choose from {BLENDINGS}.")
+    raise ValueError(f"Unknown interpolation-coefficient kind: {kind!r}. Choose from {INTERPOLATION_KINDS}.")
 
 
 # ---------------------------------------------------------------------------
-# Blended trial solution
+# Trial solution
 # ---------------------------------------------------------------------------
 
-class BlendedTerminalAnsatz(nn.Module):
+class TerminalAnsatz(nn.Module):
     r"""Trial solution wrapping a free network with a chosen terminal-enforcement form.
 
     Args:
@@ -120,7 +120,7 @@ class BlendedTerminalAnsatz(nn.Module):
         terminal_datum: Callable ``g(x) -> Tensor`` giving the terminal datum;
                         used only by the hard forms (and only when
                         ``extension_fn`` is not supplied).
-        blending:       Callable ``lambda(t) -> Tensor`` with ``lambda(T) = 1``;
+        interp_coeff:    Callable ``lambda(t) -> Tensor`` with ``lambda(T) = 1``;
                         used only by the hard forms.  May be ``None`` for the
                         soft forms.
         form:           One of :data:`FORMS`.
@@ -131,14 +131,14 @@ class BlendedTerminalAnsatz(nn.Module):
                         (e.g. a vanishing-bandwidth Chen--Mangasarian smoothing,
                         exact at ``t = T``).  When supplied it replaces the
                         default ``g(x)`` extension for the hard forms; the
-                        ``hard_blended`` form then uses ``lambda(t) * Psi_base``.
+                        ``hard_convex`` form then uses ``lambda(t) * Psi_base``.
     """
 
     def __init__(
         self,
         network: nn.Module,
         terminal_datum: Callable[[torch.Tensor], torch.Tensor] | None,
-        blending: Callable[[torch.Tensor], torch.Tensor] | None,
+        interp_coeff: Callable[[torch.Tensor], torch.Tensor] | None,
         *,
         form: str,
         normalizer: Callable[[torch.Tensor], torch.Tensor] | None = None,
@@ -146,8 +146,8 @@ class BlendedTerminalAnsatz(nn.Module):
     ) -> None:
         if form not in FORMS:
             raise ValueError(f"Unknown form: {form!r}. Choose from {FORMS}.")
-        if form in HARD_FORMS and blending is None:
-            raise ValueError(f"form={form!r} requires a blending.")
+        if form in HARD_FORMS and interp_coeff is None:
+            raise ValueError(f"form={form!r} requires an interpolation coefficient.")
         if form in HARD_FORMS and terminal_datum is None and extension_fn is None:
             raise ValueError(
                 f"form={form!r} requires terminal_datum or extension_fn."
@@ -155,7 +155,7 @@ class BlendedTerminalAnsatz(nn.Module):
         super().__init__()
         self.network = network
         self._terminal_datum = terminal_datum
-        self._blending = blending
+        self._interp_coeff = interp_coeff
         self.form = form
         self.normalizer = normalizer
         self._extension_fn = extension_fn
@@ -171,10 +171,10 @@ class BlendedTerminalAnsatz(nn.Module):
         r"""The terminal-data extension :math:`\Psi(x, t)`.
 
         With the default (time-constant) extension, ``hard_constant`` ->
-        :math:`g(x)` and ``hard_blended`` -> :math:`\lambda(t)\,g(x)`.  When a
+        :math:`g(x)` and ``hard_convex`` -> :math:`\lambda(t)\,g(x)`.  When a
         time-dependent ``extension_fn`` :math:`\Psi_{\rm base}(x, t)` is supplied
         it replaces :math:`g(x)`: ``hard_constant`` -> :math:`\Psi_{\rm base}`,
-        ``hard_blended`` -> :math:`\lambda(t)\,\Psi_{\rm base}`.  Soft forms ->
+        ``hard_convex`` -> :math:`\lambda(t)\,\Psi_{\rm base}`.  Soft forms ->
         zeros.  ``coord`` and ``t`` are ``(N, 1)`` (or broadcast-compatible) and
         may carry ``requires_grad`` so the extension forcing
         :math:`\mathcal P\Psi` can be differentiated.
@@ -183,8 +183,8 @@ class BlendedTerminalAnsatz(nn.Module):
             return torch.zeros_like(coord)
         base = (self._extension_fn(coord, t) if self._extension_fn is not None
                 else self._terminal_datum(coord))
-        if self.form == "hard_blended":
-            return self._blending(t) * base
+        if self.form == "hard_convex":
+            return self._interp_coeff(t) * base
         return base  # hard_constant
 
     # -- forward ----------------------------------------------------------
@@ -200,7 +200,7 @@ class BlendedTerminalAnsatz(nn.Module):
             return phi
         coord = x[:, 0:1]
         t = x[:, 1:2]
-        lam = self._blending(t)
+        lam = self._interp_coeff(t)
         ext = self.extension(coord, t)
         return (1.0 - lam) * phi + ext
 
@@ -210,7 +210,7 @@ class BlendedTerminalAnsatz(nn.Module):
 # ---------------------------------------------------------------------------
 
 def residual_decomposition(
-    ansatz: BlendedTerminalAnsatz,
+    ansatz: TerminalAnsatz,
     coord: torch.Tensor,
     t: torch.Tensor,
     sigma: float,
@@ -256,7 +256,7 @@ def residual_decomposition(
         The floor is further split by mechanism (the two operator parts of
         :math:`\mathcal P\Psi = \partial_t\Psi + \tfrac{\sigma^2}{2}\partial_{xx}\Psi`):
         ``forcing_velocity`` (:math:`\mathbb E[(\partial_t\Psi)^2]`, the
-        blending-velocity :math:`\lambda' g` for :math:`\Psi=\lambda g`) and
+        interpolation-velocity :math:`\lambda' g` for :math:`\Psi=\lambda g`) and
         ``forcing_diffusion`` (:math:`\mathbb E[(\tfrac{\sigma^2}{2}\partial_{xx}\Psi)^2]`,
         the damped diffusion :math:`\lambda\tfrac{\sigma^2}{2} g''`).
     """
@@ -274,7 +274,7 @@ def residual_decomposition(
         forcing_velocity = torch.zeros_like(p_phi)
         forcing_diffusion = torch.zeros_like(p_phi)
     else:
-        lam = ansatz._blending(t)
+        lam = ansatz._interp_coeff(t)
         (lam_prime,) = torch.autograd.grad(
             lam, (t,), grad_outputs=torch.ones_like(lam), create_graph=True
         )

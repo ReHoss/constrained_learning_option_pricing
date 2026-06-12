@@ -41,10 +41,10 @@ Tracking the four hard forms within `call_cm`:
 |----|----|----|
 | hard_constant_linear | 43 | 0.0144 |
 | hard_constant_exp | 43 | 0.0150 |
-| hard_blended_exp | 127 | 0.0174 |
-| **hard_blended_linear** | **943** | **0.0095** |
+| hard_convex_exp | 127 | 0.0174 |
+| **hard_convex_linear** | **943** | **0.0095** |
 
-The form with the **largest** floor (`hard_blended_linear`, $943$) achieves the
+The form with the **largest** floor (`hard_convex_linear`, $943$) achieves the
 **smallest** error ($0.0095$). The same inversion appears for `sine`.
 
 The rest of this note explains the asymmetry: **the floor is not the right
@@ -97,15 +97,49 @@ the **untrained** ansatz. It ignores that the optimiser *moves* $R_\theta$.
 ### 2.3 What the optimiser can actually achieve
 
 Let $\mathcal{R} = \{\mathcal{P}[(1-\lambda)\Phi_\theta] : \theta\in\Theta\}$ be
-the set of network-reachable forcings. The trained loss is
+the set of network-reachable forcings — the residual fields the network can
+*reach* by varying its weights $\theta$. The trained loss is the squared
+$L^2(\mu)$-distance from the target $-f$ to that set,
 
 $$
 \mathcal{L}^\star = \min_\theta \|R_\theta + f\|^2 = \operatorname{dist}^2(-f,\ \mathcal{R}).
 $$
 
-Under the NTK / linearised-training approximation, $\mathcal{R}$ is (effectively)
-a **linear subspace** $\mathcal{S} \subset L^2(\mu)$, so the achieved residual is
-the projection of the forcing onto the orthogonal complement of $\mathcal{S}$:
+In general this is intractable: the map $\theta \mapsto \Phi_\theta$ is nonlinear,
+so $\mathcal{R}$ is a **curved, non-convex** manifold in $L^2(\mu)$ and the
+distance has no closed form.
+
+**The NTK / linearised-training approximation removes the curvature.** In the
+wide-network (lazy-training) regime $\Phi_\theta$ stays close to its
+initialisation $\Phi_{\theta_0}$ throughout training, so one linearises in the
+weights,
+
+$$
+\Phi_\theta \approx \Phi_{\theta_0} + \nabla_\theta\Phi_{\theta_0}\,(\theta-\theta_0).
+$$
+
+The map $\theta \mapsto \Phi_\theta$ is then **affine** in $\theta$, and applying
+the linear operator $\mathcal{P}[(1-\lambda)\,\cdot\,]$ preserves affineness, so
+$\theta \mapsto R_\theta$ is affine too. The reachable set $\mathcal{R}$ becomes
+an affine subspace; absorbing the constant initialisation offset, it is
+effectively the **linear subspace**
+
+$$
+\mathcal{S}
+= \operatorname{span}\big\{\,\mathcal{P}\big[(1-\lambda)\,\partial_{\theta_i}\Phi_{\theta_0}\big] : i\,\big\}
+\subset L^2(\mu),
+$$
+
+spanned by the operator-transformed Jacobian (neural-tangent) features
+$\partial_{\theta_i}\Phi_{\theta_0}$, frozen at initialisation. The effect of the
+approximation is to replace a non-convex *distance-to-a-manifold* problem by a
+**linear least-squares projection** onto a fixed subspace — which has a closed
+form.
+
+Minimising $\|R_\theta + f\|^2$ over $R_\theta\in\mathcal{S}$ is then least
+squares: the optimiser cancels exactly the part of $f$ lying **inside**
+$\mathcal{S}$, and the irreducible remainder is the projection of $f$ onto the
+**orthogonal complement** $\mathcal{S}^\perp$,
 
 $$
 \boxed{\ \mathcal{L}^\star = \big\|\Pi_{\mathcal{S}^\perp} f\big\|^2,\qquad
@@ -114,28 +148,105 @@ $$
 + \underbrace{\|\Pi_{\mathcal{S}^\perp} f\|^2}_{\text{uncancellable}\,=\,\mathcal{L}^\star}.\ }
 $$
 
-The floor over-counts by the **cancellable** part $\Pi_{\mathcal{S}}f$ — the
-component of the forcing the network can synthesise and subtract. Only the
-**uncancellable** part survives at the optimum.
+The second identity is the Pythagorean split of the floor along
+$\mathcal{S}\oplus\mathcal{S}^\perp$. The floor over-counts by the
+**cancellable** part $\Pi_{\mathcal{S}}f$ — the component of the forcing the
+network can synthesise and subtract — and only the **uncancellable** part
+$\Pi_{\mathcal{S}^\perp}f$ survives at the optimum. ($\Pi_{\mathcal{S}^\perp}$
+denotes the $L^2(\mu)$-orthogonal projector onto $\mathcal{S}^\perp$.)
+
+> **Scope of the approximation.** Finite-width networks and finite training
+> budgets satisfy the linearisation only approximately, hence the "(effectively)"
+> hedge: the claim is that $\mathcal{R}$ behaves *like* the subspace $\mathcal{S}$
+> closely enough to predict the **ordering** of errors across forms, not that it
+> literally is one.
 
 ### 2.4 Error is set by the uncancellable residual, not the floor
 
-Because the hard ansatz makes the terminal/boundary data exact, the error
-$\hat u_\theta - u^\star$ carries **zero** data, so the well-posedness/stability
-estimate of $\mathcal{P}$ applies to the interior residual alone:
+Two distinct quantities must be related here, and they live on different sides of
+the PDE:
+
+- $\text{rel }L^2 = \|\hat u_\theta - u^\star\|/\|u^\star\|$ — the relative error
+  of the **solution** ($u$);
+- $\mathcal{L}^\star = \|\mathcal{P}\hat u_\theta\|^2$ — the trained **residual**
+  loss ($\mathcal{P}u$), shown in §2.3 to equal $\|\Pi_{\mathcal{S}^\perp}f\|^2$.
+
+The bridge between them is the well-posedness (stability) estimate of
+$\mathcal{P}$. The problem posed for $\mathcal{P} = \partial_t + \mathcal{L}$ on
+the space–time cylinder $\Omega\times[0,T]$ has **three** data: the interior
+forcing, the **terminal** condition at $t=T$, and the **lateral** boundary
+condition on $\partial\Omega\times[0,T]$. Set $e = \hat u_\theta - u^\star$ and
+apply $\mathcal{P}$: since $u^\star$ solves the PDE exactly
+($\mathcal{P}u^\star = 0$, $u^\star(\cdot,T)=g$, $u^\star|_{\partial\Omega}=b$),
+the error $e$ solves the *same* operator equation with data
 
 $$
-\|\hat u_\theta - u^\star\| \ \le\ C\,\|\mathcal{P}\hat u_\theta\|
-\ =\ C\sqrt{\mathcal{L}^\star}\ =\ C\,\big\|\Pi_{\mathcal{S}^\perp} f\big\|.
+\underbrace{\mathcal{P}e = \mathcal{P}\hat u_\theta}_{\text{interior residual}},\qquad
+\underbrace{e(\cdot,T) = \hat u_\theta(\cdot,T) - g}_{\text{terminal trace}},\qquad
+\underbrace{e|_{\partial\Omega} = \hat u_\theta|_{\partial\Omega} - b}_{\text{lateral trace}}.
 $$
 
-Hence
+The well-posedness estimate for the backward parabolic problem bounds the
+solution norm by exactly these three data, each in its own trace norm,
+
+$$
+\|e\|_{L^2(\Omega\times[0,T])} \ \le\
+C_{\text{int}}\,\|\mathcal{P}e\|
++ C_{\text{term}}\,\|e(\cdot,T)\|_{L^2(\Omega)}
++ C_{\text{lat}}\,\|e|_{\partial\Omega}\|_{L^2(\partial\Omega\times[0,T])}.
+$$
+
+The hard ansatz $\hat u_\theta = (1-\lambda)\Phi_\theta + \Psi$ matches the
+terminal and lateral data **exactly** by construction
+($\hat u_\theta(\cdot,T) = g$ and $\hat u_\theta|_{\partial\Omega} = b$), so the
+terminal trace and the lateral trace of $e$ are **identically zero**. The last
+two terms vanish, leaving
+
+$$
+\|\hat u_\theta - u^\star\| \ =\ \|e\| \ \le\ C\,\|\mathcal{P}e\|
+\ =\ C\,\|\mathcal{P}\hat u_\theta\|
+\ =\ C\sqrt{\mathcal{L}^\star}\ =\ C\,\big\|\Pi_{\mathcal{S}^\perp} f\big\|,
+$$
+
+where $C = C_{\text{interior}}$ is the **stability constant** of $\mathcal{P}$ on
+the collocation domain — a fixed property of the problem, independent of
+$\theta$.
+
+**This is a one-sided inequality (proved), not yet the equivalence (empirical).**
+Small residual $\Rightarrow$ small error, rigorously. Upgrading $\le$ to the
+scaling relation
 
 $$
 \boxed{\ \text{rel }L^2 \ \sim\ \sqrt{\mathcal{L}^\star}
 \ =\ \big\|\Pi_{\mathcal{S}^\perp}\,\mathcal{P}\Psi\big\|\ }
-\qquad\text{— governed by } \Pi_{\mathcal{S}^\perp}f,\ \text{not by }\|f\|.
+\qquad\text{— governed by } \Pi_{\mathcal{S}^\perp}f,\ \text{not by }\|f\|,
 $$
+
+requires two further, *non-proven* assumptions:
+
+1. **Tightness.** The stability bound is not wildly loose, i.e. $\|e\| \approx
+   C\sqrt{\mathcal{L}^\star}$ rather than $\|e\| \ll C\sqrt{\mathcal{L}^\star}$. A
+   residual concentrated in the near-null-space of $\mathcal{P}$ could make the
+   error much larger than the bound's converse suggests; we assume we are not in
+   that regime.
+2. **Common constant.** Across the objects being *compared* — the four forms at
+   fixed problem (§1b) — the operator $\mathcal{P}$, the domain, and the
+   collocation measure $\mu$ are shared, so the stability constant $C$ and the
+   normaliser $\|u^\star\|$ are essentially common. Then
+   $\text{rel }L^2 \approx (C/\|u^\star\|)\sqrt{\mathcal{L}^\star} \propto
+   \sqrt{\mathcal{L}^\star}$, and the common factor cancels out of any ranking.
+
+Hence the `$\sim$` is a statement about **ordering**, not absolute value: the
+ranking of forms by accuracy is set by $\sqrt{\mathcal{L}^\star} =
+\|\Pi_{\mathcal{S}^\perp}\mathcal{P}\Psi\|$ alone. Across *problems* (§1a) the
+constant $C/\|u^\star\|$ drifts (different $u^\star$, different effective
+stability constant), so the collapse is expected to be a tight band rather than a
+single exact line — which is precisely what §5 step 1 proposes to test by
+re-plotting rel $L^2$ against $\sqrt{\mathcal{L}^\star}$.
+
+The achievable error is therefore controlled **not** by the size of the forcing
+$\|\mathcal{P}\Psi\|$ (the floor) but by the size of the component the network
+**cannot** synthesise and subtract, $\Pi_{\mathcal{S}^\perp}\mathcal{P}\Psi$.
 
 ### 2.5 Which subspace is $\mathcal{S}$? (spectral bias)
 
@@ -151,12 +262,12 @@ $$\mathcal{S} \approx \{\text{low-frequency forcings}\},\qquad
 
 ## 3. Applying it to the two forcing mechanisms
 
-Write the convex-combination (blended) extension as $\Psi = \lambda(t)\,g(x)$.
+Write the convex-combination extension as $\Psi = \lambda(t)\,g(x)$.
 Since $\mathcal{P} = \partial_t + \mathcal{L}$,
 
 $$
 f = \mathcal{P}\Psi
-= \underbrace{\lambda'(t)\,g(x)}_{f_{\rm vel}\ \text{(blending-velocity)}}
+= \underbrace{\lambda'(t)\,g(x)}_{f_{\rm vel}\ \text{(interpolation-velocity)}}
 + \underbrace{\lambda(t)\,\mathcal{L}g(x)}_{f_{\rm op}\ \text{(operator / damped-diffusion)}}.
 $$
 
@@ -177,7 +288,7 @@ $$
 This is corroborated by the monitored sub-channels
 $\mathbb{E}[(\partial_t\Psi)^2]$ (velocity) and
 $\mathbb{E}[(\tfrac{\sigma^2}{2}\partial_{xx}\Psi)^2]$ (diffusion): for the
-blended call the floor is dominated by the velocity term
+convex-combination call the floor is dominated by the velocity term
 ($\mathbb{E}[(\lambda'g)^2]\approx 840$), while for the constant call it is pure
 diffusion (the spike, $\approx 2870$).
 
@@ -188,13 +299,13 @@ diffusion (the spike, $\approx 2870$).
 - The **constant** form ($\Psi=g$) has $f=\mathcal{L}g$: the high-frequency spike,
   mostly in $\mathcal{S}^\perp$ — a floor that is small-to-moderate but
   **uncancellable**.
-- The **blended** form adds the large but low-frequency $f_{\rm vel}=\lambda'g$:
+- The **convex-combination** form adds the large but low-frequency $f_{\rm vel}=\lambda'g$:
   a **bigger floor that is mostly cancellable**.
 
 Because the error depends on $\|\Pi_{\mathcal{S}^\perp} f\|$ and not on $\|f\|$, a
 form with a **larger floor but a more cancellable (lower-frequency) forcing** can
 achieve a **smaller error** than a form with a lower but spiky floor. This is
-exactly the `call_cm` inversion (`hard_blended_linear`: floor $943$, error
+exactly the `call_cm` inversion (`hard_convex_linear`: floor $943$, error
 $0.0095$, vs `hard_constant`: floor $43$, error $0.0144$).
 
 **Crisp statement.** The floor is $\|\mathcal{P}\Psi\|^2$; the achievable error is

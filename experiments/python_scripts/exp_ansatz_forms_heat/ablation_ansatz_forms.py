@@ -236,12 +236,12 @@ def build_problem(ic_name: str):
 
 
 def build_ansatz(variant: dict, problem: dict, hparams: dict, *, model_seed: int):
-    """Construct the :class:`BlendedTerminalAnsatz` for a method variant."""
+    """Construct the :class:`TerminalAnsatz` for a method variant."""
     import torch
 
-    from learning_option_pricing.models.blended_ansatz import (
-        BlendedTerminalAnsatz,
-        make_blending,
+    from learning_option_pricing.models.terminal_ansatz import (
+        TerminalAnsatz,
+        make_interpolation_coefficient,
     )
     from learning_option_pricing.models.resnet import ResNet
 
@@ -255,10 +255,10 @@ def build_ansatz(variant: dict, problem: dict, hparams: dict, *, model_seed: int
     )
 
     form = variant["form"]
-    blending = None
-    if form in ("hard_constant", "hard_blended"):
-        blending = make_blending(
-            variant["blending"], T=problem["T"], sigma=problem["sigma"]
+    interp_coeff = None
+    if form in ("hard_constant", "hard_convex"):
+        interp_coeff = make_interpolation_coefficient(
+            variant["interpolation"], T=problem["T"], sigma=problem["sigma"]
         )
 
     # Affine input normalisation maps (x, t) into roughly [-1, 1]^2 so the tanh
@@ -271,10 +271,10 @@ def build_ansatz(variant: dict, problem: dict, hparams: dict, *, model_seed: int
         t = 2.0 * xt[:, 1:2] / T - 1.0
         return torch.cat([x, t], dim=1)
 
-    return BlendedTerminalAnsatz(
+    return TerminalAnsatz(
         net,
         problem["terminal_datum"],
-        blending,
+        interp_coeff,
         form=form,
         normalizer=normalizer,
         extension_fn=problem.get("extension_fn"),
@@ -329,7 +329,7 @@ def train_variant(variant, problem, hparams, *, num_iterations, seed, device, lo
     """Train one variant; return (model, history dict)."""
     import torch
 
-    from learning_option_pricing.models.blended_ansatz import residual_decomposition
+    from learning_option_pricing.models.terminal_ansatz import residual_decomposition
 
     sigma = problem["sigma"]
     form = variant["form"]
@@ -358,8 +358,8 @@ def train_variant(variant, problem, hparams, *, num_iterations, seed, device, lo
 
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(
-        "[%s/%s] training: form=%s blending=%s params=%d seeds(model=%d,sampler=%d)",
-        problem["ic_name"], variant["name"], form, variant["blending"],
+        "[%s/%s] training: form=%s interp=%s params=%d seeds(model=%d,sampler=%d)",
+        problem["ic_name"], variant["name"], form, variant["interpolation"],
         n_params, model_seed, sampler_seed,
     )
 

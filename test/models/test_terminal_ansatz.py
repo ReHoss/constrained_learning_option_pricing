@@ -1,7 +1,7 @@
-"""Tests for the four-form blended terminal ansatz.
+"""Tests for the four-form terminal ansatz.
 
 Verified properties:
-    - blending lambda(T) = 1 for both kinds, so the network prefactor vanishes;
+    - interpolation coefficient lambda(T) = 1 for both kinds, so the network prefactor vanishes;
     - hard forms recover the terminal datum at t = T regardless of the network;
     - soft / pure forms equal the bare network;
     - the residual decomposition identity P u_hat = R_theta + P Psi holds.
@@ -12,32 +12,32 @@ import math
 
 import torch
 
-from learning_option_pricing.models.blended_ansatz import (
-    BlendedTerminalAnsatz,
-    make_blending,
+from learning_option_pricing.models.terminal_ansatz import (
+    TerminalAnsatz,
+    make_interpolation_coefficient,
     residual_decomposition,
 )
 from learning_option_pricing.models.resnet import ResNet
 
 
-def _build(form, *, T=0.2, sigma=1.0, blending_kind="linear"):
+def _build(form, *, T=0.2, sigma=1.0, interp_kind="linear"):
     torch.manual_seed(0)
     net = ResNet(d_in=2, d_out=1, n=16, M=2, L=2).double()
 
     def terminal_datum(x):
         return torch.sin(math.pi * x)
 
-    blending = make_blending(blending_kind, T=T, sigma=sigma)
-    return BlendedTerminalAnsatz(
-        net, terminal_datum, blending, form=form
+    interp_coeff = make_interpolation_coefficient(interp_kind, T=T, sigma=sigma)
+    return TerminalAnsatz(
+        net, terminal_datum, interp_coeff, form=form
     )
 
 
-def test_blending_terminal_value_is_one():
+def test_interpolation_coefficient_terminal_value_is_one():
     T = 0.2
     t_T = torch.tensor([T], dtype=torch.float64)
     for kind in ("linear", "exponential"):
-        lam = make_blending(kind, T=T, sigma=1.0)
+        lam = make_interpolation_coefficient(kind, T=T, sigma=1.0)
         assert torch.allclose(lam(t_T), torch.ones_like(t_T), atol=1e-12)
 
 
@@ -47,7 +47,7 @@ def test_hard_forms_recover_terminal_datum():
     t = torch.full_like(x, T)
     xt = torch.cat([x, t], dim=1)
     want = torch.sin(math.pi * x)
-    for form in ("hard_constant", "hard_blended"):
+    for form in ("hard_constant", "hard_convex"):
         ansatz = _build(form, T=T)
         got = ansatz(xt)
         assert torch.allclose(got, want, atol=1e-10), form
@@ -65,13 +65,13 @@ def test_soft_forms_equal_bare_network():
 
 def test_residual_decomposition_identity():
     # P u_hat (full forward, by autograd) must equal R_theta + P Psi
-    # (the decomposition) pointwise, for both hard forms and both blendings.
+    # (the decomposition) pointwise, for both hard forms and both interpolation coefficients.
     from learning_option_pricing.pde.operators import heat_operator
 
     T, sigma = 0.2, 1.0
-    for form in ("hard_constant", "hard_blended"):
+    for form in ("hard_constant", "hard_convex"):
         for kind in ("linear", "exponential"):
-            ansatz = _build(form, T=T, sigma=sigma, blending_kind=kind)
+            ansatz = _build(form, T=T, sigma=sigma, interp_kind=kind)
             x = torch.linspace(0.05, 0.95, 60, dtype=torch.float64, requires_grad=True)
             t = torch.linspace(0.01, 0.99 * T, 60, dtype=torch.float64, requires_grad=True)
             xt = torch.stack([x, t], dim=1)

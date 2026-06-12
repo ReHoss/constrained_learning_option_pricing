@@ -10,7 +10,7 @@ enforced inside a physics-informed neural network, and monitors each component o
 the training objective separately.
 
 Library code: `learning_option_pricing.pde` (operator + references),
-`learning_option_pricing.models.blended_ansatz` (the four forms + decomposition).
+`learning_option_pricing.models.terminal_ansatz` (the four forms + decomposition).
 Experiment: `experiments/python_scripts/exp_ansatz_forms_heat/`.
 
 ---
@@ -70,17 +70,17 @@ at the terminal time.
 | form | trial solution $\hat u(x,t)$ | terminal enforcement |
 |----|----|----|
 | `hard_constant` | $(1-\lambda)\,\Phi_\theta + g$ | exact (report `eq:bermudan-ansatz`) |
-| `hard_blended` | $(1-\lambda)\,\Phi_\theta + \lambda\,g$ | exact (report `eq:bermudan-ansatz-alt`) |
+| `hard_convex` | $(1-\lambda)\,\Phi_\theta + \lambda\,g$ | exact (report `eq:bermudan-ansatz-alt`) |
 | `soft_pinn` | $\Phi_\theta$ | penalty in loss |
 | `pure_nn` | $\Phi_\theta$ | none — non-identifiable control |
 
 The two hard forms differ only in the terminal-data extension $\Psi$:
-`hard_constant` uses the time-constant $\Psi = g$, `hard_blended` the damped
+`hard_constant` uses the time-constant $\Psi = g$, `hard_convex` the damped
 $\Psi = \lambda g$. They are formally equivalent under the relabelling
 $g \mapsto \lambda g$, but differ off the terminal slice and hence in training
 dynamics — the object of study.
 
-### Blending functions
+### Interpolation coefficient
 
 $$
 \lambda_{\text{linear}}(t) = \frac{t - t_{\text{start}}}{T - t_{\text{start}}},
@@ -93,7 +93,7 @@ $\lambda_k(t)=t/t_k$; its $b'/(1-b)=1/(T-t)$ is singular at $T$ (strong
 enforcement). The `exponential` form preserves hard enforcement (unlike the
 source note's $b=1-e^{-(T-t)}$, which gives $b(T)=0$ and does **not** enforce the
 terminal condition); at the eigenvalue-matched rate $\gamma=\sigma^2\pi^2/2$ it
-reproduces the note's "ideal" single-mode blending. The blending sweep applies to
+reproduces the note's "ideal" single-mode interpolation coefficient. The interpolation-coefficient sweep applies to
 the two hard forms only.
 
 ---
@@ -134,20 +134,20 @@ $$
 
 The floor cannot be removed by optimising $\theta$; only the choice of extension
 controls it. For `hard_constant` ($\Psi=g$) it is
-$\mathbb{E}_\mu[(\tfrac{\sigma^2}{2}g'')^2]$; for `hard_blended` ($\Psi=\lambda g$)
+$\mathbb{E}_\mu[(\tfrac{\sigma^2}{2}g'')^2]$; for `hard_convex` ($\Psi=\lambda g$)
 it is $\mathbb{E}_\mu[(\lambda' g + \tfrac{\sigma^2}{2}\lambda g'')^2]$. Contrasting
 these floors across the two hard forms is the quantitative core of the study. The
 decomposition identity $\mathcal{P}\hat u = R_\theta + \mathcal{P}\Psi$ is verified
-numerically in `test/models/test_blended_ansatz.py`.
+numerically in `test/models/test_terminal_ansatz.py`.
 
-### Forcing split by mechanism (blending-velocity vs damped-diffusion)
+### Forcing split by mechanism (interpolation-velocity vs damped-diffusion)
 
 The forcing $\mathcal{P}\Psi$ splits into its two operator parts
 $\mathcal{P}\Psi = \partial_t\Psi + \tfrac{\sigma^2}{2}\partial_{xx}\Psi$, and
 the floor is monitored separately along each:
 
 $$
-\underbrace{\mathbb{E}_\mu[(\partial_t\Psi)^2]}_{\text{blending-velocity}},
+\underbrace{\mathbb{E}_\mu[(\partial_t\Psi)^2]}_{\text{interpolation-velocity}},
 \qquad
 \underbrace{\mathbb{E}_\mu[(\tfrac{\sigma^2}{2}\partial_{xx}\Psi)^2]}_{\text{damped diffusion}}.
 $$
@@ -172,7 +172,7 @@ rate.
 ## 4. Experiment structure
 
 * **Catalogue** `_ansatz_forms_catalogue.py` — torch-free; defines the six method
-  variants (4 hard = 2 forms × 2 blendings, plus soft and pure) and the three IC
+  variants (4 hard = 2 forms × 2 interpolation coefficients, plus soft and pure) and the three IC
   configs. Importable on a login node for the `--init-only` phase.
 * **Runner** `ablation_ansatz_forms.py` — Adam, cosine LR schedule, best-state
   restoration, deterministic master-seed → role-tagged per-role seeds
@@ -218,11 +218,11 @@ Stylised facts:
    innocuous*.
 4. **The forcing floor predicts the hard-form ranking** (`floor_vs_accuracy.png`):
    across every IC the lower-floor extension is the more accurate one. The
-   `theta3` reversal — where the *constant* extension $\Psi=g$ beats the blended
+   `theta3` reversal — where the *constant* extension $\Psi=g$ beats the convex-combination
    $\Psi=\lambda g$ — follows because $\vartheta_3$ has a nonzero mean, so the
-   blended form injects a spurious $\lambda'(t)\,g \approx g/T$ forcing that the
+   convex-combination form injects a spurious $\lambda'(t)\,g \approx g/T$ forcing that the
    constant form avoids; for the zero-mean sine and the sharp-$g''$ call the
-   constant form's $\tfrac{\sigma^2}{2}g''$ dominates instead and blending lowers
+   constant form's $\tfrac{\sigma^2}{2}g''$ dominates instead and the convex combination lowers
    the floor.
 
 These observations are empirical (3 seeds, fixed network capacity and 20000

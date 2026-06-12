@@ -64,7 +64,7 @@ def heat_operator_parts(
     * the **diffusion part** ``(sigma^2/2) d^2u/dx^2``,
 
     whose sum is :func:`heat_operator`.  Applied to a terminal-data extension
-    :math:`\Psi`, the time part is the *blending-velocity* forcing
+    :math:`\Psi`, the time part is the *interpolation-velocity* forcing
     (:math:`\lambda' g` for :math:`\Psi = \lambda g`) and the diffusion part is
     the *damped-diffusion* forcing (:math:`\lambda \tfrac{\sigma^2}{2} g''`),
     letting the forcing floor be attributed by mechanism.  Fields independent of
