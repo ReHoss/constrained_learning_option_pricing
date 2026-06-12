@@ -162,7 +162,7 @@ the achieved residual $\mathcal{P}\hat u=\partial_t\hat u+\mathcal{L}\hat u$, ta
 the real FFT $|\widehat{\cdot}_k|^2$, and average over slices (convex form,
 $\lambda(t)=t/T$).
 
-![Forcing-channel spectra vs achieved residual](figures/2026-06-12_forcing_channels_spectra.png)
+![Forcing-channel spectra vs achieved residual](figures/2026-06-12_spectral_channels_vs_residual.png)
 
 *Spatial power spectra (log–log, common scale across panels): velocity channel
 $\partial_t\Psi=\lambda'(t)g$ (blue), operator channel $\lambda(t)\mathcal{L}g$
@@ -204,7 +204,7 @@ channel energies of §3.1, sampled in training, are the reliable measure; the
 practical-grid spectrum above is shown to expose the resolution limit honestly
 rather than to quote a number from it.
 
-![Resolving the softplus operator-channel spike](figures/2026-06-12_softplus_spike_resolution.png)
+![Resolving the softplus operator-channel spike](figures/2026-06-12_operator_channel_spike.png)
 
 *Left: the operator channel $\tfrac{\sigma^2}{2}g''$ in real space — a
 near-singular curvature spike at $S=K$ (height $\sim\beta K^2/4$) that the

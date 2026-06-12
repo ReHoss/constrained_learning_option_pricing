@@ -306,7 +306,7 @@ def main(argv=None) -> int:
     half = 30.0 * spike_w  # zoom a few spike-widths around the strike
     xf = torch.linspace(x_strike - half, x_strike + half, 20000, dtype=torch.float64)
     axL.plot(torch.exp(xf).numpy(), _op_channel(xf).numpy(), "-", color="#d1495b",
-             lw=1.5, label=r"$\frac{\sigma^2}{2}g''(x)$ (resolved)")
+             lw=1.5, label=r"operator channel $\mathcal{L}g$ (resolved)")
     xc = torch.linspace(xlo_e, xhi_e, 256, dtype=torch.float64)
     msel = (xc >= x_strike - half) & (xc <= x_strike + half)
     if msel.any():
@@ -314,8 +314,8 @@ def main(argv=None) -> int:
                  color="black", ms=5, label=r"$N_X{=}256$ grid samples (miss the spike)")
     axL.axvline(K, ls=":", color="grey", lw=1.0)
     axL.set_xlabel("spot $S$")
-    axL.set_ylabel(r"operator channel $\frac{\sigma^2}{2}g''$")
-    axL.set_title(f"Real space: curvature spike at $S=K$ (width "
+    axL.set_ylabel(r"operator channel $\mathcal{L}g$")
+    axL.set_title(f"Real space: operator-channel spike at $S=K$ (width "
                   f"$\\sim1/(\\beta K)\\sim{spike_w:.0e}$ in $x$)", fontsize=9)
     axL.grid(alpha=0.3)
     legL = axL.legend(loc="upper left", bbox_to_anchor=(0.0, -0.18), fontsize=8, frameon=True)
@@ -341,11 +341,14 @@ def main(argv=None) -> int:
     finalize_figure(
         figs, out / "softplus_spike_resolution.png", legends=[legL, legR],
         axes=[axL, axR],
-        formula=(r"softplus $g$ ($\beta=100$, $K=100$): $g''$ is a near-singular spike of "
-                 r"width $\sim1/(\beta K)\sim10^{-4}$ in $x$" "\n"
-                 r"a uniform grid resolves it only for $N_X\gtrsim1.6\times10^4$ "
-                 r"($dx\lesssim5\times10^{-5}$); energy $E=\mathbb{E}[(\frac{\sigma^2}{2}g'')^2]"
-                 r"\to1.9\times10^4$ (vs $5.8$ aliased at $N_X{=}256$)"),
+        formula=(r"operator channel $\mathcal{L}g$ of the softplus-regularised kink "
+                 r"($\beta=100$, $K=100$): a near-singular spike of width "
+                 r"$\sim1/(\beta K)\sim10^{-4}$ in $x$, resolved only for "
+                 r"$N_X\gtrsim1.6\times10^4$ ($dx\lesssim5\times10^{-5}$)" "\n"
+                 r"heat instance $\mathcal{L}=\frac{\sigma^2}{2}\partial_{xx}\Rightarrow"
+                 r"\mathcal{L}g=\frac{\sigma^2}{2}g''$; energy "
+                 r"$E=\mathbb{E}[(\mathcal{L}g)^2]\to1.9\times10^4$ "
+                 r"(vs $5.8$ aliased at $N_X{=}256$)"),
         formula_fontsize=8)
 
     # ---- Figure 2: does the uncancellable energy predict the error? ----
