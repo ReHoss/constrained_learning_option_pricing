@@ -174,11 +174,17 @@ def _validate(models, exercise_times, tau, *, n_x=400, n_quad=4000):
 
     stages = []
     for k in range(m):  # stage k -> value at global tau[k]
-        # validation is cheap and the exact reference is CPU float64; evaluate the
-        # trained stage on CPU so device/dtype always match the reference grid.
-        model = models[k].to("cpu").double()
+        # Evaluate the trained stage on its native device/dtype: for the hard
+        # forms the forward calls the extension, which chains to the frozen
+        # stage-above model (possibly on GPU); moving only this stage to CPU would
+        # mix devices. Bring just the result to CPU float64 for the CPU reference.
+        model = models[k]
+        model.eval()
+        p0 = next(model.parameters())
+        xq = x.to(device=p0.device, dtype=p0.dtype)
         with torch.no_grad():
-            cont = model(torch.stack([x, torch.zeros_like(x)], dim=1)).squeeze(-1)
+            cont_dev = model(torch.stack([xq, torch.zeros_like(xq)], dim=1)).squeeze(-1)
+        cont = cont_dev.to(device="cpu", dtype=torch.float64)
         v_net = cont if k == 0 else torch.maximum(payoff, cont)
         v_exact = bermudan_put_value_exact(
             x, torch.full_like(x, float(tau[k])), exercise_times=exercise_times,
