@@ -210,11 +210,11 @@ def main(argv=None) -> int:
         ax.grid(True, which="both", alpha=0.3)
     handles, labs = axes[0, 0].get_legend_handles_labels()
     leg = fig.legend(handles, labs, loc="lower center", ncol=4, fontsize=7,
-                     frameon=True, bbox_to_anchor=(0.5, 0.0))
+                     frameon=True, bbox_to_anchor=(0.5, 0.08))
     fig.suptitle("Forcing spectrum $|\\widehat{\\mathcal{P}\\Psi}_k|^2$ (solid) vs "
                  "achieved-residual spectrum $|\\widehat{\\mathcal{P}\\hat u}_k|^2$ (dashed)",
                  fontsize=11)
-    fig.tight_layout(rect=[0, 0.14, 1, 0.95])
+    fig.tight_layout(rect=[0, 0.22, 1, 0.95])
     finalize_figure(fig, out / "spectra_by_ic.png", legends=[leg], axes=list(axes[0]),
                     formula=(r"network cancels low $k$ (residual $\ll$ forcing); "
                              r"the surviving high-$k$ residual $=\Pi_{\mathcal{S}^\perp}\mathcal{P}\Psi$ "
@@ -227,39 +227,56 @@ def main(argv=None) -> int:
     split_form = "hard_convex_linear"
     split_ics = [ic for ic in ("call", "call_cm") if (ic, split_form) in spectra]
     if split_ics:
-        figc, axesc = plt.subplots(1, len(split_ics), figsize=(5.2 * len(split_ics), 4.4),
-                                   squeeze=False)
-        for ax, ic in zip(axesc[0], split_ics):
+        # sharey/sharex so the two panels are on one common scale (directly
+        # comparable); only the left panel carries the y-label and tick labels.
+        figc, axesc = plt.subplots(1, len(split_ics), figsize=(5.8 * len(split_ics), 5.0),
+                                   squeeze=False, sharex=True, sharey=True)
+        for j, (ax, ic) in enumerate(zip(axesc[0], split_ics)):
             sp = spectra[(ic, split_form)]
             k = sp["k"]
+            # General forcing channels of f = P Psi with Psi = lambda(t) g; the
+            # legend states the operator-general form, the formula box specialises
+            # it to the heat instance L = (sigma^2/2) d_xx.
             ax.loglog(k[1:], np.clip(sp["vel_pow"][1:], 1e-30, None), "-",
-                      color="#1b6ca8", lw=1.4, label=r"velocity $\partial_t\Psi=\lambda' g$")
+                      color="#1b6ca8", lw=1.4,
+                      label=r"velocity $\partial_t\Psi=\lambda'(t)\,g$")
             ax.loglog(k[1:], np.clip(sp["diff_pow"][1:], 1e-30, None), "-",
                       color="#d1495b", lw=1.4,
-                      label=r"diffusion $\frac{\sigma^2}{2}\partial_{xx}\Psi=\lambda\frac{\sigma^2}{2}g''$")
+                      label=r"operator channel $\lambda(t)\,\mathcal{L}g$")
             ax.loglog(k[1:], np.clip(sp["r_pow"][1:], 1e-30, None), "--",
-                      color="black", lw=1.3, label=r"achieved residual $\mathcal{P}\hat u$")
+                      color="black", lw=1.3,
+                      label=r"residual $\mathcal{P}\hat u=\partial_t\hat u+\mathcal{L}\hat u$")
             note = {
-                "call": "softplus, $\\beta=100$: diffusion is a sub-grid spike\n"
+                "call": "softplus, $\\beta=100$: operator channel is a sub-grid spike\n"
                         "(width $\\sim1/(\\beta K)\\sim10^{-4}\\ll$ grid $dx$) — aliased, not physical",
                 "call_cm": "Chen--Mangasarian: band-limited, resolved",
             }.get(ic, "")
             ax.set_title(f"{ic}\n{note}", fontsize=8)
             ax.set_xlabel("spatial wavenumber $k$")
-            ax.set_ylabel(r"power $|\widehat{\cdot}_k|^2$")
+            if j == 0:
+                ax.set_ylabel(r"power $|\widehat{\cdot}_k|^2$")
             ax.grid(True, which="both", alpha=0.3)
         handlesc, labsc = axesc[0, 0].get_legend_handles_labels()
+        # legend sits clearly above the two-line formula box (anchored ~0.012 by
+        # finalize_figure) so the two never overlap.
         legc = figc.legend(handlesc, labsc, loc="lower center", ncol=3, fontsize=8,
-                           frameon=True, bbox_to_anchor=(0.5, 0.0))
+                           frameon=True, bbox_to_anchor=(0.5, 0.13))
         figc.suptitle(f"Forcing-channel spectra vs achieved residual "
-                      f"({split_form}, convex form)", fontsize=11)
-        figc.tight_layout(rect=[0, 0.13, 1, 0.94])
-        finalize_figure(figc, out / "forcing_channels_spectra.png", legends=[legc],
-                        axes=list(axesc[0]),
-                        formula=(r"the network cancels the low-$k$ velocity channel; the "
-                                 r"residual (dashed) tracks the high-$k$ diffusion tail "
-                                 r"$=\Pi_{\mathcal{S}^\perp}\mathcal{P}\Psi$, the regularised "
-                                 r"payoff curvature that sets the error"))
+                      f"({split_form}, convex form; common scale)", fontsize=11)
+        figc.tight_layout(rect=[0, 0.30, 1, 0.94])
+        finalize_figure(
+            figc, out / "forcing_channels_spectra.png", legends=[legc],
+            axes=list(axesc[0]),
+            formula=(
+                r"general: $f=\mathcal{P}\Psi$ with $\Psi=\lambda(t)\,g$  "
+                r"$\Rightarrow$  velocity $\partial_t\Psi=\lambda'(t)\,g$,  "
+                r"operator channel $\lambda(t)\,\mathcal{L}g$,  "
+                r"residual $\mathcal{P}\hat u=\partial_t\hat u+\mathcal{L}\hat u$" "\n"
+                r"heat instance $\mathcal{L}=\frac{\sigma^2}{2}\partial_{xx}$:  "
+                r"operator channel $=\lambda(t)\,\frac{\sigma^2}{2}\,g''$;  "
+                r"the network cancels the low-$k$ velocity, the residual tracks the "
+                r"high-$k$ operator tail $\Pi_{\mathcal{S}^\perp}\mathcal{P}\Psi$"),
+            formula_fontsize=8)
 
     # ---- Figure 2: does the uncancellable energy predict the error? ----
     markers = {"sine": "o", "theta3": "s", "call": "^", "call_cm": "D"}

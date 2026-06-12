@@ -163,9 +163,11 @@ $\lambda(t)=t/T$).
 
 ![Forcing-channel spectra vs achieved residual](figures/2026-06-12_forcing_channels_spectra.png)
 
-*Spatial power spectra (log–log): velocity channel $\lambda'g$ (blue), diffusion
-channel $\lambda\tfrac{\sigma^2}{2}g''$ (red), achieved residual $\mathcal{P}\hat u$
-(dashed). Left: softplus extension. Right: Chen–Mangasarian extension.*
+*Spatial power spectra (log–log, common scale across panels): velocity channel
+$\partial_t\Psi=\lambda'(t)g$ (blue), operator channel $\lambda(t)\mathcal{L}g$
+(red; heat instance $\lambda\tfrac{\sigma^2}{2}g''$), achieved residual
+$\mathcal{P}\hat u=\partial_t\hat u+\mathcal{L}\hat u$ (dashed). Left: softplus
+extension. Right: Chen–Mangasarian extension.*
 
 **Resolved case (Chen–Mangasarian, right panel) — the attribution holds as
 stated.** The velocity channel dominates at low $k$ and the diffusion channel at
