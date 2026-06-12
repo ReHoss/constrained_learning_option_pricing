@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _ansatz_forms_catalogue as cat  # noqa: E402
 
 HARD = ["hard_constant_linear", "hard_constant_exp",
-        "hard_blended_linear", "hard_blended_exp"]
+        "hard_convex_linear", "hard_convex_exp"]
 N_X = 256          # spatial grid (power of two for the FFT)
 T_SLICES = (0.1, 0.3, 0.5, 0.7, 0.9)  # fractions of T
 
@@ -60,40 +60,63 @@ def _load_ansatz(run_dir: Path, variant_name: str):
 
 
 def _spectra(ansatz, problem):
-    """Return (k, mean |f_k|^2, mean |r_k|^2, ||f||^2, ||r||^2) over time slices."""
+    """Spatial power spectra of the forcing, its two channels, and the residual.
+
+    Returns a dict with wavenumber ``k`` and the slice-averaged power spectra of:
+
+    * ``f``    -- the total extension forcing :math:`\\mathcal{P}\\Psi`;
+    * ``vel``  -- the interpolation-velocity channel :math:`\\partial_t\\Psi`
+                  (:math:`\\lambda' g` for the convex form; zero for additive);
+    * ``diff`` -- the diffusion channel :math:`\\tfrac{\\sigma^2}{2}\\partial_{xx}\\Psi`
+                  (:math:`\\lambda\\tfrac{\\sigma^2}{2} g''`);
+    * ``r``    -- the achieved residual :math:`\\mathcal{P}\\hat u`,
+
+    plus their mean energies ``*_e`` (band-integrated power).  Separating the two
+    forcing channels is what lets the spectrum *attribute* the uncancellable
+    high-wavenumber remainder to the diffusion channel (the regularised payoff
+    curvature) rather than the low-wavenumber velocity channel.
+    """
     import numpy as np
     import torch
 
-    from learning_option_pricing.pde.operators import heat_operator
+    from learning_option_pricing.pde.operators import heat_operator, heat_operator_parts
 
     sigma = problem["sigma"]
     T = problem["T"]
     x_lo, x_hi = problem["x_eval_lo"], problem["x_eval_hi"]
     x = torch.linspace(x_lo, x_hi, N_X, dtype=torch.float64)
-    f_pow = np.zeros(N_X // 2 + 1)
-    r_pow = np.zeros(N_X // 2 + 1)
-    f_e = r_e = 0.0
+    nfreq = N_X // 2 + 1
+    pow_acc = {key: np.zeros(nfreq) for key in ("f", "vel", "diff", "r")}
+    energy = {key: 0.0 for key in ("f", "vel", "diff", "r")}
     ansatz.double()
+
+    def _accumulate(key, arr):
+        pow_acc[key] += np.abs(np.fft.rfft(arr - arr.mean())) ** 2
+        energy[key] += float((arr ** 2).mean())
+
     for frac in T_SLICES:
         xx = x.clone().requires_grad_(True)
         tt = torch.full_like(xx, frac * T).requires_grad_(True)
         xt = torch.stack([xx, tt], dim=1)
-        # extension forcing f = P Psi
+        # extension forcing f = P Psi, split into velocity + diffusion channels
         psi = ansatz.extension(xx.unsqueeze(-1), tt.unsqueeze(-1)).squeeze(-1)
-        f = heat_operator(psi, xx, tt, sigma)
+        vel, diff = heat_operator_parts(psi, xx, tt, sigma)
+        f = vel + diff
         # achieved residual r = P u_hat
         u = ansatz(xt).squeeze(-1)
         r = heat_operator(u, xx, tt, sigma)
-        fn = f.detach().numpy()
-        rn = r.detach().numpy()
-        # de-mean and window lightly to reduce spectral leakage
-        f_pow += np.abs(np.fft.rfft(fn - fn.mean())) ** 2
-        r_pow += np.abs(np.fft.rfft(rn - rn.mean())) ** 2
-        f_e += float((fn ** 2).mean())
-        r_e += float((rn ** 2).mean())
+        _accumulate("f", f.detach().numpy())
+        _accumulate("vel", vel.detach().numpy())
+        _accumulate("diff", diff.detach().numpy())
+        _accumulate("r", r.detach().numpy())
+
     n = len(T_SLICES)
-    k = np.arange(N_X // 2 + 1)
-    return k, f_pow / n, r_pow / n, f_e / n, r_e / n
+    k = np.arange(nfreq)
+    out = {"k": k}
+    for key in pow_acc:
+        out[key + "_pow"] = pow_acc[key] / n
+        out[key + "_e"] = energy[key] / n
+    return out
 
 
 def _cutoff(k, f_pow, r_pow):
@@ -147,20 +170,25 @@ def main(argv=None) -> int:
         summ = yaml.safe_load(open(run_dir / "summary.yaml"))
         for v in HARD:
             ansatz, problem = _load_ansatz(run_dir, v)
-            k, f_pow, r_pow, f_e, r_e = _spectra(ansatz, problem)
+            sp = _spectra(ansatz, problem)
+            k, f_pow, r_pow = sp["k"], sp["f_pow"], sp["r_pow"]
+            f_e, r_e = sp["f_e"], sp["r_e"]
             kstar = _cutoff(k, f_pow, r_pow)
             high_frac = float(f_pow[k >= kstar].sum() / max(f_pow.sum(), 1e-30))
             results[(ic, v)] = {
                 "rel_l2": float(summ[v]["rel_l2"]),
                 "floor": float(f_e),
+                "velocity": float(sp["vel_e"]),
+                "diffusion": float(sp["diff_e"]),
                 "uncancellable": float(r_e),
                 "uncancellable_frac": float(r_e / max(f_e, 1e-30)),
                 "k_star": kstar,
                 "forcing_high_band_frac": high_frac,
             }
-            spectra[(ic, v)] = (k, f_pow, r_pow)
+            spectra[(ic, v)] = sp
             print(f"{ic:8s} {v:22s} relL2={summ[v]['rel_l2']:.2e} "
-                  f"floor={f_e:.2e} uncanc={r_e:.2e} k*={kstar} highfrac={high_frac:.2f}")
+                  f"floor={f_e:.2e} vel={sp['vel_e']:.2e} diff={sp['diff_e']:.2e} "
+                  f"uncanc={r_e:.2e} k*={kstar} highfrac={high_frac:.2f}")
 
     # ---- Figure 1: spectra per IC (forcing solid, residual dashed) ----
     present_ics = [ic for ic in ics if any((ic, v) in spectra for v in HARD)]
@@ -170,7 +198,8 @@ def main(argv=None) -> int:
         for v in HARD:
             if (ic, v) not in spectra:
                 continue
-            k, f_pow, r_pow = spectra[(ic, v)]
+            sp = spectra[(ic, v)]
+            k, f_pow, r_pow = sp["k"], sp["f_pow"], sp["r_pow"]
             ax.loglog(k[1:], np.clip(f_pow[1:], 1e-30, None), "-",
                       color=colors[v], lw=1.3, label=labels[v])
             ax.loglog(k[1:], np.clip(r_pow[1:], 1e-30, None), "--",
@@ -190,6 +219,42 @@ def main(argv=None) -> int:
                     formula=(r"network cancels low $k$ (residual $\ll$ forcing); "
                              r"the surviving high-$k$ residual $=\Pi_{\mathcal{S}^\perp}\mathcal{P}\Psi$ "
                              r"sets the error"))
+
+    # ---- Figure 1b: forcing-channel split (velocity vs diffusion) vs residual,
+    #      for the convex form on call vs call_cm (the report's key comparison).
+    #      Validates the attribution: velocity = low-k cancellable, diffusion =
+    #      high-k uncancellable, achieved residual tracks the diffusion tail. ----
+    split_form = "hard_convex_linear"
+    split_ics = [ic for ic in ("call", "call_cm") if (ic, split_form) in spectra]
+    if split_ics:
+        figc, axesc = plt.subplots(1, len(split_ics), figsize=(5.2 * len(split_ics), 4.4),
+                                   squeeze=False)
+        for ax, ic in zip(axesc[0], split_ics):
+            sp = spectra[(ic, split_form)]
+            k = sp["k"]
+            ax.loglog(k[1:], np.clip(sp["vel_pow"][1:], 1e-30, None), "-",
+                      color="#1b6ca8", lw=1.4, label=r"velocity $\partial_t\Psi=\lambda' g$")
+            ax.loglog(k[1:], np.clip(sp["diff_pow"][1:], 1e-30, None), "-",
+                      color="#d1495b", lw=1.4,
+                      label=r"diffusion $\frac{\sigma^2}{2}\partial_{xx}\Psi=\lambda\frac{\sigma^2}{2}g''$")
+            ax.loglog(k[1:], np.clip(sp["r_pow"][1:], 1e-30, None), "--",
+                      color="black", lw=1.3, label=r"achieved residual $\mathcal{P}\hat u$")
+            ax.set_title(ic, fontsize=10)
+            ax.set_xlabel("spatial wavenumber $k$")
+            ax.set_ylabel(r"power $|\widehat{\cdot}_k|^2$")
+            ax.grid(True, which="both", alpha=0.3)
+        handlesc, labsc = axesc[0, 0].get_legend_handles_labels()
+        legc = figc.legend(handlesc, labsc, loc="lower center", ncol=3, fontsize=8,
+                           frameon=True, bbox_to_anchor=(0.5, 0.0))
+        figc.suptitle(f"Forcing-channel spectra vs achieved residual "
+                      f"({split_form}, convex form)", fontsize=11)
+        figc.tight_layout(rect=[0, 0.13, 1, 0.94])
+        finalize_figure(figc, out / "forcing_channels_spectra.png", legends=[legc],
+                        axes=list(axesc[0]),
+                        formula=(r"the network cancels the low-$k$ velocity channel; the "
+                                 r"residual (dashed) tracks the high-$k$ diffusion tail "
+                                 r"$=\Pi_{\mathcal{S}^\perp}\mathcal{P}\Psi$, the regularised "
+                                 r"payoff curvature that sets the error"))
 
     # ---- Figure 2: does the uncancellable energy predict the error? ----
     markers = {"sine": "o", "theta3": "s", "call": "^", "call_cm": "D"}
