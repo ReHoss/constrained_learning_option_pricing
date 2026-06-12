@@ -193,14 +193,28 @@ practical grid Nyquist — maximally high-frequency and therefore maximally
 uncancellable — which is precisely why it is the worst extension (the §3.1 floor
 $7200$ for additive softplus is the spatially-sampled shadow of this spike, with
 the large seed spread of §3.1 reflecting how rarely the collocation grid lands on
-it). Resolving the spike faithfully would require $N_x\gtrsim 3\times10^4$; the
-quantitative channel energies of §3.1, sampled in training, are the reliable
-measure, and the spectrum is shown to expose the resolution limit honestly rather
-than to quote a number from it.
+it). Refining the (analytic) extension grid makes the spike explicit (figure
+below): in real space $\mathcal{L}g=\tfrac{\sigma^2}{2}g''$ is a tall narrow peak
+at $S=K$ that the $N_X=256$ grid steps over, and in the spectrum the operator
+channel fills in to a broadband high-$k$ plateau as $N_X$ grows. The channel
+energy $\mathbb{E}[(\tfrac{\sigma^2}{2}g'')^2]$ converges to $\approx1.9\times10^4$
+by $N_X\gtrsim1.6\times10^4$ (about two grid points across the spike), versus the
+aliased $5.8$ at $N_X=256$ — a factor $\sim3300$ underestimate. The quantitative
+channel energies of §3.1, sampled in training, are the reliable measure; the
+practical-grid spectrum above is shown to expose the resolution limit honestly
+rather than to quote a number from it.
+
+![Resolving the softplus operator-channel spike](figures/2026-06-12_softplus_spike_resolution.png)
+
+*Left: the operator channel $\tfrac{\sigma^2}{2}g''$ in real space — a
+near-singular curvature spike at $S=K$ (height $\sim\beta K^2/4$) that the
+$N_X=256$ grid samples (black) step over. Right: its spatial power spectrum as the
+grid refines ($N_X=256\to16384$); the high-$k$ content appears and the channel
+energy $E$ converges (legend) as the spike is resolved.*
 
 Reproduce:
 `experiments/python_scripts/exp_ansatz_forms_heat/spectral_gap_analysis.py`
-(figure `forcing_channels_spectra.png`).
+(figures `forcing_channels_spectra.png`, `softplus_spike_resolution.png`).
 
 ## 4. Reading
 

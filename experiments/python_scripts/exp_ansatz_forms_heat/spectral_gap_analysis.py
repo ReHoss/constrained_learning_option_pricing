@@ -278,6 +278,76 @@ def main(argv=None) -> int:
                 r"high-$k$ operator tail $\Pi_{\mathcal{S}^\perp}\mathcal{P}\Psi$"),
             formula_fontsize=8)
 
+    # ---- Figure 1c: resolving the softplus operator-channel spike ----
+    #      The spike is sub-grid at N_X=256; refining the (analytic) extension
+    #      grid recovers it in real space and fills in the high-k spectrum. Uses
+    #      the closed-form softplus extension (no network needed for the forcing).
+    import math
+    import torch
+    from learning_option_pricing.pde.heat_references import smooth_call_payoff
+
+    call_conf = cat.ic_by_name("call")
+    K = float(call_conf["K"])
+    sig = float(call_conf["sigma"])
+    beta = float(call_conf["params"]["beta"])
+    xlo_e, xhi_e = float(call_conf["x_eval_lo"]), float(call_conf["x_eval_hi"])
+    x_strike = math.log(K)
+    spike_w = 1.0 / (beta * K)  # operator-channel spike width in x
+
+    def _op_channel(x):  # (sigma^2/2) g''(x) for the static softplus extension
+        x = x.clone().requires_grad_(True)
+        g = smooth_call_payoff(x, K, beta=beta)
+        (gx,) = torch.autograd.grad(g.sum(), x, create_graph=True)
+        (gxx,) = torch.autograd.grad(gx.sum(), x)
+        return (0.5 * sig**2 * gxx).detach()
+
+    figs, (axL, axR) = plt.subplots(1, 2, figsize=(11.5, 4.8))
+    # left: real-space spike, fine grid vs the coarse N_X=256 samples that miss it
+    half = 30.0 * spike_w  # zoom a few spike-widths around the strike
+    xf = torch.linspace(x_strike - half, x_strike + half, 20000, dtype=torch.float64)
+    axL.plot(torch.exp(xf).numpy(), _op_channel(xf).numpy(), "-", color="#d1495b",
+             lw=1.5, label=r"$\frac{\sigma^2}{2}g''(x)$ (resolved)")
+    xc = torch.linspace(xlo_e, xhi_e, 256, dtype=torch.float64)
+    msel = (xc >= x_strike - half) & (xc <= x_strike + half)
+    if msel.any():
+        axL.plot(torch.exp(xc[msel]).numpy(), _op_channel(xc[msel]).numpy(), "o",
+                 color="black", ms=5, label=r"$N_X{=}256$ grid samples (miss the spike)")
+    axL.axvline(K, ls=":", color="grey", lw=1.0)
+    axL.set_xlabel("spot $S$")
+    axL.set_ylabel(r"operator channel $\frac{\sigma^2}{2}g''$")
+    axL.set_title(f"Real space: curvature spike at $S=K$ (width "
+                  f"$\\sim1/(\\beta K)\\sim{spike_w:.0e}$ in $x$)", fontsize=9)
+    axL.grid(alpha=0.3)
+    legL = axL.legend(loc="upper left", bbox_to_anchor=(0.0, -0.18), fontsize=8, frameon=True)
+
+    # right: spectrum convergence as the grid refines (sweep -> sequential colour)
+    nxs = (256, 1024, 4096, 16384)
+    cmap = plt.cm.plasma(np.linspace(0.15, 0.85, len(nxs)))
+    for NX, col in zip(nxs, cmap):
+        xx = torch.linspace(xlo_e, xhi_e, NX, dtype=torch.float64)
+        op = _op_channel(xx).numpy()
+        pw = np.abs(np.fft.rfft(op - op.mean())) ** 2
+        kk = np.arange(len(pw))
+        energy = float((op ** 2).mean())
+        axR.loglog(kk[1:], np.clip(pw[1:], 1e-30, None), "-", color=col, lw=1.3,
+                   label=f"$N_X={NX}$  ($E={energy:.0f}$)")
+    axR.set_xlabel("spatial wavenumber $k$")
+    axR.set_ylabel(r"power $|\widehat{\cdot}_k|^2$")
+    axR.set_title("Spectrum: high-$k$ content appears as the grid resolves", fontsize=9)
+    axR.grid(which="both", alpha=0.3)
+    legR = axR.legend(loc="upper left", bbox_to_anchor=(0.0, -0.18), fontsize=8, frameon=True)
+    figs.suptitle("Softplus operator channel: a sub-grid spike, resolved", fontsize=11)
+    figs.tight_layout(rect=[0, 0.16, 1, 0.94])
+    finalize_figure(
+        figs, out / "softplus_spike_resolution.png", legends=[legL, legR],
+        axes=[axL, axR],
+        formula=(r"softplus $g$ ($\beta=100$, $K=100$): $g''$ is a near-singular spike of "
+                 r"width $\sim1/(\beta K)\sim10^{-4}$ in $x$" "\n"
+                 r"a uniform grid resolves it only for $N_X\gtrsim1.6\times10^4$ "
+                 r"($dx\lesssim5\times10^{-5}$); energy $E=\mathbb{E}[(\frac{\sigma^2}{2}g'')^2]"
+                 r"\to1.9\times10^4$ (vs $5.8$ aliased at $N_X{=}256$)"),
+        formula_fontsize=8)
+
     # ---- Figure 2: does the uncancellable energy predict the error? ----
     markers = {"sine": "o", "theta3": "s", "call": "^", "call_cm": "D"}
     fig, ax = plt.subplots(figsize=(8, 6))
