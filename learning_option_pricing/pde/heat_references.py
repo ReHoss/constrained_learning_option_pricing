@@ -299,6 +299,103 @@ def heat_propagate(
     return torch.where(raw_tau < tau_floor, g_fn(x), conv)
 
 
+def bermudan_put_value_exact(
+    x: torch.Tensor,
+    t: torch.Tensor,
+    *,
+    exercise_times,
+    K: float,
+    sigma: float,
+    y_lo: float,
+    y_hi: float,
+    n_quad: int = 4000,
+) -> torch.Tensor:
+    r"""Exact Bermudan-put value by backward induction with exact propagation.
+
+    The Bermudan put with exercise opportunities at
+    :math:`t_1 < t_2 < \dots < t_m = T` (maturity) is priced by the dynamic
+    program
+
+    .. math::
+
+        V(t_m, x) &= (K - e^x)^+, \\
+        C(t_k, x) &= \bigl(e^{(t_{k+1}-t_k)\,\mathcal{A}}\,V(t_{k+1},\cdot)\bigr)(x),
+        \qquad \mathcal{A} = \tfrac{\sigma^2}{2}\partial_{xx}, \\
+        V(t_k, x) &= \max\!\bigl((K-e^x)^+,\ C(t_k, x)\bigr),
+
+    where between exercise dates the value solves the pure-heat equation, so the
+    continuation operator :math:`e^{\Delta\tau\,\mathcal{A}}` is **exact Gaussian
+    convolution** (one step per inter-exercise interval, no time-discretisation
+    error) implemented by :func:`heat_propagate`.  The max-gluing uses the
+    **exact** :func:`torch.maximum` (the reference; the trained stages use the
+    Chen--Mangasarian smooth max).  This is the machine-precision target against
+    which the learned backward induction is validated and its error propagation
+    measured.
+
+    For ``t`` strictly inside an inter-exercise interval the value is the pure
+    continuation toward the next exercise date (the option cannot be exercised
+    there); at an exercise date it includes the ``max``.  Arbitrary ``t`` tensors
+    are handled by grouping equal time values (slices share one time).
+
+    Args:
+        x:              Log-price coordinate, shape ``(N,)``.
+        t:              Time coordinate (scalar-valued or shape ``(N,)``).
+        exercise_times: Ascending exercise dates; the last is maturity ``T``.
+        K:              Strike.
+        sigma:          Diffusion scale (coefficient ``sigma^2 / 2``).
+        y_lo, y_hi:     Quadrature support for every convolution.
+        n_quad:         Quadrature nodes per convolution.
+
+    Returns:
+        The exact value ``V(t, x)`` of shape ``(N,)``.
+    """
+    et = sorted(float(s) for s in exercise_times)
+    m = len(et)
+    if m < 2:
+        raise ValueError("Need at least two exercise dates (one intermediate + maturity).")
+
+    def payoff(y):
+        return heat_put_payoff(y, K)
+
+    # Build the value-at-exercise callables V(t_k, .) bottom-up (top = maturity).
+    value_at = {m - 1: payoff}
+    for k in range(m - 2, -1, -1):
+        t_kp1 = et[k + 1]
+        v_kp1 = value_at[k + 1]
+
+        def make_value(v_kp1, t_kp1):
+            def value(y):
+                cont = heat_propagate(
+                    v_kp1, y, torch.full_like(y, et[k]), t_terminal=t_kp1,
+                    sigma=sigma, y_lo=y_lo, y_hi=y_hi, n_quad=n_quad,
+                )
+                return torch.maximum(payoff(y), cont)
+            return value
+
+        value_at[k] = make_value(v_kp1, t_kp1)
+
+    def value_at_time(xv: torch.Tensor, t0: float) -> torch.Tensor:
+        # On an exercise date: the with-exercise value.  Strictly inside an
+        # interval: pure continuation toward the next exercise date.
+        for k in range(m):
+            if abs(t0 - et[k]) < 1e-9:
+                return value_at[k](xv)
+        j = next((k for k in range(m) if et[k] > t0), None)
+        if j is None:  # t beyond maturity — undefined; return payoff
+            return payoff(xv)
+        return heat_propagate(
+            value_at[j], xv, torch.full_like(xv, t0), t_terminal=et[j],
+            sigma=sigma, y_lo=y_lo, y_hi=y_hi, n_quad=n_quad,
+        )
+
+    tvals = t.expand_as(x) if t.shape != x.shape else t
+    out = torch.empty_like(x)
+    for tv in torch.unique(tvals):
+        mask = tvals == tv
+        out[mask] = value_at_time(x[mask], float(tv))
+    return out
+
+
 def smooth_call_payoff_cm_time(
     x: torch.Tensor,
     t: torch.Tensor,

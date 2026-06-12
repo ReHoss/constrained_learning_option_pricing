@@ -212,3 +212,52 @@ def test_cm_time_smoothing_smooth_interior():
         # at the kink (e^x = K): value = eps/2 > 0 = payoff
         assert torch.allclose(val, torch.tensor([eps / 2], dtype=torch.float64), atol=1e-8)
         assert val.item() > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Exact Bermudan-put backward induction (multi-stage reference)
+# ---------------------------------------------------------------------------
+
+def _berm(x, t, exercise_times, K=100.0, sigma=0.25):
+    from learning_option_pricing.pde import bermudan_put_value_exact
+    import math
+    return bermudan_put_value_exact(
+        x, t, exercise_times=exercise_times, K=K, sigma=sigma,
+        y_lo=math.log(5.0), y_hi=math.log(600.0), n_quad=4000)
+
+
+def test_bermudan_m2_continuation_at_t1_equals_european():
+    # For two exercise dates {t1, T}, the continuation at t1 is the European put,
+    # so V(t1) = max(payoff, European(t1)).  The convolution must reproduce the
+    # closed-form European value to grid accuracy.
+    K, sigma, t1, T = 100.0, 0.25, 0.5, 1.0
+    x = torch.linspace(math.log(50.0), math.log(150.0), 80, dtype=torch.float64)
+    got = _berm(x, torch.full_like(x, t1), [t1, T], K=K, sigma=sigma)
+    european = heat_put_exact(x, torch.full_like(x, t1), K=K, T=T, sigma=sigma)
+    want = torch.maximum(heat_put_payoff(x, K), european)
+    assert torch.allclose(got, want, atol=2e-3), (got - want).abs().max().item()
+
+
+def test_bermudan_value_at_maturity_is_payoff():
+    K, sigma, t1, T = 100.0, 0.25, 0.5, 1.0
+    x = torch.linspace(math.log(50.0), math.log(150.0), 60, dtype=torch.float64)
+    got = _berm(x, torch.full_like(x, T), [t1, T], K=K, sigma=sigma)
+    assert torch.allclose(got, heat_put_payoff(x, K), atol=1e-10)
+
+
+def test_bermudan_dominates_european():
+    # Early-exercise premium is non-negative: Bermudan >= European at inception.
+    K, sigma, t1, T = 100.0, 0.25, 0.5, 1.0
+    x = torch.linspace(math.log(50.0), math.log(150.0), 60, dtype=torch.float64)
+    berm = _berm(x, torch.zeros_like(x), [t1, T], K=K, sigma=sigma)
+    european = heat_put_exact(x, torch.zeros_like(x), K=K, T=T, sigma=sigma)
+    assert (berm - european).min().item() > -2e-3  # >= 0 up to grid tol
+
+
+def test_bermudan_value_monotone_in_exercise_dates():
+    # More exercise opportunities cannot decrease the value: m=3 >= m=2 at t=0.
+    K, sigma, T = 100.0, 0.25, 1.0
+    x = torch.linspace(math.log(50.0), math.log(150.0), 50, dtype=torch.float64)
+    v2 = _berm(x, torch.zeros_like(x), [0.5, T], K=K, sigma=sigma)
+    v3 = _berm(x, torch.zeros_like(x), [1.0 / 3, 2.0 / 3, T], K=K, sigma=sigma)
+    assert (v3 - v2).min().item() > -2e-3

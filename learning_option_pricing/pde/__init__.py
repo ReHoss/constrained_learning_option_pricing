@@ -10,6 +10,7 @@ unit-tested in isolation.
 
 from learning_option_pricing.pde.operators import heat_operator, heat_operator_parts
 from learning_option_pricing.pde.heat_references import (
+    bermudan_put_value_exact,
     chen_mangasarian_max,
     heat_call_exact,
     heat_call_payoff,
@@ -27,6 +28,7 @@ from learning_option_pricing.pde.heat_references import (
 __all__ = [
     "heat_operator",
     "heat_operator_parts",
+    "bermudan_put_value_exact",
     "chen_mangasarian_max",
     "heat_call_exact",
     "heat_call_payoff",
