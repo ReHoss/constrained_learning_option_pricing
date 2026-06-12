@@ -239,7 +239,12 @@ def main(argv=None) -> int:
                       label=r"diffusion $\frac{\sigma^2}{2}\partial_{xx}\Psi=\lambda\frac{\sigma^2}{2}g''$")
             ax.loglog(k[1:], np.clip(sp["r_pow"][1:], 1e-30, None), "--",
                       color="black", lw=1.3, label=r"achieved residual $\mathcal{P}\hat u$")
-            ax.set_title(ic, fontsize=10)
+            note = {
+                "call": "softplus, $\\beta=100$: diffusion is a sub-grid spike\n"
+                        "(width $\\sim1/(\\beta K)\\sim10^{-4}\\ll$ grid $dx$) — aliased, not physical",
+                "call_cm": "Chen--Mangasarian: band-limited, resolved",
+            }.get(ic, "")
+            ax.set_title(f"{ic}\n{note}", fontsize=8)
             ax.set_xlabel("spatial wavenumber $k$")
             ax.set_ylabel(r"power $|\widehat{\cdot}_k|^2$")
             ax.grid(True, which="both", alpha=0.3)
