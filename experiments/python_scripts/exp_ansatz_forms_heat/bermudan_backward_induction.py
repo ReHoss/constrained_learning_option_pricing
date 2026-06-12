@@ -1,0 +1,421 @@
+r"""Learned Bermudan-put backward induction with the terminal-condition ansatz.
+
+This validates the *procedure*, not a single PDE solve: it chains ``m`` learned
+stages through the dynamic program and measures how the per-stage learning error
+**propagates** down the induction toward the inception price.
+
+Geometry.  Exercise dates :math:`t_1 < \dots < t_m = T` (the last is maturity),
+valuation at :math:`t_0 = 0`.  Between consecutive dates the value solves the pure
+heat equation, so each interval :math:`I_k = [t_k, t_{k+1}]` is one learned stage
+(local time :math:`s \in [0, \Delta_k]`, terminal datum at :math:`s = \Delta_k`).
+
+Induction (top-down, so the stage above is already trained when its value is
+needed):
+
+* **stage** :math:`k = m-1` (interval ending at maturity): terminal datum is the
+  Chen--Mangasarian-smoothed payoff :math:`M_\varepsilon((K-e^x)^+, 0)`;
+* **stage** :math:`k < m-1`: terminal datum is
+  :math:`M_\varepsilon\bigl((K-e^x)^+,\ C_{k+1}(x)\bigr)`, where the continuation
+  :math:`C_{k+1}(x) = \hat u_{k+1}(x, s{=}0)` is the **learned** value at the
+  bottom of the interval above (a frozen network, differentiable in :math:`x` so
+  the hard-form forcing :math:`\mathcal{P}\Psi` is exact).
+
+Each stage is trained with the chosen :class:`TerminalAnsatz` form via the shared
+``train_variant`` of ``ablation_ansatz_forms``.  After all stages are trained, the
+learned value at every global time :math:`t_k` is compared against the exact
+multi-stage reference :func:`bermudan_put_value_exact` (chained Gaussian
+convolution, exact max-gluing); the relative :math:`L^2` error per :math:`t_k`,
+from maturity down to inception, is the error-propagation curve.
+
+Usage::
+
+    # smoke (flagged exploratory)
+    python bermudan_backward_induction.py --m 2 --num-iterations 300 --debug
+    # real run
+    python bermudan_backward_induction.py --m 2 --variant hard_convex_linear --num-iterations 20000
+    # redraw figures from saved artefacts
+    python bermudan_backward_induction.py --replot data/bermudan_backward_induction/<run>
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _ansatz_forms_catalogue as cat  # noqa: E402
+
+logger = logging.getLogger("bermudan_induction")
+
+# Below this iteration count a run must be flagged --debug (mechanical smoke-test
+# guard, ~3% of the 20k real-run budget); bypassed only for --replot.
+SMOKE_TEST_NUM_ITERATIONS_THRESHOLD = 700
+
+# Fixed problem geometry (the Bermudan put of the ansatz-form study).
+K = 100.0
+SIGMA = 0.25
+MATURITY = 1.0
+EPS = 2.0
+X_LO, X_HI = None, None  # set from log-spot domain below
+import math  # noqa: E402
+
+X_LO, X_HI = math.log(20.0), math.log(200.0)
+X_EVAL_LO, X_EVAL_HI = math.log(60.0), math.log(140.0)
+Y_LO, Y_HI = math.log(5.0), math.log(600.0)  # convolution support for the exact ref
+
+
+# ---------------------------------------------------------------------------
+# Coarse exact interpolant (cheap per-iteration boundary diagnostic)
+# ---------------------------------------------------------------------------
+
+class CoarseExact2D:
+    """Bilinear interpolant of the exact stage solution on a regular (x, s) grid.
+
+    The exact multi-stage reference is expensive (nested convolution); the
+    per-iteration training diagnostic only needs a cheap approximation, so we
+    sample it once on a coarse grid and bilinearly interpolate.  Real validation
+    uses the exact reference directly (post-training).
+    """
+
+    def __init__(self, xs, ss, vals):
+        import torch
+        self.xs, self.ss, self.vals = xs, ss, vals
+        self.x0, self.dx, self.nx = float(xs[0]), float(xs[1] - xs[0]), len(xs)
+        self.s0 = float(ss[0])
+        self.ds = float(ss[1] - ss[0]) if len(ss) > 1 else 1.0
+        self.ns = len(ss)
+        self._torch = torch
+
+    def __call__(self, x, t):
+        torch = self._torch
+        fx = ((x - self.x0) / self.dx).clamp(0, self.nx - 1)
+        ft = ((t - self.s0) / self.ds).clamp(0, self.ns - 1)
+        i0 = fx.floor().long(); i1 = (i0 + 1).clamp(max=self.nx - 1); wx = fx - i0
+        j0 = ft.floor().long(); j1 = (j0 + 1).clamp(max=self.ns - 1); wt = ft - j0
+        V = self.vals
+        v = ((1 - wx) * (1 - wt) * V[i0, j0] + wx * (1 - wt) * V[i1, j0]
+             + (1 - wx) * wt * V[i0, j1] + wx * wt * V[i1, j1])
+        return v
+
+
+def _build_coarse_exact(exercise_times, t_k, delta_k, *, n_xg=121, n_sg=13, n_quad=1500):
+    """Sample the exact reference on a coarse (x, s_local) grid for stage k."""
+    import torch
+    from learning_option_pricing.pde import bermudan_put_value_exact
+
+    xs = torch.linspace(X_LO, X_HI, n_xg, dtype=torch.float64)
+    ss = torch.linspace(0.0, delta_k, n_sg, dtype=torch.float64)
+    vals = torch.empty((n_xg, n_sg), dtype=torch.float64)
+    for j, s in enumerate(ss):
+        t_global = torch.full_like(xs, t_k + float(s))
+        vals[:, j] = bermudan_put_value_exact(
+            xs, t_global, exercise_times=exercise_times, K=K, sigma=SIGMA,
+            y_lo=Y_LO, y_hi=Y_HI, n_quad=n_quad)
+    return CoarseExact2D(xs, ss, vals)
+
+
+# ---------------------------------------------------------------------------
+# Stage problem construction
+# ---------------------------------------------------------------------------
+
+def _make_stage_problem(k, exercise_times, tau, cont_above_fn, coarse_exact):
+    """Build a ``train_variant``-compatible problem dict for stage k (interval
+    ``[tau[k], tau[k+1]]`` in local time ``s in [0, delta_k]``)."""
+    import torch
+
+    from learning_option_pricing.pde import chen_mangasarian_max, heat_put_payoff
+
+    delta_k = float(tau[k + 1] - tau[k])
+
+    def terminal_datum(x):
+        # Value at the top of the interval (global tau[k+1]): smoothed max of the
+        # exercise payoff and the continuation coming from the stage above.
+        return chen_mangasarian_max(heat_put_payoff(x, K), cont_above_fn(x), EPS)
+
+    def exact(x, t):  # t is stage-local s in [0, delta_k]
+        return coarse_exact(x, t)
+
+    return {
+        "sigma": SIGMA,
+        "T": delta_k,
+        "x_lo": X_LO, "x_hi": X_HI,
+        "x_eval_lo": X_EVAL_LO, "x_eval_hi": X_EVAL_HI,
+        "terminal_datum": terminal_datum,
+        "extension_fn": None,  # hard forms use the time-constant CM-smoothed g
+        "exact": exact,
+        "ic_name": f"bermudan_stage{k}",
+        "label": f"Bermudan stage {k}: [{tau[k]:.3f}, {tau[k+1]:.3f}]",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Validation against the exact reference
+# ---------------------------------------------------------------------------
+
+def _validate(models, exercise_times, tau, *, n_x=400, n_quad=4000):
+    """Per-global-time learned-vs-exact comparison (the error-propagation curve)."""
+    import numpy as np
+    import torch
+
+    from learning_option_pricing.pde import (
+        bermudan_put_value_exact, heat_put_exact, heat_put_payoff)
+
+    x = torch.linspace(X_EVAL_LO, X_EVAL_HI, n_x, dtype=torch.float64)
+    payoff = heat_put_payoff(x, K)
+    m = len(exercise_times)
+
+    stages = []
+    for k in range(m):  # stage k -> value at global tau[k]
+        model = models[k].double()
+        with torch.no_grad():
+            cont = model(torch.stack([x, torch.zeros_like(x)], dim=1)).squeeze(-1)
+        v_net = cont if k == 0 else torch.maximum(payoff, cont)
+        v_exact = bermudan_put_value_exact(
+            x, torch.full_like(x, float(tau[k])), exercise_times=exercise_times,
+            K=K, sigma=SIGMA, y_lo=Y_LO, y_hi=Y_HI, n_quad=n_quad)
+        rel_l2 = float((v_net - v_exact).norm() / v_exact.norm())
+        stages.append({
+            "k": k, "t_global": float(tau[k]),
+            "cont_net": cont.numpy(), "v_net": v_net.numpy(),
+            "v_exact": v_exact.numpy(), "rel_l2": rel_l2,
+        })
+        logger.info("stage k=%d  t=%.3f  rel_l2(value vs exact)=%.3e", k, tau[k], rel_l2)
+
+    european0 = heat_put_exact(x, torch.zeros_like(x), K=K, T=MATURITY, sigma=SIGMA)
+    return {
+        "x": x.numpy(), "S": torch.exp(x).numpy(), "payoff": payoff.numpy(),
+        "european0": european0.numpy(), "stages": stages,
+        "tau": np.asarray([float(s) for s in tau]),
+        "exercise_times": np.asarray([float(s) for s in exercise_times]),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Figures
+# ---------------------------------------------------------------------------
+
+def _plot(val, out_dir, variant_label):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from _figure_layout import finalize_figure
+
+    S = val["S"]
+    stages = val["stages"]
+    inception = stages[0]
+
+    # --- Figure 1: inception price slice (learned vs exact) ---
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(S, inception["v_net"], "-", color="#1b6ca8", lw=1.6,
+            label=r"learned $\hat V(\cdot,0)$")
+    ax.plot(S, inception["v_exact"], "--", color="black", lw=1.6,
+            label=r"exact Bermudan $V(\cdot,0)$")
+    ax.plot(S, val["european0"], "--", color="#888888", lw=1.2,
+            label=r"European put (no early exercise)")
+    ax.plot(S, val["payoff"], ":", color="#d1495b", lw=1.4,
+            label=r"payoff $(K-S)^+$")
+    ax.set_xlabel("spot $S$"); ax.set_ylabel("value")
+    ax.set_title(f"Bermudan put inception price ({variant_label})", fontsize=10)
+    ax.grid(True, alpha=0.3)
+    leg = ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8, frameon=True)
+    fig.tight_layout(rect=[0, 0.13, 0.80, 1])
+    finalize_figure(
+        fig, out_dir / "inception_price.png", legends=[leg], axes=[ax],
+        formula=(r"learned backward induction (solid) vs exact chained-convolution "
+                 r"reference (dashed); inception rel $L^2$ = "
+                 f"{inception['rel_l2']:.2e}"), dpi=140, formula_fontsize=8)
+
+    # --- Figure 2: error-propagation curve ---
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ks = [s["k"] for s in stages]
+    ts = [s["t_global"] for s in stages]
+    errs = [s["rel_l2"] for s in stages]
+    ax.semilogy(ts, errs, "-o", color="#1b6ca8", lw=1.6)
+    for s in stages:
+        ax.annotate(f"k={s['k']}", (s["t_global"], s["rel_l2"]),
+                    textcoords="offset points", xytext=(0, 8), fontsize=8, ha="center")
+    ax.set_xlabel("global time $t_k$ (0 = inception, $T$ = maturity)")
+    ax.set_ylabel(r"relative $L^2$ error vs exact")
+    ax.set_title("Error propagation through the backward induction", fontsize=10)
+    ax.grid(True, which="both", alpha=0.3)
+    ax.invert_xaxis()  # induction proceeds from maturity (right) to inception (left)
+    fig.tight_layout(rect=[0, 0.12, 1, 1])
+    finalize_figure(
+        fig, out_dir / "error_propagation.png", axes=[ax],
+        formula=(r"error at each exercise date; induction runs right$\to$left "
+                 r"(maturity $\to$ inception). Growth quantifies error compounding "
+                 r"across learned stages."), dpi=140, formula_fontsize=8)
+
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+
+def _save_arrays(val, out_dir):
+    import numpy as np
+    flat = {"x": val["x"], "S": val["S"], "payoff": val["payoff"],
+            "european0": val["european0"], "tau": val["tau"],
+            "exercise_times": val["exercise_times"]}
+    for s in val["stages"]:
+        k = s["k"]
+        flat[f"stage{k}_t_global"] = np.asarray([s["t_global"]])
+        flat[f"stage{k}_cont_net"] = s["cont_net"]
+        flat[f"stage{k}_v_net"] = s["v_net"]
+        flat[f"stage{k}_v_exact"] = s["v_exact"]
+        flat[f"stage{k}_rel_l2"] = np.asarray([s["rel_l2"]])
+    np.savez(out_dir / "validation.npz", **flat)
+
+
+def _load_arrays(npz_path):
+    import numpy as np
+    z = np.load(npz_path)
+    n_stages = sum(1 for kk in z.files if kk.endswith("_rel_l2"))
+    stages = []
+    for k in range(n_stages):
+        stages.append({
+            "k": k, "t_global": float(z[f"stage{k}_t_global"][0]),
+            "cont_net": z[f"stage{k}_cont_net"], "v_net": z[f"stage{k}_v_net"],
+            "v_exact": z[f"stage{k}_v_exact"], "rel_l2": float(z[f"stage{k}_rel_l2"][0]),
+        })
+    return {"x": z["x"], "S": z["S"], "payoff": z["payoff"],
+            "european0": z["european0"], "tau": z["tau"],
+            "exercise_times": z["exercise_times"], "stages": stages}
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def build_parser():
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--m", type=int, default=2,
+                   help="number of exercise dates incl. maturity (m=2: one intermediate)")
+    p.add_argument("--variant", choices=cat.variant_names(), default="hard_convex_linear",
+                   help="ansatz form for every stage")
+    p.add_argument("--num-iterations", type=int, default=cat.DEFAULT_HPARAMS["num_iterations"])
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--device", default="cpu")
+    p.add_argument("--log-every", type=int, default=1000)
+    p.add_argument("--debug", action="store_true",
+                   help="prefix the output dir with _debug_ (exploratory runs)")
+    p.add_argument("--replot", type=str, default=None,
+                   help="redraw figures from a saved run dir and exit")
+    return p
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)sZ %(levelname)s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S", force=True)
+
+    from learning_option_pricing.utils.run_context import (
+        script_data_dir, utc_timestamp, log_runtime_versions)
+
+    if args.replot is not None:
+        run_dir = Path(args.replot)
+        val = _load_arrays(run_dir / "validation.npz")
+        import yaml
+        meta = yaml.safe_load(open(run_dir / "metadata.yaml"))
+        _plot(val, run_dir, meta.get("variant_label", meta.get("variant", "")))
+        logger.info("replotted into %s", run_dir)
+        return 0
+
+    if args.num_iterations < SMOKE_TEST_NUM_ITERATIONS_THRESHOLD and not args.debug:
+        raise SystemExit(
+            f"--num-iterations {args.num_iterations} is below the smoke-test "
+            f"threshold ({SMOKE_TEST_NUM_ITERATIONS_THRESHOLD}); pass --debug "
+            f"to flag this as exploratory, or raise the iteration count.")
+
+    import torch
+    import yaml
+
+    from ablation_ansatz_forms import train_variant, derive_seed
+
+    device = torch.device(args.device)
+    variant = cat.variant_by_name(args.variant)
+    hparams = dict(cat.DEFAULT_HPARAMS)
+    hparams["num_iterations"] = args.num_iterations
+
+    # Geometry: equally spaced exercise dates t_j = MATURITY * j / m, j=1..m.
+    m = args.m
+    exercise_times = [MATURITY * j / m for j in range(1, m + 1)]
+    tau = [0.0] + exercise_times  # interval endpoints; m intervals
+
+    debug_prefix = "_debug_" if args.debug else ""
+    out_dir = script_data_dir(__file__) / (
+        f"{debug_prefix}{utc_timestamp()}_m{m}_{args.variant}_iters{args.num_iterations}_seed{args.seed}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("command: %s", " ".join(sys.argv))
+    log_runtime_versions(logger)
+    logger.info("variant=%s m=%d exercise_times=%s iters=%d seed=%d device=%s eps=%g",
+                args.variant, m, exercise_times, args.num_iterations, args.seed,
+                args.device, EPS)
+
+    t_start = time.time()
+
+    # Backward induction: train from the maturity interval (k=m-1) down to k=0.
+    models: dict = {}
+    cont_above_fn = (lambda x: torch.zeros_like(x))  # nothing above maturity
+    for k in range(m - 1, -1, -1):
+        logger.info("=== training stage k=%d  interval [%.3f, %.3f] ===",
+                    k, tau[k], tau[k + 1])
+        coarse_exact = _build_coarse_exact(exercise_times, tau[k], float(tau[k + 1] - tau[k]))
+        problem = _make_stage_problem(k, exercise_times, tau, cont_above_fn, coarse_exact)
+        stage_seed = derive_seed(args.seed, f"stage{k}")
+        model, history = train_variant(
+            variant, problem, hparams, num_iterations=args.num_iterations,
+            seed=stage_seed, device=device, log_every=args.log_every)
+        model.eval()
+        for p in model.parameters():
+            p.requires_grad_(False)
+        models[k] = model
+        # checkpoint the stage
+        stage_dir = out_dir / f"stage{k}"
+        stage_dir.mkdir(exist_ok=True)
+        torch.save(model.state_dict(), stage_dir / "model.pt")
+
+        # freeze this stage's continuation for the stage below.  The terminal
+        # datum may call this with x shaped (N,) or (N,1); build a (N,2) input
+        # at local time s=0 and return the value reshaped to match x.
+        def make_cont(frozen_model):
+            dtype = next(frozen_model.parameters()).dtype
+            def cont(x):
+                xc = x.reshape(-1, 1).to(dtype)
+                xt = torch.cat([xc, torch.zeros_like(xc)], dim=1)
+                return frozen_model(xt).reshape(x.shape).to(x.dtype)
+            return cont
+        cont_above_fn = make_cont(model)
+
+    # Validate against the exact reference + plot
+    val = _validate(models, exercise_times, tau)
+    _save_arrays(val, out_dir)
+    _plot(val, out_dir, variant["label"] if "label" in variant else args.variant)
+
+    wall = time.time() - t_start
+    meta = {
+        "variant": args.variant, "variant_label": variant.get("label", args.variant),
+        "m": m, "exercise_times": exercise_times, "tau": tau,
+        "num_iterations": args.num_iterations, "seed": args.seed,
+        "eps": EPS, "sigma": SIGMA, "K": K, "maturity": MATURITY,
+        "wall_time_s": wall,
+        "rel_l2_per_stage": {f"k{s['k']}_t{s['t_global']:.3f}": s["rel_l2"]
+                             for s in val["stages"]},
+        "inception_rel_l2": val["stages"][0]["rel_l2"],
+    }
+    with open(out_dir / "metadata.yaml", "w") as f:
+        yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
+
+    logger.info("DONE in %.1fs. inception rel_l2=%.3e. artefacts in %s",
+                wall, val["stages"][0]["rel_l2"], out_dir)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
