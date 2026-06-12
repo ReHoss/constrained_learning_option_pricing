@@ -89,15 +89,21 @@ class CoarseExact2D:
         self._torch = torch
 
     def __call__(self, x, t):
+        # The grid (self.vals) lives on CPU in float64; the query may arrive on a
+        # GPU (training collocation).  Evaluate on the grid's device and return on
+        # the query's device so this works as a diagnostic under either backend.
         torch = self._torch
-        fx = ((x - self.x0) / self.dx).clamp(0, self.nx - 1)
-        ft = ((t - self.s0) / self.ds).clamp(0, self.ns - 1)
+        dev, dt = self.vals.device, self.vals.dtype
+        xq = x.reshape(-1).to(device=dev, dtype=dt)
+        tq = t.reshape(-1).to(device=dev, dtype=dt)
+        fx = ((xq - self.x0) / self.dx).clamp(0, self.nx - 1)
+        ft = ((tq - self.s0) / self.ds).clamp(0, self.ns - 1)
         i0 = fx.floor().long(); i1 = (i0 + 1).clamp(max=self.nx - 1); wx = fx - i0
         j0 = ft.floor().long(); j1 = (j0 + 1).clamp(max=self.ns - 1); wt = ft - j0
         V = self.vals
         v = ((1 - wx) * (1 - wt) * V[i0, j0] + wx * (1 - wt) * V[i1, j0]
              + (1 - wx) * wt * V[i0, j1] + wx * wt * V[i1, j1])
-        return v
+        return v.reshape(x.shape).to(device=x.device, dtype=x.dtype)
 
 
 def _build_coarse_exact(exercise_times, t_k, delta_k, *, n_xg=121, n_sg=13, n_quad=1500):
@@ -168,7 +174,9 @@ def _validate(models, exercise_times, tau, *, n_x=400, n_quad=4000):
 
     stages = []
     for k in range(m):  # stage k -> value at global tau[k]
-        model = models[k].double()
+        # validation is cheap and the exact reference is CPU float64; evaluate the
+        # trained stage on CPU so device/dtype always match the reference grid.
+        model = models[k].to("cpu").double()
         with torch.no_grad():
             cont = model(torch.stack([x, torch.zeros_like(x)], dim=1)).squeeze(-1)
         v_net = cont if k == 0 else torch.maximum(payoff, cont)
