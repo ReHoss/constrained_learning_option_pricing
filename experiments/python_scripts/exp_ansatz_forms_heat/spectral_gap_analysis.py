@@ -36,7 +36,10 @@ import _ansatz_forms_catalogue as cat  # noqa: E402
 
 HARD = ["hard_constant_linear", "hard_constant_exp",
         "hard_convex_linear", "hard_convex_exp"]
-N_X = 256          # spatial grid (power of two for the FFT)
+N_X = 256          # spatial grid (power of two for the FFT) — cross-IC default
+HIRES_NX = 32768   # high-resolution grid for the call vs call_cm comparison so
+                   # the softplus operator-channel spike (width ~1/(beta K)~1e-4)
+                   # is resolved (dx ~ 2.6e-5, ~4 points across the spike)
 T_SLICES = (0.1, 0.3, 0.5, 0.7, 0.9)  # fractions of T
 
 
@@ -59,7 +62,7 @@ def _load_ansatz(run_dir: Path, variant_name: str):
     return ansatz, problem
 
 
-def _spectra(ansatz, problem):
+def _spectra(ansatz, problem, n_x=N_X):
     """Spatial power spectra of the forcing, its two channels, and the residual.
 
     Returns a dict with wavenumber ``k`` and the slice-averaged power spectra of:
@@ -84,8 +87,8 @@ def _spectra(ansatz, problem):
     sigma = problem["sigma"]
     T = problem["T"]
     x_lo, x_hi = problem["x_eval_lo"], problem["x_eval_hi"]
-    x = torch.linspace(x_lo, x_hi, N_X, dtype=torch.float64)
-    nfreq = N_X // 2 + 1
+    x = torch.linspace(x_lo, x_hi, n_x, dtype=torch.float64)
+    nfreq = n_x // 2 + 1
     pow_acc = {key: np.zeros(nfreq) for key in ("f", "vel", "diff", "r")}
     energy = {key: 0.0 for key in ("f", "vel", "diff", "r")}
     ansatz.double()
@@ -147,6 +150,8 @@ def main(argv=None) -> int:
     p.add_argument("--data-root", default=None,
                    help="dir holding the *_iters*_seed* runs (default: ablation data dir)")
     p.add_argument("--seed", type=int, default=0, help="which seed's models to read")
+    p.add_argument("--hires-nx", type=int, default=HIRES_NX,
+                   help="grid size for the call vs call_cm high-resolution comparison")
     args = p.parse_args(argv)
 
     import glob
@@ -226,13 +231,28 @@ def main(argv=None) -> int:
     #      high-k uncancellable, achieved residual tracks the diffusion tail. ----
     split_form = "hard_convex_linear"
     split_ics = [ic for ic in ("call", "call_cm") if (ic, split_form) in spectra]
-    if split_ics:
+    # Recompute the comparison at high resolution so the softplus operator-channel
+    # spike is resolved (not aliased): reload each model and evaluate the channels
+    # + residual on an N_X = args.hires_nx grid (the residual needs the network,
+    # so this is a fresh forward + autograd on the fine grid).
+    spectra_hi = {}
+    for ic in split_ics:
+        runs = glob.glob(str(data_root / f"*_{ic}_iters*_seed{args.seed}"))
+        if not runs:
+            continue
+        ansatz, problem = _load_ansatz(Path(sorted(runs)[-1]), split_form)
+        spectra_hi[ic] = _spectra(ansatz, problem, n_x=args.hires_nx)
+        print(f"hi-res {ic:8s} N_X={args.hires_nx}  "
+              f"vel_e={spectra_hi[ic]['vel_e']:.2e} diff_e={spectra_hi[ic]['diff_e']:.2e} "
+              f"r_e={spectra_hi[ic]['r_e']:.2e}")
+    if spectra_hi:
+        split_ics = [ic for ic in split_ics if ic in spectra_hi]
         # sharey/sharex so the two panels are on one common scale (directly
         # comparable); only the left panel carries the y-label and tick labels.
         figc, axesc = plt.subplots(1, len(split_ics), figsize=(5.8 * len(split_ics), 5.0),
                                    squeeze=False, sharex=True, sharey=True)
         for j, (ax, ic) in enumerate(zip(axesc[0], split_ics)):
-            sp = spectra[(ic, split_form)]
+            sp = spectra_hi[ic]
             k = sp["k"]
             # General forcing channels of f = P Psi with Psi = lambda(t) g; the
             # legend states the operator-general form, the formula box specialises
@@ -247,9 +267,9 @@ def main(argv=None) -> int:
                       color="black", lw=1.3,
                       label=r"residual $\mathcal{P}\hat u=\partial_t\hat u+\mathcal{L}\hat u$")
             note = {
-                "call": "softplus, $\\beta=100$: operator channel is a sub-grid spike\n"
-                        "(width $\\sim1/(\\beta K)\\sim10^{-4}\\ll$ grid $dx$) — aliased, not physical",
-                "call_cm": "Chen--Mangasarian: band-limited, resolved",
+                "call": "softplus, $\\beta=100$: operator channel resolved — a broadband\n"
+                        "high-$k$ plateau (the curvature spike, width $\\sim1/(\\beta K)\\sim10^{-4}$)",
+                "call_cm": "Chen--Mangasarian: band-limited, decays by $k\\sim10^2$",
             }.get(ic, "")
             ax.set_title(f"{ic}\n{note}", fontsize=8)
             ax.set_xlabel("spatial wavenumber $k$")
@@ -262,7 +282,8 @@ def main(argv=None) -> int:
         legc = figc.legend(handlesc, labsc, loc="lower center", ncol=3, fontsize=8,
                            frameon=True, bbox_to_anchor=(0.5, 0.13))
         figc.suptitle(f"Forcing-channel spectra vs achieved residual "
-                      f"({split_form}, convex form; common scale)", fontsize=11)
+                      f"({split_form}; high resolution $N_X={args.hires_nx}$, common scale)",
+                      fontsize=11)
         figc.tight_layout(rect=[0, 0.30, 1, 0.94])
         finalize_figure(
             figc, out / "forcing_channels_spectra.png", legends=[legc],

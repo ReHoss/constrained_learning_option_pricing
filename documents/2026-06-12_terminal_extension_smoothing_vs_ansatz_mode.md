@@ -167,8 +167,9 @@ $\lambda(t)=t/T$).
 *Spatial power spectra (log–log, common scale across panels): velocity channel
 $\partial_t\Psi=\lambda'(t)g$ (blue), operator channel $\lambda(t)\mathcal{L}g$
 (red; heat instance $\lambda\tfrac{\sigma^2}{2}g''$), achieved residual
-$\mathcal{P}\hat u=\partial_t\hat u+\mathcal{L}\hat u$ (dashed). Left: softplus
-extension. Right: Chen–Mangasarian extension.*
+$\mathcal{P}\hat u=\partial_t\hat u+\mathcal{L}\hat u$ (dashed); computed at high
+resolution $N_X=32768$ so the softplus operator-channel spike is resolved (not
+aliased). Left: softplus extension. Right: Chen–Mangasarian extension.*
 
 **Resolved case (Chen–Mangasarian, right panel) — the attribution holds as
 stated.** The velocity channel dominates at low $k$ and the operator channel
@@ -181,19 +182,22 @@ operator-channel curve for $k\gtrsim40$ is the
 uncancellable remainder $\Pi_{\mathcal{S}^\perp}\mathcal{P}\Psi$ made visible: the
 regularised payoff curvature is what survives and sets the error.
 
-**Softplus case (left panel) — a measurement caveat that is itself the
-mechanism.** Here the operator channel (red) is jagged and suppressed: this is
-aliasing, not a band-limited spectrum. With $\beta=100$ the softplus second
-derivative is a near-singular spike of width $\sim 1/(\beta K)\sim10^{-4}$ in
-$x$, far below the grid spacing $dx\approx3\times10^{-3}$, so a uniform FFT cannot
-represent it and folds its energy into broadband noise. The red curve there must
-**not** be read as a spectrum. Physically this is the extreme of the same
-mechanism: the softplus extension places its curvature in content beyond any
-practical grid Nyquist — maximally high-frequency and therefore maximally
-uncancellable — which is precisely why it is the worst extension (the §3.1 floor
-$7200$ for additive softplus is the spatially-sampled shadow of this spike, with
-the large seed spread of §3.1 reflecting how rarely the collocation grid lands on
-it). Refining the (analytic) extension grid makes the spike explicit (figure
+**Softplus case (left panel) — the uncancellable spike, resolved.** At this
+resolution the operator channel is a **broadband high-$k$ plateau** out to
+$k\sim4\times10^3$: a near-delta in space (the curvature spike, width
+$\sim1/(\beta K)\sim10^{-4}$) is near-white in $k$. The achieved residual (dashed)
+**coincides with the operator channel across essentially the whole band** — its
+energy $\mathbb{E}[(\mathcal{P}\hat u)^2]\approx6.3\times10^3$ equals the
+operator-channel energy to two significant figures ($6.33\times10^3$ vs
+$6.34\times10^3$). The network cancels the low-$k$ velocity exactly as for
+Chen–Mangasarian, but the operator spike is left **entirely uncancelled**: a
+smooth network cannot synthesise content beyond its own frequency reach, so
+$\Pi_{\mathcal{S}^\perp}\mathcal{P}\Psi\approx\mathcal{P}\Psi$ on the spike and the
+uncancellable remainder *is* the full operator-channel energy. This is the
+quantitative reason softplus is the worst extension. (At the practical training
+grid $N_X=256$ this spike is sub-grid, so the §3.1 channel energies under-resolve
+it; the figure below makes the resolution dependence explicit.) Refining the
+(analytic) extension grid makes the spike explicit (figure
 below): in real space $\mathcal{L}g=\tfrac{\sigma^2}{2}g''$ is a tall narrow peak
 at $S=K$ that the $N_X=256$ grid steps over, and in the spectrum the operator
 channel fills in to a broadband high-$k$ plateau as $N_X$ grows. The channel
