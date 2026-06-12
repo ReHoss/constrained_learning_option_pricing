@@ -79,12 +79,12 @@ indistinguishable from the linear one — no consistent winner.)
 ### 3.1 Loss-component decomposition
 
 The training objective for the hard forms is the PDE residual
-$\mathcal{L}_{\rm pde}=\lVert\mathcal{P}\hat u_\theta\rVert^2=\lVert R_\theta+f\rVert^2$,
+$L_{\rm pde}=\lVert\mathcal{P}\hat u_\theta\rVert^2=\lVert R_\theta+f\rVert^2$,
 which the logger records split into the three additive terms of the companion
 note (§2.1–2.2),
 
 $$
-\mathcal{L}_{\rm pde}
+L_{\rm pde}
 =\underbrace{\lVert R_\theta\rVert^2}_{\text{network energy}}
 +\underbrace{2\langle R_\theta,f\rangle}_{\text{cross}}
 +\underbrace{\lVert f\rVert^2}_{\text{floor}},
@@ -109,7 +109,7 @@ Measured values (mean $\pm$ std over 3 seeds, averaged over the final 10 % of
 iterations; these are single-minibatch estimates of the collocation expectation,
 hence the wide spread on the floor):
 
-| extension $g$ | mode | floor $\lVert f\rVert^2$ | velocity $\lVert\lambda'g\rVert^2$ | operator $\lVert\lambda\mathcal{L}g\rVert^2$ | net. energy $\lVert R_\theta\rVert^2$ | cross $2\langle R_\theta,f\rangle$ | $\mathcal{L}_{\rm pde}=\lVert R_\theta+f\rVert^2$ |
+| extension $g$ | mode | floor $\lVert f\rVert^2$ | velocity $\lVert\lambda'g\rVert^2$ | operator $\lVert\lambda\mathcal{L}g\rVert^2$ | net. energy $\lVert R_\theta\rVert^2$ | cross $2\langle R_\theta,f\rangle$ | $L_{\rm pde}=\lVert R_\theta+f\rVert^2$ |
 |---|---|---|---|---|---|---|---|
 | softplus | additive | $7200\pm1200$ | $0$ | $7200\pm1200$ | $2330\pm260$ | $-4390\pm1100$ | $5160\pm1500$ |
 | softplus | convex | $3830\pm1100$ | $841\pm7$ | $2920\pm1100$ | $1320\pm50$ | $-2760\pm290$ | $2390\pm1100$ |
@@ -118,7 +118,7 @@ hence the wide spread on the floor):
 
 (The floor exceeds velocity $+$ operator by the velocity–operator cross term
 $2\langle\lambda'g,\lambda\mathcal{L}g\rangle$; the additive identity
-$\mathcal{L}_{\rm pde}=\lVert R_\theta\rVert^2+2\langle R_\theta,f\rangle+\lVert f\rVert^2$
+$L_{\rm pde}=\lVert R_\theta\rVert^2+2\langle R_\theta,f\rangle+\lVert f\rVert^2$
 holds to logging precision in every row.)
 
 Three readings, each a measured instance of the companion-note theory.
@@ -156,9 +156,10 @@ channel is *high-frequency and uncancellable* — is a claim about where in
 wavenumber each quantity lives. We test it directly by taking the spatial power
 spectrum of each field. For a trained hard-form run we evaluate, on a uniform
 grid over $\mathcal{X}_{\rm eval}$ at several time slices, the two forcing
-channels $\partial_t\Psi=\lambda'g$ and $\tfrac{\sigma^2}{2}\partial_{xx}\Psi
-=\lambda\tfrac{\sigma^2}{2}g''$ and the achieved residual $\mathcal{P}\hat u$,
-take the real FFT $|\widehat{\cdot}_k|^2$, and average over slices (convex form,
+channels — the velocity $\partial_t\Psi=\lambda'(t)\,g$ and the operator channel
+$\lambda(t)\,\mathcal{L}g$ (heat instance $\lambda\tfrac{\sigma^2}{2}g''$) — and
+the achieved residual $\mathcal{P}\hat u=\partial_t\hat u+\mathcal{L}\hat u$, take
+the real FFT $|\widehat{\cdot}_k|^2$, and average over slices (convex form,
 $\lambda(t)=t/T$).
 
 ![Forcing-channel spectra vs achieved residual](figures/2026-06-12_forcing_channels_spectra.png)
@@ -170,17 +171,18 @@ $\mathcal{P}\hat u=\partial_t\hat u+\mathcal{L}\hat u$ (dashed). Left: softplus
 extension. Right: Chen–Mangasarian extension.*
 
 **Resolved case (Chen–Mangasarian, right panel) — the attribution holds as
-stated.** The velocity channel dominates at low $k$ and the diffusion channel at
-high $k$, crossing over near $k\approx5$. The achieved residual sits about three
-orders of magnitude *below* both at low $k$ — the network synthesises and subtracts
-the low-$k$ velocity channel, exactly the $R_\theta\approx-f$ cancellation measured
-in §3.1(3) — and **rises to track the diffusion tail** at high $k$. The dashed
-residual coinciding with the red diffusion curve for $k\gtrsim40$ is the
+stated.** The velocity channel dominates at low $k$ and the operator channel
+(here the diffusion forcing) at high $k$, crossing over near $k\approx5$. The
+achieved residual sits about three orders of magnitude *below* both at low $k$ —
+the network synthesises and subtracts the low-$k$ velocity channel, exactly the
+$R_\theta\approx-f$ cancellation measured in §3.1(3) — and **rises to track the
+operator-channel tail** at high $k$. The dashed residual coinciding with the red
+operator-channel curve for $k\gtrsim40$ is the
 uncancellable remainder $\Pi_{\mathcal{S}^\perp}\mathcal{P}\Psi$ made visible: the
 regularised payoff curvature is what survives and sets the error.
 
 **Softplus case (left panel) — a measurement caveat that is itself the
-mechanism.** Here the diffusion channel (red) is jagged and suppressed: this is
+mechanism.** Here the operator channel (red) is jagged and suppressed: this is
 aliasing, not a band-limited spectrum. With $\beta=100$ the softplus second
 derivative is a near-singular spike of width $\sim 1/(\beta K)\sim10^{-4}$ in
 $x$, far below the grid spacing $dx\approx3\times10^{-3}$, so a uniform FFT cannot
