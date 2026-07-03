@@ -107,7 +107,7 @@ means a 3 % error).
 | m=2 `hard_convex` | $\{0.5,\,1\}$ | exact | two learned steps |
 | m=2 `soft_pinn` | $\{0.5,\,1\}$ | penalty only | cost of inexact terminal |
 | m=3 `hard_convex` | $\{1/3,\,2/3,\,1\}$ | exact | three learned steps |
-| m=10 `hard_convex` | $\{0.1,\dots,1\}$ | exact | ten steps (running) |
+| m=10 `hard_convex` | $\{0.1,\dots,1\}$ | exact | ten steps (nine intermediate dates) |
 
 ## 5. The figures
 
@@ -131,6 +131,11 @@ Reading it:
 - **`hard_convex`, m=3 (solid)** is *not monotone*: $5.75\%$ at the first date
   solved ($t=2/3$), then $2.65\%$ at $t=1/3$, then $3.09\%$ at inception. The
   largest error is at the top step, not at inception.
+- **`hard_convex`, m=10 (solid, top curve)** sits an order of magnitude higher:
+  the per-date error rises from $12.4\%$ near maturity to a peak of $19.2\%$ at
+  mid-life ($t=0.5$) and falls back to $14.4\%$ at inception — a **hump** that is
+  well above the m=2 and m=3 curves at every date. Ten steps of one-tenth the
+  length each are markedly less accurate than two or three long steps.
 
 ### Figure 2 — the learned price against the exact price
 
@@ -143,18 +148,26 @@ same run. The dotted red curve is the immediate-exercise payoff $(K-S)^+$; the
 grey dashed curve is the European put (exercisable only at maturity).
 
 Reading it:
-- For every run the solid (learned) and dashed (exact) curves lie on top of each
-  other — the learned induction reproduces the true price across the window.
+- For $m=2$ and $m=3$ the solid (learned) and dashed (exact) curves lie on top of
+  each other — the learned induction reproduces the true price across the window.
+  For $m=10$ the solid (learned) curve sits **visibly below** its dashed exact
+  reference for $S\gtrsim90$: that gap is the $14\%$ error of Figure 1, an
+  under-pricing that the few-step runs do not show.
 - Every learned curve sits **above** the European put: the right to exercise early
   is worth a positive amount (the early-exercise premium).
-- The m=3 curve sits slightly **above** the m=2 curve: more exercise opportunities
-  can only increase the value, approaching the American (continuous-exercise) limit.
+- The exact curves order by the number of exercise dates (exact $m=10$ highest,
+  then $m=3$, then $m=2$): more exercise opportunities can only increase the value,
+  approaching the American (continuous-exercise) limit. The learned $m=10$ still
+  lies above the $m=2/3$ curves — it captures the extra early-exercise value — but
+  under-shoots its own exact reference by the Figure 1 margin.
 
 ## 6. What we conclude (and how strongly)
 
 1. **The procedure is correct end to end.** With every step learned, the chained
    induction reproduces the exact Bermudan price to about $3\%$ for $m=2$ and
-   $m=3$ (Figure 2). This is a *measured* result on one seed.
+   $m=3$ (Figure 2), and to about $14\%$ for $m=10$ — qualitatively right in every
+   case (positive early-exercise premium, value increasing in $m$), quantitatively
+   accurate for few steps. This is a *measured* result on one seed.
 2. **Exact terminal matching beats a penalty.** At inception the `hard_convex`
    error is $3.18\%$ versus $5.0\%$ for `soft_pinn` (Figure 1). The penalty form
    leaves a terminal mismatch at each step that compounds; the exact form does
@@ -165,18 +178,28 @@ Reading it:
    between the error a step adds and the smoothing of the error it inherits, which
    is why the $m=3$ curve is highest at the top step and lower below it
    (Figure 1). *Observed*; a clean separation of the two effects is not yet done.
-4. **Adding steps did not blow the error up.** $m=2$ and $m=3$ reach almost the
-   same inception error ($3.18\%$ vs $3.09\%$). The $m=10$ run tests whether this
-   stability holds with nine intermediate dates.
+4. **The error grows with the number of steps.** $m=2$ and $m=3$ happen to reach
+   almost the same inception error ($3.18\%$ vs $3.09\%$), but this is *not* a
+   general stability: at $m=10$ the inception error is $14.4\%$ and the per-date
+   error peaks near $19\%$ mid-life (Figure 1) — roughly a fivefold increase.
+   Two mechanisms push the same way as $m$ grows: each interval is shorter, so its
+   Gaussian propagation smooths the sharp payoff/exercise-boundary curvature less
+   (the smoothing length $\sigma\sqrt{\Delta\tau}$ falls from $0.18$ at $m=2$ to
+   $0.08$ at $m=10$), leaving a larger per-step residual; and there are more steps
+   to accumulate. *Measured*, one seed; the size of the growth (linear? super-
+   linear in $m$?) is not yet characterised — it needs intermediate $m$ and seeds.
 
 ## 7. Limits of these results
 
 - **One seed, one setting.** Single network size, single optimiser budget, one
-  $(K,\sigma,T)$, equally spaced dates. The $\approx3\%$ floor is set mainly by
-  the top step, which must learn the sharp (smoothed) payoff; the spectral
-  analysis of the companion call study shows such a sharp terminal datum leaves a
-  high-frequency residual the network cannot remove. A variance estimate needs
-  several seeds.
+  $(K,\sigma,T)$, equally spaced dates. The per-step accuracy is limited by the
+  sharp (smoothed) payoff and exercise-boundary curvature, which the spectral
+  analysis of the companion call study shows leaves a high-frequency residual the
+  network cannot remove; that residual is *larger for shorter intervals*, which is
+  why the accuracy degrades from $m=2/3$ to $m=10$. A fixed per-step iteration
+  budget was used for every $m$; whether more iterations (or a larger network) at
+  small interval length recovers the accuracy is untested. A variance estimate
+  needs several seeds.
 - **`soft_pinn` is a baseline, not a competitor**, since it does not enforce the
   terminal datum; its larger error is expected and is the point of the comparison.
 
