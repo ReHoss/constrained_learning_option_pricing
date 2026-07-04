@@ -116,11 +116,15 @@ The trial solution is
   \architectureOutput_{\weights}(\spacePoint,\timePoint)
   =\bigl(1-\interpolationCoefficient(\timePoint)\bigr)\,
      \freeNetwork_{\weights}(\spacePoint,\timePoint)
-   +\interpolationCoefficient(\timePoint)\,
-     \terminalExtension(\spacePoint,\timePoint).
+   +\terminalExtension(\spacePoint,\timePoint),
 \end{equation}
-Since $\interpolationCoefficient(\timeHorizon)=1$, the trial solution satisfies
-the terminal constraint exactly, $\architectureOutput_{\weights}(\cdot,\timeHorizon)=\payoff$,
+where the extension $\terminalExtension$ carries its own $\timePoint$-dependence and
+satisfies $\terminalExtension(\cdot,\timeHorizon)=\payoff$ (for the convex form
+$\terminalExtension=\interpolationCoefficient\,\payoff$, for the additive form
+$\terminalExtension=\payoff$).
+Since $\interpolationCoefficient(\timeHorizon)=1$, the gate $1-\interpolationCoefficient$
+vanishes at $\timeHorizon$ and the trial solution satisfies the terminal constraint
+exactly, $\architectureOutput_{\weights}(\cdot,\timeHorizon)=\payoff$,
 for every $\weights$. Equivalently, \eqref{eq:ansatz} defines a projection
 $\constraintTransformationOperator$ of the free network onto the affine subspace
 of fields that meet the terminal datum, $\architectureOutput_{\weights}=\constraintTransformationOperator\freeNetwork_{\weights}$.
@@ -155,9 +159,11 @@ With $\freeNetwork_{\weights}$ the free network and $\payoff$ the (smoothed) dat
 \begin{itemize}
   \item \textbf{additive} ($\mathtt{hard\_constant}$):
     $\architectureOutput_{\weights}=(1-\interpolationCoefficient)\freeNetwork_{\weights}+\terminalExtension$
-    with $\terminalExtension$ constant in $\timePoint$;
+    with the extension $\terminalExtension=\payoff$ constant in $\timePoint$;
   \item \textbf{convex combination} ($\mathtt{hard\_convex}$):
-    $\architectureOutput_{\weights}=(1-\interpolationCoefficient)\freeNetwork_{\weights}+\interpolationCoefficient\,\terminalExtension$;
+    $\architectureOutput_{\weights}=(1-\interpolationCoefficient)\freeNetwork_{\weights}+\terminalExtension$
+    with $\terminalExtension=\interpolationCoefficient\,\payoff$, i.e.\
+    $\architectureOutput_{\weights}=(1-\interpolationCoefficient)\freeNetwork_{\weights}+\interpolationCoefficient\,\payoff$;
   \item \textbf{soft} ($\mathtt{soft\_pinn}$): $\architectureOutput_{\weights}=\freeNetwork_{\weights}$,
     the datum imposed only through an added penalty in the objective;
   \item \textbf{unconstrained} ($\mathtt{pure\_nn}$): $\architectureOutput_{\weights}=\freeNetwork_{\weights}$
@@ -492,6 +498,25 @@ its exact reference for large spot. Measured, one seed; the growth rate in
 $\numExerciseDates$ is not yet characterised. Hypothesis~H4 is refuted.
 \end{observation}
 
+\begin{remark}[Computational cost of the learned induction grows quadratically in $\numExerciseDates$]\label{rem:cost}
+Distinct from the accuracy above, the wall-clock cost of the learned induction
+scales as $O(\numExerciseDates^{2})$. The terminal datum of stage $j$ is the
+smoothed maximum of the payoff and the \emph{learned} continuation of stage
+$j{+}1$, which is itself the trial solution embedding stage $j{+}2$, and so on;
+a single residual evaluation at stage $j$ --- and its second-order automatic
+differentiation --- therefore propagates through the frozen networks of every stage
+above it, so the per-stage cost is proportional to the stage depth. This is measured
+directly: for the $\numExerciseDates=10$ run (fixed $2\times10^{4}$ iterations per
+stage) the per-stage wall-clock increases linearly with depth, from $7.1$~min at the
+top interval to $37.2$~min eight intervals down --- about $4$--$4.5$~min per
+additional frozen stage. Summing a linear per-stage cost over $\numExerciseDates$
+stages yields the quadratic total; the measured single-seed run times are $19$, $34$
+and $80$~min for $\numExerciseDates=2,3,5$. The remedy is to cache each frozen
+continuation on a fixed space--time grid and interpolate, restoring an
+$O(1)$-in-depth per-stage cost and an $O(\numExerciseDates)$ total; it is not needed
+for the $\numExerciseDates\le10$ validation reported here.
+\end{remark}
+
 % ===========================================================================
 \section{Mechanism: regularity, spectral decay, and the operator channel}\label{sec:mechanism}
 
@@ -505,15 +530,21 @@ Fourier convention is $\fouriertransform{\payoff}(\wavenumber)=\int_{\R}\payoff(
 \subsection{The proven spectral laws}\label{sec:mech-proven}
 
 \begin{definition}[Regularity index]\label{def:reg}
-The regularity index $\regularityIndex$ of the datum $\payoff$ is the order of its
-lowest discontinuous derivative: $\payoff\in C^{\regularityIndex-1}$ while
-$\payoff^{(\regularityIndex)}$ has a jump, so $\payoff^{(\regularityIndex+1)}$
-contains a Dirac mass at the singular point.
+For a datum $\payoff$ with an isolated singularity at $\spacePoint^{\star}$ and
+smooth elsewhere, the regularity index $\regularityIndex$ is the order of the
+lowest derivative that is discontinuous there: $\payoff\in C^{\regularityIndex-1}$
+while $\payoff^{(\regularityIndex)}$ has a jump, so $\payoff^{(\regularityIndex+1)}$
+contains a Dirac mass at $\spacePoint^{\star}$.
 \end{definition}
 
 \begin{proposition}[Regularity governs spectral decay]\label{prop:decay}
-If $\payoff$ has regularity index $\regularityIndex$ with a jump of size $J$ in
-$\payoff^{(\regularityIndex)}$ at $\spacePoint^{\star}$, then
+Let $\payoff$ be $C^{\regularityIndex-1}$ with an isolated singularity at
+$\spacePoint^{\star}$, smooth elsewhere, and
+$\payoff^{(\regularityIndex+1)}=J\,\delta(\cdot-\spacePoint^{\star})+h$ with
+$h\in\mathrm{L}^{1}$ near $\spacePoint^{\star}$ (a jump of size $J$ in
+$\payoff^{(\regularityIndex)}$). Taking the Fourier transform on a bounded window
+about $\spacePoint^{\star}$ (equivalently, of a compactly supported localisation, so
+that it is a genuine function even for a non-integrable far field),
 \begin{equation}\label{eq:decay}
   \abs{\fouriertransform{\payoff}(\wavenumber)}^{2}
   \sim J^{2}\,\wavenumber^{-2(\regularityIndex+1)}
@@ -521,15 +552,18 @@ $\payoff^{(\regularityIndex)}$ at $\spacePoint^{\star}$, then
 \end{equation}
 \end{proposition}
 \begin{proof}
-Integrating $\fouriertransform{\payoff}(\wavenumber)=\int\payoff\,e^{-i\wavenumber\spacePoint}\,d\spacePoint$
-by parts $\regularityIndex+1$ times gives
-$\fouriertransform{\payoff}(\wavenumber)=(i\wavenumber)^{-(\regularityIndex+1)}\,\fouriertransform{\payoff^{(\regularityIndex+1)}}(\wavenumber)$.
-The distribution $\payoff^{(\regularityIndex+1)}$ is the sum of an integrable part,
-whose transform decays, and a Dirac $J\,\delta(\cdot-\spacePoint^{\star})$, whose
-transform is the constant $J\,e^{-i\wavenumber\spacePoint^{\star}}$. Hence
+Differentiation corresponds to multiplication by $i\wavenumber$ in the sense of
+tempered distributions, so
+$\fouriertransform{\payoff}(\wavenumber)=(i\wavenumber)^{-(\regularityIndex+1)}\,\fouriertransform{\payoff^{(\regularityIndex+1)}}(\wavenumber)$
+for $\wavenumber\neq0$, with no boundary terms. By hypothesis
+$\payoff^{(\regularityIndex+1)}=J\,\delta(\cdot-\spacePoint^{\star})+h$ with
+$h\in\mathrm{L}^{1}$: the Dirac transforms to the constant
+$J\,e^{-i\wavenumber\spacePoint^{\star}}$, and
+$\fouriertransform{h}(\wavenumber)=o(1)$ by the Riemann--Lebesgue lemma. Hence
 $\fouriertransform{\payoff}(\wavenumber)=(i\wavenumber)^{-(\regularityIndex+1)}\bigl(J\,e^{-i\wavenumber\spacePoint^{\star}}+o(1)\bigr)$,
-which is \eqref{eq:decay}. The decay stalls exactly at the order where the first
-non-integrable derivative appears.
+which is \eqref{eq:decay}. The decay rate is fixed by the order of the lowest
+non-integrable derivative; the smooth far field, once localised, contributes only
+rapidly decreasing terms.
 \end{proof}
 
 \begin{proposition}[Elliptic amplification]\label{prop:amp}
@@ -552,14 +586,18 @@ For a first-derivative discontinuity ($\regularityIndex=1$) under a second-order
 ($\operatorHalfOrder=1$) the net exponent in \eqref{eq:amp} is
 $4\operatorHalfOrder-2(\regularityIndex+1)=0$: the operator channel
 $\generatorUnderlying\payoff$ has a flat (white) spectrum and infinite
-$\mathrm{L}^{2}$ norm; indeed $\generatorUnderlying\payoff=\tfrac{\sigma^{2}}{2}J\,\delta(\cdot-\spacePoint^{\star})$
-is a Dirac. For the call/put in log-price the slope jump is $J=\strike$.
+$\mathrm{L}^{2}$ norm. Indeed its singular part is the Dirac
+$\tfrac{\sigma^{2}}{2}J\,\delta(\cdot-\spacePoint^{\star})$ (the remainder
+$\tfrac{\sigma^{2}}{2}h$ lying in $\mathrm{L}^{1}$), whose transform is the constant
+$\tfrac{\sigma^{2}}{2}J\,e^{-i\wavenumber\spacePoint^{\star}}$. For the call/put in
+log-price the slope jump is $J=\strike$.
 \end{corollary}
 
 \begin{proposition}[Forcing-floor scaling under smoothing]\label{prop:floor}
 Let $\payoff_{\smoothingScale}$ be the datum with its singularity mollified at
-spatial scale $\smoothingScale$, so its spectrum is essentially unchanged for
-$\abs{\wavenumber}\lesssim1/\smoothingScale$ and cut off above. If
+spatial scale $\smoothingScale$ by a kernel whose transfer function is idealised as
+a low-pass cutoff at $1/\smoothingScale$, so its spectrum is essentially unchanged
+for $\abs{\wavenumber}\lesssim1/\smoothingScale$ and negligible above. If
 $4\operatorHalfOrder-2\regularityIndex-1>0$ the operator-channel floor is
 upper-cutoff dominated and
 \begin{equation}\label{eq:floor}
@@ -615,9 +653,10 @@ which solves $\pdeOperator\solutionField^{\star}=0$ mode-wise and matches the da
 at $\timeHorizon$; the residual there is $0$. For $\abs{\wavenumber}>\cutoffWavenumber$
 the network coefficient is $0$, so $\architectureOutput_{\wavenumber}=\interpolationCoefficient\fouriertransform{\payoff}(\wavenumber)$;
 applying $\pdeOperator=\partial_{\timePoint}-\tfrac{\sigma^{2}}{2}\wavenumber^{2}$
-mode-wise and subtracting the exact mode give \eqref{eq:toy}. The verification is
-numerical to machine precision in the reproduction script.
+mode-wise and subtracting the exact mode give \eqref{eq:toy}.
 \end{proof}
+The closed form \eqref{eq:toy} is additionally verified numerically to machine
+precision in the reproduction script.
 
 Figure~\ref{fig:toy-gap} sweeps the cutoff $\cutoffWavenumber$: a band-limited
 datum drops exactly to zero (an exact spectral gap gives an exact solution), a
