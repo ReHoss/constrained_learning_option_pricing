@@ -1,4 +1,4 @@
-# ENGD on BSM with kinked payoff — diagnostic study
+# ENGD on BSM with non-differentiable payoff — diagnostic study
 
 This document reports the diagnostic study carried out when applying
 the paper-faithful ENGD optimiser (Zeinhofer et al., ICML 2023) to the
@@ -6,14 +6,14 @@ European call BSM problem in $(x = \ln S, t)$ coordinates, and explains
 why it stalls at a non-zero loss while the same algorithm converges to
 machine epsilon on the Poisson 2D problem in the original paper.
 
-The companion implementation lives in
+The companion implementation is located in
 [`train_variant_engd`](../../experiments/python_scripts/exp_singularity_european_call/ablation_singularity_logS.py)
 and the unit-tested optimiser primitives in
 [`learning_option_pricing/optimizers/natural_gradient.py`](../../learning_option_pricing/optimizers/natural_gradient.py).
 
 ## 1. Setup recap
 
-We follow the paper exactly:
+The setup follows the paper exactly:
 
 - Network: small MLP $[\text{Linear}(2,32) \to \tanh \to \text{Linear}(32,1)]$, $n_\theta = 129$ params.
 - Grid: $(N-2)^2 = 784$ interior $(x_i, t_i)$ and $N-1 = 29$ terminal $(x_b, T)$ points, $N=30$.
@@ -36,7 +36,7 @@ $$
 The unit tests show the algorithm reproduces the paper's Poisson 2D result
 ($L^2 \approx 1.8\!\times\!10^{-5}$ in 51 steps).
 
-## 2. What we observe on BSM
+## 2. Observations on BSM
 
 After 1 000 steps the optimiser stagnates at
 
@@ -57,7 +57,7 @@ and improves the rel-$L^2$ error from 0.45 to 0.21.
 
 $\cos(\nabla L, \delta) \in [0.02,\,0.10]$ throughout training, and crosses
 zero at stagnation. The Gram rotates the gradient by ~85°, then ~90°. By itself this
-is suspicious but not damning: the natural gradient is a *change of metric*,
+is notable but not conclusive: the natural gradient is a *change of metric*,
 not an alignment.
 
 ### 2.3 The residual recovery ratio $\rho$
@@ -86,7 +86,7 @@ Trajectory on BSM (run on commit covered by `engd_singularity_diagnostic.md`):
 |  900 | 11   | 0.00   | +0.00 |
 | 1000 | 11   | **0.0000** | +0.001 |
 
-ENGD didn't get *stuck*; it **converged to a critical point of**
+ENGD did not stall; it **converged to a critical point of**
 $\lVert r \rVert^2$. The critical point just happens to have non-zero
 loss.
 
@@ -98,7 +98,7 @@ The set $\{r(\theta) = 0\}$ is therefore non-empty, and $\rho(\theta) \to 1$
 along the optimisation trajectory because the residual stays in the span
 of $J$ as it shrinks. Gauss–Newton converges to $r = 0$.
 
-For BSM with kinked payoff, the network is asked to satisfy **two
+For BSM with non-differentiable payoff, the network must satisfy **two
 constraints simultaneously**:
 
 1. interior PDE: $\partial_t V + \tfrac{\sigma^2}{2}\partial_{xx} V + (r - \tfrac{\sigma^2}{2})\partial_x V - rV = 0$ on $\Omega \times (0, T)$;
@@ -112,7 +112,7 @@ non-zero. The non-zero residual creates many $\theta$ at which
 $J^\top r = 0$ — non-zero local minima of $\lVert r \rVert^2$. Gauss–Newton
 with line search converges to one of them in finite steps and cannot escape.
 
-This is what the paper's Poisson benchmark hides: when the network is
+This is what the paper's Poisson benchmark does not reveal: when the network is
 sufficiently expressive relative to the target, the Gauss–Newton critical
 point coincides with the zero of $r$, so the algorithm looks unconditionally
 convergent.
@@ -121,7 +121,7 @@ convergent.
 
 Three variants of the basic ENGD step were tested to confirm the diagnosis:
 
-| Variant            | Final loss | $\rho$ at end | What it tells us |
+| Variant            | Final loss | $\rho$ at end | Interpretation |
 |--------------------|-----------:|--------------:|------------------|
 | `engd` (baseline)  | 10.6       | 0.0000        | Standard joint Gram → exact LSQ critical point. |
 | `engd_tc_dense` ($N_{tc} = 200$) | 18.8 | 0.000…  | Increasing terminal points does *not* expand $\operatorname{col}(J_{\text{full}})$ enough: the network capacity is the binding rank limit, not the sample count. |
@@ -140,7 +140,7 @@ on the same problem family. This is order-of-magnitude better than any
 ENGD configuration. The mechanistic reasons are independent:
 
 - **Curvature memory**: L-BFGS approximates the inverse Hessian from a
-  history of $K$ secant pairs, so it sees that nearby $\theta$ have
+  history of $K$ secant pairs, so it accounts for the fact that nearby $\theta$ have
   different LSQ critical-point structure. Gauss–Newton's local quadratic
   model has no such memory.
 - **Wolfe line search**: enforces sufficient decrease *and* a curvature
@@ -150,7 +150,7 @@ ENGD configuration. The mechanistic reasons are independent:
   derivative term that dominates $J_F$'s norm growth near $t = T$ in the
   strong form.
 
-In short: ENGD's failure mode here is **not** a fluke or a tuning issue.
+In short: ENGD's failure mode here is **not** an accident or a tuning issue.
 It is the expected behaviour of Gauss–Newton on a problem where the joint
 representation power of the network is exhausted before the residual hits
 zero.
@@ -164,20 +164,20 @@ Gradient Relative to Adapted Model for efficient PINNs learning*
 [IloneM/ANaGRAM](https://github.com/IloneM/ANaGRAM/)).
 
 ANaGRAM's vanilla update (Algorithm 2 of the paper) is mathematically the
-same Gauss–Newton step we use here, recast as a direct SVD of the per-sample
+same Gauss–Newton step used here, recast as a direct SVD of the per-sample
 Jacobian $\varphi_\theta = J^\top$ rather than of the Gram $J^\top J$,
 with a hard spectral cutoff $\Delta_p^\dagger = 1/\Delta_p$ if $\Delta_p > \epsilon$
-else $0$ in place of our additive Tikhonov regularisation. The recast
+else $0$ in place of the additive Tikhonov regularisation. The recast
 brings two genuine improvements:
 
 1. **Numerical conditioning** — singular values of $J$ are not squared,
-   so $\kappa = \sqrt{\kappa(G)}$ in the implicit operator the solver sees
-   ($10^9$ instead of $10^{18}$ in our setting).
+   so $\kappa = \sqrt{\kappa(G)}$ in the implicit operator handled by the solver
+   ($10^9$ instead of $10^{18}$ in the present setting).
 2. **Computational complexity** $O(\min(P^2 S, S^2 P))$ versus $O(P^3)$ —
-   relevant when $P \gg S$, but not for us ($P=129$, $S=813$).
+   relevant when $P \gg S$, but not in the present case ($P=129$, $S=813$).
 
-Crucially, the paper itself acknowledges the same failure mode we
-diagnose with $\rho$. From §4.2 (after Algorithm 2), characterising the
+Crucially, the paper itself acknowledges the same failure mode
+diagnosed here with $\rho$. From §4.2 (after Algorithm 2), characterising the
 solution quality:
 
 > "the quality of the solution found by the parametric model $u$
@@ -196,10 +196,10 @@ limitation of the natural-gradient PINN family, not something the
 algorithmic refinements of ANaGRAM resolve.
 
 The paper's benchmarks succeed (2 D Laplace, $1+1$ D heat, …, with the
-same MLP $[2 \to 32 \to 1]$, $P=129$, that we use) because their target
+same MLP $[2 \to 32 \to 1]$, $P=129$, that is used here) because their target
 $f$ lies inside the closure of $\Gamma$ — the network is expressive
-enough that the curvature trap is not encountered. Our European-call
-problem fails because the joint constraint (smooth interior PDE *and*
+enough that the curvature trap is not encountered. The European-call
+problem considered here fails because the joint constraint (smooth interior PDE *and*
 $C^0$-only terminal payoff) puts $f$ outside $\overline{\Gamma}$ for this
 architecture, so the trap is realised.
 
@@ -231,8 +231,8 @@ plausibly help are:
    own loss). Different from `engd_alt`, which alternates only the
    preconditioner.
 
-None of these were necessary for the project (we have a working
-optimiser via VPINN+L-BFGS), so they are noted here for future reference.
+None of these were necessary for the project (a working
+optimiser is available via VPINN+L-BFGS), so they are noted here for future reference.
 
 ## 8. Reproducing the diagnostics
 
@@ -256,6 +256,6 @@ line has the form
 ```
 
 The Poisson 2D reference run (used to confirm the algorithm itself is
-correct) lives in
+correct) is located in
 [`exp_engd/repro_poisson_2d.py`](../../experiments/python_scripts/exp_engd/repro_poisson_2d.py)
 and reaches $L^2 = 1.84 \times 10^{-5}$ in 51 iterations as expected.

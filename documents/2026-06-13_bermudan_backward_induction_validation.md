@@ -7,13 +7,13 @@ does the per-step error accumulate as the number of exercise dates grows?
 
 ---
 
-## 1. The quantity we want to compute
+## 1. The quantity to be computed
 
 A **Bermudan put** is the right to sell one unit of an asset at a fixed strike
 price $K$, exercisable only at a finite set of dates
 $t_1 < t_2 < \dots < t_m = T$ (the last one is maturity $T$). Write $S$ for the
-asset price and $V(t,S)$ for the option's value at time $t$ and price $S$. We work
-in the log-price $x = \ln S$ and write $u(t,x)=V(t,e^x)$.
+asset price and $V(t,S)$ for the option's value at time $t$ and price $S$. The
+log-price $x = \ln S$ is used, with $u(t,x)=V(t,e^x)$.
 
 Between two exercise dates the holder does nothing, and the value satisfies the
 **backward heat equation**
@@ -45,16 +45,16 @@ Propagating a value backward over a time gap $\Delta\tau$ under the heat equatio
 is exactly a **Gaussian convolution** (averaging with a normal kernel of variance
 $\sigma^2\Delta\tau$). So the recursion above can be computed to machine accuracy
 with no neural network at all: chain one Gaussian convolution per inter-date
-interval and take the $\max$ with the payoff at each date. We call this exact
-value $V^\star$. It is implemented in `bermudan_put_value_exact` and is the
+interval and take the $\max$ with the payoff at each date. This exact
+value is denoted $V^\star$. It is implemented in `bermudan_put_value_exact` and is the
 reference against which everything below is measured. (Its only approximation is a
 fine numerical quadrature for the convolution; this is what makes the *exact*
 reference the slow part at large $m$ — it is a chain of $m$ nested convolutions.)
 
 ## 3. What the network does instead
 
-We replace the exact propagation on each interval by a trained neural network.
-On the interval $[t_j,t_{j+1}]$ we write the candidate value as a **trial
+The exact propagation on each interval is replaced by a trained neural network.
+On the interval $[t_j,t_{j+1}]$ the candidate value is written as a **trial
 solution**
 
 $$\hat u_\theta(x,t)=\bigl(1-\lambda(t)\bigr)\,\Phi_\theta(x,t)+\lambda(t)\,g(x),$$
@@ -71,12 +71,12 @@ $$\theta^\star=\arg\min_\theta\ \Big\|\ \partial_t\hat u_\theta
 the norm being an average of the squared left-hand side over many randomly sampled
 points $(x,t)$ in the interval.
 
-**Backward induction with learned steps.** We solve the intervals from maturity
+**Backward induction with learned steps.** The intervals are solved from maturity
 downward. The top interval uses the (smoothed) payoff as its terminal datum
 $g$. Each lower interval uses, as its terminal datum, the smoothed maximum of the
 payoff and the **learned** continuation value coming from the interval above —
 that is, every step is learned; no analytic value is ever injected. "Smoothed"
-means the kink of $\max(a,b)$ is rounded by
+means the first-derivative discontinuity of $\max(a,b)$ is rounded by
 $M_\varepsilon(a,b)=\tfrac12\!\left(a+b+\sqrt{(a-b)^2+\varepsilon^2}\right)$
 ($\varepsilon=2$), which removes a corner the network cannot represent.
 
@@ -85,7 +85,7 @@ $M_\varepsilon(a,b)=\tfrac12\!\left(a+b+\sqrt{(a-b)^2+\varepsilon^2}\right)$
   of each interval.
 - `soft_pinn`: the plain network $\hat u_\theta=\Phi_\theta$ with the terminal
   datum added only as a **penalty** in the objective, so it is matched only
-  approximately. This is a baseline to show what the exact matching buys.
+  approximately. This is a baseline that quantifies the benefit of exact matching.
 
 ## 4. The experiments actually run
 
@@ -131,7 +131,7 @@ Reading it:
 - **`hard_convex`, m=3 (solid)** is *not monotone*: $5.75\%$ at the first date
   solved ($t=2/3$), then $2.65\%$ at $t=1/3$, then $3.09\%$ at inception. The
   largest error is at the top step, not at inception.
-- **`hard_convex`, m=10 (solid, top curve)** sits an order of magnitude higher:
+- **`hard_convex`, m=10 (solid, top curve)** lies an order of magnitude higher:
   the per-date error rises from $12.4\%$ near maturity to a peak of $19.2\%$ at
   mid-life ($t=0.5$) and falls back to $14.4\%$ at inception — a **hump** that is
   well above the m=2 and m=3 curves at every date. Ten steps of one-tenth the
@@ -150,10 +150,10 @@ grey dashed curve is the European put (exercisable only at maturity).
 Reading it:
 - For $m=2$ and $m=3$ the solid (learned) and dashed (exact) curves lie on top of
   each other — the learned induction reproduces the true price across the window.
-  For $m=10$ the solid (learned) curve sits **visibly below** its dashed exact
+  For $m=10$ the solid (learned) curve lies **visibly below** its dashed exact
   reference for $S\gtrsim90$: that gap is the $14\%$ error of Figure 1, an
   under-pricing that the few-step runs do not show.
-- Every learned curve sits **above** the European put: the right to exercise early
+- Every learned curve lies **above** the European put: the right to exercise early
   is worth a positive amount (the early-exercise premium).
 - The exact curves order by the number of exercise dates (exact $m=10$ highest,
   then $m=3$, then $m=2$): more exercise opportunities can only increase the value,
@@ -161,14 +161,14 @@ Reading it:
   lies above the $m=2/3$ curves — it captures the extra early-exercise value — but
   under-shoots its own exact reference by the Figure 1 margin.
 
-## 6. What we conclude (and how strongly)
+## 6. Conclusions (and their strength)
 
 1. **The procedure is correct end to end.** With every step learned, the chained
    induction reproduces the exact Bermudan price to about $3\%$ for $m=2$ and
    $m=3$ (Figure 2), and to about $14\%$ for $m=10$ — qualitatively right in every
    case (positive early-exercise premium, value increasing in $m$), quantitatively
    accurate for few steps. This is a *measured* result on one seed.
-2. **Exact terminal matching beats a penalty.** At inception the `hard_convex`
+2. **Exact terminal matching outperforms a penalty.** At inception the `hard_convex`
    error is $3.18\%$ versus $5.0\%$ for `soft_pinn` (Figure 1). The penalty form
    leaves a terminal mismatch at each step that compounds; the exact form does
    not. *Measured*, one seed.

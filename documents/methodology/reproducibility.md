@@ -37,7 +37,7 @@ Runs 50 000 iterations per stage, uses the Taylor $g_2$ form, standard cubic int
 |------|------|---------|-------------|
 | `--iters N [N ...]` | int+ | `50000` | Training iterations per stage. One value → same for all stages. Two values → Stage A then Stage B. Example: `--iters 20000 5000` |
 | `--g2 {taylor,bs}` | str | `taylor` | Terminal function $g_2$ for ETCNN. `taylor`: $g_2 = V_1^e + V_2^e$ (Taylor expansion capturing $\sqrt{\tau}$ singularity, §2.1 of architecture.md). `bs`: $g_2 = P^{\text{BS}}$ (exact Black-Scholes European put). Applied to both the European problem and Stage A of the Bermudan. |
-| `--put-ansatz` | flag | *off* | Enable singularity extraction ansatz for Stage B (§2.2 of architecture.md). Decomposes $V_\theta = v + \tilde{u}_\theta$, removing the $C^0$ kink at the exercise boundary $s^*$. When *off*, Stage B directly interpolates $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$. |
+| `--put-ansatz` | flag | *off* | Enable singularity extraction ansatz for Stage B (§2.2 of architecture.md). Decomposes $V_\theta = v + \tilde{u}_\theta$, removing the $C^0$ first-derivative discontinuity at the exercise boundary $s^*$. When *off*, Stage B directly interpolates $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$. |
 | `--interp {cubic,pchip,linear}` | str | `cubic` | Interpolator used for $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ in the **non-put-ansatz** path. Ignored when `--put-ansatz` is set. `cubic`: $C^2$ natural spline. `pchip`: $C^1$, shape-preserving. `linear`: $C^0$, drops diffusion (benchmarking only). |
 | `--device {auto,cuda,cpu}` | str | `auto` | Compute device. `auto` selects CUDA if available. |
 | `--weight-decay W` | float | `0.0` | L2 regularisation weight for Adam. |

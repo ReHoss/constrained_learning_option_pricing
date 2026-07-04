@@ -105,7 +105,7 @@ Both ETCNN and PINN are trained on the same domain with the same hyperparameters
 - ETCNN's $\mathcal{L}_{tc}$ should be at or near machine zero throughout training (enforced by architecture).
 - ETCNN relative $L^2$ error should be $< 5 \times 10^{-4}$.
 - PINN relative $L^2$ error should be roughly one order of magnitude larger.
-- Largest pointwise errors concentrate near the kink at $(s, t) = (K, T)$.
+- Largest pointwise errors concentrate near the first-derivative discontinuity at $(s, t) = (K, T)$.
 
 **Plots produced:**
 | Plot | File | Description |
@@ -122,20 +122,20 @@ $$\mathcal{L}_f = \frac{1}{N_f}\sum_i \lvert \mathcal{F}[\tilde{u}](s_i, t_i)\rv
 For the ETCNN, $\mathcal{L}_{tc}$ is at or near machine zero throughout (enforced by architecture); for the PINN it is a learned soft penalty.
 
 **Plot E2 — Price surface:**
-Side-by-side heatmaps of the predicted price $\tilde{u}(s,t)$ and the analytical Black–Scholes price $V^e(s,t)$ over the evaluation grid. Visual agreement should be near-perfect; residual differences appear mainly near the kink at $(s,t) = (K, T)$.
+Side-by-side heatmaps of the predicted price $\tilde{u}(s,t)$ and the analytical Black–Scholes price $V^e(s,t)$ over the evaluation grid. Visual agreement should be near-perfect; residual differences appear mainly near the first-derivative discontinuity at $(s,t) = (K, T)$.
 
 **Plot E3 — Pointwise error comparison (ETCNN vs PINN):**
 A side-by-side 2-panel figure over the evaluation grid $s \in [60, 120]$, $t \in [0, T]$ showing the absolute price error for both models against the analytical Black–Scholes solution:
 $$\varepsilon_{\text{ETCNN}}(s,t) = \left\lvert \tilde{u}_\theta(s,t) - V^e(s,t) \right\rvert, \qquad \varepsilon_{\text{PINN}}(s,t) = \left\lvert u_\theta(s,t) - V^e(s,t) \right\rvert$$
-Both panels share the same colour scale so differences in accuracy are immediately visible. Because the ETCNN encodes the terminal condition exactly via $g_1$ and $g_2$, the terminal layer $t = T$ is near machine zero; for the PINN it is only a soft penalty. Residual ETCNN error concentrates near the kink at $(s,t) = (K, T)$.
+Both panels share the same colour scale so differences in accuracy are immediately visible. Because the ETCNN encodes the terminal condition exactly via $g_1$ and $g_2$, the terminal layer $t = T$ is near machine zero; for the PINN it is only a soft penalty. Residual ETCNN error concentrates near the first-derivative discontinuity at $(s,t) = (K, T)$.
 
 **Plot E4 — Time slices:**
-Overlays $\tilde{u}(s, t_k)$, PINN, and $V^e(s, t_k)$ for fixed times $t_k \in \{0.25, 0.5, 0.75\}$. Deviations from the analytical curve quantify the space-only error profile; the kink at $s = K$ is the most demanding region.
+Overlays $\tilde{u}(s, t_k)$, PINN, and $V^e(s, t_k)$ for fixed times $t_k \in \{0.25, 0.5, 0.75\}$. Deviations from the analytical curve quantify the space-only error profile; the first-derivative discontinuity at $s = K$ is the most demanding region.
 
 **Plot E5 — Greeks:**
 Computes the three first-order sensitivities of $\tilde{u}$ at $t = 0$ via automatic differentiation and compares with the Black–Scholes closed-form:
 $$\Delta = \frac{\partial \tilde{u}}{\partial s}, \qquad \Gamma = \frac{\partial^2 \tilde{u}}{\partial s^2}, \qquad \Theta = \frac{\partial \tilde{u}}{\partial t}$$
-Large $\Gamma$ errors near $s = K$ indicate how well the network resolves the non-differentiable kink in the payoff.
+Large $\Gamma$ errors near $s = K$ indicate how well the network resolves the first-derivative discontinuity in the payoff.
 
 ### 3.3 Problem 2 — Bermudan put (one intermediate exercise date)
 
@@ -151,7 +151,7 @@ A Bermudan put with one intermediate exercise date $t_1 = 0.5$ is solved by piec
 
 **Stage B — intermediate condition:** At $t = t_1$, the Bermudan holder compares immediate exercise $\Phi(s)$ with the continuation value $\tilde{u}^{(A)}_{\bar{\theta}}(s, t_1)$ (the Stage A ETCNN output). The maximum defines the terminal condition for Stage D.
 
-**Interpolation:** $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ is evaluated on a dense grid of 2,000 points and stored as a look-up table. As detailed in [`architecture.md`](architecture.md), this is interpolated using either a natural cubic spline ($C^2$) or a PCHIP interpolant ($C^1$, shape-preserving) to preserve the diffusion term $\frac{\partial^2 g_2}{\partial s^2}$. PCHIP is recommended near kinks (exercise boundaries) where the global cubic spline can overshoot.
+**Interpolation:** $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ is evaluated on a dense grid of 2,000 points and stored as a look-up table. As detailed in [`architecture.md`](architecture.md), this is interpolated using either a natural cubic spline ($C^2$) or a PCHIP interpolant ($C^1$, shape-preserving) to preserve the diffusion term $\frac{\partial^2 g_2}{\partial s^2}$. PCHIP is recommended near first-derivative discontinuities (exercise boundaries) where the global cubic spline can overshoot.
 
 **Terminal functions for Stage D:**
 $$
@@ -184,14 +184,14 @@ v(s, t) + (t_1 - t)\, u_{\theta_B}(s, t) + g_2^{(B)}(s), & t \in [0, t_1]
 \end{cases}
 $$
 
-where $v(s, t)$ is the fictitious European put that absorbs the $C^0$ kink at $s^*$ (see [`architecture.md §2.2`](architecture.md)), and $g_2^{(B)}(s) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1) - v(s, t_1)$ is the smooth $C^1$ PCHIP residual. At $t = t_1$, $g_1^{(B)} = 0$ so the neural manifold vanishes and the formula collapses to $v(s, t_1) + g_2^{(B)}(s) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$, matching the terminal condition exactly.
+where $v(s, t)$ is the fictitious European put that absorbs the $C^0$ first-derivative discontinuity at $s^*$ (see [`architecture.md §2.2`](architecture.md)), and $g_2^{(B)}(s) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1) - v(s, t_1)$ is the smooth $C^1$ PCHIP residual. At $t = t_1$, $g_1^{(B)} = 0$ so the neural manifold vanishes and the formula collapses to $v(s, t_1) + g_2^{(B)}(s) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$, matching the terminal condition exactly.
 
 **Exercise boundary:**
 The exercise boundary $s^*$ at $t_1$ is the asset price where $\Phi(s) = \tilde{u}^{(A)}_{\bar{\theta}}(s, t_1)$, found by sign-change detection. For these parameters, $s^* < K = 100$.
 
 **Spatial weighting** (`--spatial-weight`, requires `--put-ansatz`)**:**
 
-Even after extracting the $C^0$ kink into $v(s, t)$, the PCHIP interpolant of the residual $g_2^{(B)}$ still has a $C^1$ knot at $s^*$: the second derivative $\partial_{ss} g_2^{(B)}$ is bounded but has a jump there. Differentiating through this knot during PDE-loss backpropagation produces a localized gradient spike that can destabilize training.
+Even after extracting the $C^0$ first-derivative discontinuity into $v(s, t)$, the PCHIP interpolant of the residual $g_2^{(B)}$ still has a $C^1$ knot at $s^*$: the second derivative $\partial_{ss} g_2^{(B)}$ is bounded but has a jump there. Differentiating through this knot during PDE-loss backpropagation produces a localised gradient spike that can destabilise training.
 
 To suppress it, an inverted-Gaussian spatial weight $w(s)$ is applied to the PDE loss collocation points:
 
@@ -225,7 +225,7 @@ Disabled by default; activate with `--spatial-weight`.
 | B6 | `pricing/plotB6_bermudan_surface.png` | Full piecewise Bermudan price surface $\tilde{u}(s, t)$ over $[0, T]$ with $t_1$ boundary marked |
 | B7 | `diagnostics/plotB7_error_vs_bt.png` | Pointwise error $\lvert \tilde{u}^{(B)}(s, 0) - V^{BT}(s, 0)\rvert$ at $t = 0$ |
 | B8 | `greeks/plotB8_greeks.png` | Greeks $\Delta, \Gamma, \Theta$ at $t = 0$: Bermudan ETCNN$_B$ vs European analytical |
-| B9 | `diagnostics/plotB9_test2_pde_residual.png` | PDE residual $\lvert \mathcal{F}[\tilde{u}^{(B)}](s, t_1^-)\rvert^2$ across asset prices — spike near $s^*$ indicates kink effect |
+| B9 | `diagnostics/plotB9_test2_pde_residual.png` | PDE residual $\lvert \mathcal{F}[\tilde{u}^{(B)}](s, t_1^-)\rvert^2$ across asset prices — spike near $s^*$ indicates first-derivative discontinuity effect |
 | B9b | `diagnostics/plotB9b_pde_residual_heatmap.png` | Spatio-temporal heatmap of $\lvert \mathcal{F}[\tilde{u}](s,t)\rvert$ over the full $(s,t)$ domain, split at $t_1$: left panel ETCNN$_B$ on $[0, t_1^-]$, right panel ETCNN$_A$ on $[t_1, T]$; shared log colour scale |
 | B10 | `diagnostics/plotB10_test3_weight_distribution.png` | Neuron weight magnitude distribution in ETCNN$_A$ (violinplot by layer) |
 
@@ -244,7 +244,7 @@ A 2×2 diagnostic showing how well the cubic ($C^2$) vs linear ($C^0$) interpola
 | (c) | $\partial^2 V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)/\partial s^2$ — Gamma; identically zero for the linear interpolant |
 | (d) | $\mathcal{F}[V^{\mathrm{Berm}}_{\bar{\theta}}(\cdot, t_1)] = \tfrac{1}{2}\sigma^2 s^2\, \partial_s^2 V^{\mathrm{Berm}}_{\bar{\theta}} + r s\, \partial_s V^{\mathrm{Berm}}_{\bar{\theta}} - r\, V^{\mathrm{Berm}}_{\bar{\theta}}$ — the BSM operator applied to $V^{\mathrm{Berm}}_{\bar{\theta}}(\cdot, t_1)$ alone |
 
-Panel (c) is the key diagnostic: a vanishing $\Gamma$ means the diffusion term $\frac{1}{2}\sigma^2 s^2 \frac{\partial^2 V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)}{\partial s^2}$ contributes nothing to the PDE residual, which can leave the network under-constrained near the kink.
+Panel (c) is the key diagnostic: a vanishing $\Gamma$ means the diffusion term $\frac{1}{2}\sigma^2 s^2 \frac{\partial^2 V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)}{\partial s^2}$ contributes nothing to the PDE residual, which can leave the network under-constrained near the first-derivative discontinuity.
 
 **Plot B1c — Interpolated function / Singularity extraction:**
 In standard mode: plots the chosen interpolant of $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1) = \max\!\bigl(\Phi(s),\, \tilde{u}^{(A)}_{\bar{\theta}}(s, t_1)\bigr)$ with the exercise boundary $s^*$ marked.
@@ -254,7 +254,7 @@ Here $v(s, t)$ is the full fictitious European put (architecture.md §2.2); this
 
 **Plot B1d — Curvature diagnostic:**
 In standard mode: plots the Gamma $\partial^2 g_2(s, t_1)/\partial s^2$ of the selected interpolant near $s^*$ on both a wide and fine grid, verifying whether the second derivative remains bounded.
-In extraction mode: compares the Gamma of $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ (which has a kink at $s^*$) against the smooth residual $g_2(s, t_1)$, confirming that the singularity has been successfully absorbed into $v(s, t_1)$.
+In extraction mode: compares the Gamma of $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_1)$ (which has a first-derivative discontinuity at $s^*$) against the smooth residual $g_2(s, t_1)$, confirming that the singularity has been successfully absorbed into $v(s, t_1)$.
 
 **Plot B5 — Price at $t = 0$:**
 Compares the Bermudan price $\tilde{u}^{(B)}(s, 0)$ to the binomial-tree reference $V^{BT}(s, 0)$ and the European lower bound $V^e(s, 0)$. The Bermudan price should lie above the European price for $s < s^*$.
@@ -262,7 +262,7 @@ Compares the Bermudan price $\tilde{u}^{(B)}(s, 0)$ to the binomial-tree referen
 **Plot B7 — Error at $t = 0$:**
 Pointwise absolute error against the binomial tree:
 $$\varepsilon(s) = \left\lvert \tilde{u}^{(B)}(s, 0) - V^{BT}(s, 0) \right\rvert$$
-Largest errors typically occur near $s^*$ where the terminal condition $g_2$ has a kink.
+Largest errors typically occur near $s^*$ where the terminal condition $g_2$ has a first-derivative discontinuity.
 
 **Plot B9 — PDE residual at $t_1^-$:**
 The BSM residual of ETCNN$_B$ evaluated just before the exercise date:
@@ -286,8 +286,8 @@ $$\mathcal{F}[\tilde{u}](s,t) = \frac{\partial \tilde{u}}{\partial t} + \tfrac{1
 
 1. **Structural** — two distinct sub-intervals must exist: $t_1 > 0$ and $T > t_1$. If not, the plot is skipped.
 2. **Spatial dimension** — the BSM PDE is 1D in $s$ (single-asset), so a $(s,t)$ heatmap is always well-defined. For a multi-factor model one would need to fix the extra state dimensions; not applicable here.
-3. **Rate sign** — when $r \leq 0$ it may be optimal never to exercise a put early ($s^* \to 0$), so no kink region appears in the heatmap. A warning is logged but the plot is still generated.
-4. **Domain coverage** — if $s^* \notin [S_{\min}, S_{\max}]$ the kink is off-screen; a warning is logged. We also flag the financially inconsistent case $s^* \geq K$ (for a put with $r > 0$, $s^* < K$ is expected).
+3. **Rate sign** — when $r \leq 0$ it may be optimal never to exercise a put early ($s^* \to 0$), so no non-smooth region appears in the heatmap. A warning is logged but the plot is still generated.
+4. **Domain coverage** — if $s^* \notin [S_{\min}, S_{\max}]$ the first-derivative discontinuity is off-screen; a warning is logged. The financially inconsistent case $s^* \geq K$ is also flagged (for a put with $r > 0$, $s^* < K$ is expected).
 
 ---
 
@@ -316,7 +316,7 @@ python3 experiments/python_scripts/exp1/phase3_training.py \
 ### 4.3 Bermudan-only with PCHIP interpolation
 
 Skip the European problem and use shape-preserving PCHIP interpolation to avoid
-Gamma explosions from the global cubic spline near the exercise boundary:
+Gamma divergences from the global cubic spline near the exercise boundary:
 
 ```bash
 python3 experiments/python_scripts/exp1/phase3_training.py \
@@ -351,7 +351,7 @@ python3 experiments/python_scripts/exp1/phase3_training.py \
 ### 4.6 BS-2002 American put anchor
 
 Use the Bjerksund–Stensland (2002) approximation as the $g_2$ anchor, which captures
-the early-exercise boundary kink analytically:
+the early-exercise boundary first-derivative discontinuity analytically:
 
 ```bash
 python3 experiments/python_scripts/exp1/phase3_training.py \
@@ -417,11 +417,11 @@ python3 experiments/python_scripts/exp1/phase3_training.py \
 ### Background
 
 For a European call option, the payoff $\Phi(S) = (S-K)^+$ is $C^0$ but not $C^1$ at $S = K$.
-At maturity ($\tau = T - t = 0$), the Black–Scholes Gamma blows up:
+At maturity ($\tau = T - t = 0$), the Black–Scholes Gamma diverges:
 
 $$\Gamma(S, \tau) = \frac{N'(d_1)}{S\,\sigma\,\sqrt{\tau}} \xrightarrow{\tau \to 0} \delta(S - K)$$
 
-When a plain PINN (no $g_1/g_2$ ansatz) is trained with the PDE loss evaluated near $\tau = 0$, `torch.autograd` must differentiate through the $S=K$ kink, yielding arbitrarily large $\partial^2 V / \partial S^2$ estimates and causing gradient explosion or optimiser stagnation.
+When a plain PINN (no $g_1/g_2$ ansatz) is trained with the PDE loss evaluated near $\tau = 0$, `torch.autograd` must differentiate through the $S=K$ first-derivative discontinuity, yielding arbitrarily large $\partial^2 V / \partial S^2$ estimates and causing gradient explosion or optimiser stagnation.
 
 ### Three Methods Compared (primary ablation)
 

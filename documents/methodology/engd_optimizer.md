@@ -170,7 +170,7 @@ each of which costs $O((N_F + N_{TC})\,n_\theta)$.
 * `solve_cg` exits early if $p^\top G p \le 0$ or non-finite (would mean
   $G$ is not SPD — usually caused by `reg` being too small).
 * `grid_line_search` skips NaN/Inf candidates and falls back to the
-  smallest step if every trial blows up.
+  smallest step if every trial diverges.
 
 ---
 

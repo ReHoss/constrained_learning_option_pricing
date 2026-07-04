@@ -53,7 +53,7 @@ $$
 
 Three terminal data with controlled spectra are compared: **band-limited** (a few
 low modes; an exact spectral gap), **smooth** ($g=e^{\cos x}$, analytic, spectrum
-decays super-exponentially), and **kink** (a triangle wave, $|\hat g_k|^2\sim
+decays super-exponentially), and **non-smooth** (a triangle wave, $|\hat g_k|^2\sim
 k^{-4}$ — the regularised-payoff analogue).
 
 ## 3. The figures
@@ -67,15 +67,15 @@ axis. **Left:** the time-averaged uncancellable residual energy
 $\lVert\Pi_{\mathcal{S}^\perp}\mathcal{P}\Psi\rVert^2$ (log scale). **Right:** the
 relative $L^2$ solution error over the space-time window.
 
-- **Band-limited $g$ (green):** both the residual and the error drop to a cliff —
+- **Band-limited $g$ (green):** both the residual and the error fall abruptly —
   to machine zero — as soon as $k^\star$ passes the datum's top mode ($k=5$). An
   exact spectral gap gives an exact solution.
 - **Smooth $g$ (blue):** both fall exponentially, reaching machine zero by
   $k^\star\approx13$ (the datum has essentially no content above that).
-- **Kink $g$ (red):** the residual (left) is a **near-flat plateau** — raising
+- **Non-smooth $g$ (red):** the residual (left) is a **near-flat plateau** — raising
   $k^\star$ from $1$ to $59$ lowers it by only ~2 % — because the operator channel
   is white (Figure 2). Yet the solution error (right) still **decays** (by a factor
-  ~50 over the same range). The residual and the error part company: the residual
+  ~50 over the same range). The residual and the error decouple: the residual
   cannot be reduced by more network reach, but the error can, because the operator
   inverse (heat propagation) damps the uncancelled high-$k$ modes (Figure 3).
 
@@ -83,26 +83,26 @@ relative $L^2$ solution error over the space-time window.
 
 ![channel amplification](figures/2026-07-03_toy_channel_amplification.png)
 
-At fixed cutoff (dotted line), for the kink (left) and smooth (right) data: the
+At fixed cutoff (dotted line), for the non-smooth (left) and smooth (right) data: the
 datum spectrum $|\hat g_k|^2$ (grey dashed) and the operator-channel spectrum
 $|\widehat{\mathcal{L}g}_k|^2=(\tfrac{\sigma^2}{2}k^2)^2|\hat g_k|^2$ (solid). The
 operator multiplies each mode by its symbol $-\tfrac{\sigma^2}{2}k^2$, i.e. it
 amplifies power by $k^4$.
 
-- **Kink:** $|\hat g_k|^2\sim k^{-4}$, so the operator channel is $\sim
+- **Non-smooth:** $|\hat g_k|^2\sim k^{-4}$, so the operator channel is $\sim
   k^4\!\cdot\!k^{-4}=$ const to leading order — a near-flat white plateau that
   overhangs the cutoff. (It tilts up ~50 % near the grid's Nyquist wavenumber,
   where the discrete triangle-wave coefficients leave the exact $k^{-2}$ envelope;
   the plateau is the leading-order statement.)
 - **Smooth:** $|\hat g_k|^2$ decays fast enough that even after the $k^4$ boost the
-  operator channel still decays and stays below the cutoff — nothing to leave
+  operator channel still decays and remains below the cutoff — nothing to leave
   uncancelled.
 
 ### Figure 3 — residual is not error; the link is the operator inverse
 
 ![residual vs error](figures/2026-07-03_toy_residual_vs_error.png)
 
-**Left:** for one mode above the cutoff ($k_0=20$, kink datum), the magnitudes of
+**Left:** for one mode above the cutoff ($k_0=20$, non-smooth datum), the magnitudes of
 the residual and the solution error over time, each normalised to its own maximum.
 The residual dips to zero at $t\approx1/(\tfrac{\sigma^2}{2}k_0^2)$ (a sign change,
 where velocity balances the operator channel) then grows toward maturity; the
@@ -124,16 +124,16 @@ operator inverse.
 1. **Spectral gap ⇒ perfect (Figure 1).** If the datum has no mass above $k^\star$,
    residual and error are exactly zero. Performance is controlled entirely by the
    forcing mass above the cutoff.
-2. **The operator channel is the $k^4$ tail (Figure 2).** A kink's $k^{-4}$ datum
+2. **The operator channel is the $k^4$ tail (Figure 2).** A non-smooth $k^{-4}$ datum
    becomes a white operator-channel plateau; a smooth datum does not.
-3. **Residual $\ne$ error (Figures 1, 3).** For a kink the residual (a white
+3. **Residual $\ne$ error (Figures 1, 3).** For a non-smooth datum the residual (a white
    plateau) cannot be reduced by network reach, yet the error decays, because the
    operator inverse damps the uncancelled modes — and the residual-to-error factor
    is $\tau$-dependent, so no single predictor holds.
 
 ## 5. Correspondence with the empirical study
 
-The kink is the analytic stand-in for the raw (softplus-regularised) payoff of the
+The non-smooth datum is the analytic stand-in for the raw (softplus-regularised) payoff of the
 call study, whose operator channel is likewise a white plateau (there, resolved
 only at $N_X\gtrsim10^4$). The band-limited and smooth data are stand-ins for the
 Chen–Mangasarian extension, whose operator channel is band-limited and cancellable.

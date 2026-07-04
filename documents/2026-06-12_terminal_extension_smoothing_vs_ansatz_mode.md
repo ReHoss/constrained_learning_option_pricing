@@ -16,8 +16,8 @@ network $\Phi_\theta$ supplies the interior correction. Two design choices are
 usually conflated:
 
 1. **Which extension $g$** — how the (non-smooth) payoff is smoothed before it is
-   used as the terminal datum. We compare a **softplus** smoothing of the call
-   payoff against a **Chen–Mangasarian** smoothing
+   used as the terminal datum. A **softplus** smoothing of the call
+   payoff is compared against a **Chen–Mangasarian** smoothing
    $M_\varepsilon(a,b)=\tfrac12\!\left(a+b+\sqrt{(a-b)^2+\varepsilon^2}\right)$.
 2. **Which ansatz mode** — how $\Phi_\theta$ and $g$ are combined:
    - **additive** (`hard_constant`): $\hat u=(1-\lambda(t))\,\Phi_\theta+g$;
@@ -128,7 +128,8 @@ Three readings, each a measured instance of the companion-note theory.
    by a factor $\approx79$ for the additive form ($7200\to91$) and $\approx45$
    for the convex form ($2920\to65$). An order-$2m$ elliptic $\mathcal{L}$
    amplifies a Fourier mode of wavenumber $k$ by $\sim|k|^{2m}$, so $\mathcal{L}g$
-   concentrates at the high frequencies of $g$ — the regularised payoff kink (in
+   concentrates at the high frequencies of $g$ — the regularised payoff
+   first-derivative discontinuity (in
    the heat instance $\mathcal{L}g=\tfrac{\sigma^2}{2}g''$, the at-the-money
    terminal curvature). This channel is the high-frequency, largely uncancellable
    part of the forcing; its collapse is the quantitative origin of the
@@ -153,14 +154,14 @@ Three readings, each a measured instance of the companion-note theory.
 
 The §3.1 attribution — velocity is *low-frequency and cancellable*, the operator
 channel is *high-frequency and uncancellable* — is a claim about where in
-wavenumber each quantity lives. We test it directly by taking the spatial power
-spectrum of each field. For a trained hard-form run we evaluate, on a uniform
+wavenumber each quantity is concentrated. It is tested directly by taking the
+spatial power spectrum of each field. For a trained hard-form run, on a uniform
 grid over $\mathcal{X}_{\rm eval}$ at several time slices, the two forcing
 channels — the velocity $\partial_t\Psi=\lambda'(t)\,g$ and the operator channel
 $\lambda(t)\,\mathcal{L}g$ (heat instance $\lambda\tfrac{\sigma^2}{2}g''$) — and
-the achieved residual $\mathcal{P}\hat u=\partial_t\hat u+\mathcal{L}\hat u$, take
-the real FFT $|\widehat{\cdot}_k|^2$, and average over slices (convex form,
-$\lambda(t)=t/T$).
+the achieved residual $\mathcal{P}\hat u=\partial_t\hat u+\mathcal{L}\hat u$ are
+evaluated, the real FFT $|\widehat{\cdot}_k|^2$ taken, and the result averaged
+over slices (convex form, $\lambda(t)=t/T$).
 
 ![Forcing-channel spectra vs achieved residual](figures/2026-06-12_spectral_channels_vs_residual.png)
 
@@ -174,7 +175,7 @@ aliased). Left: softplus extension. Right: Chen–Mangasarian extension.*
 **Resolved case (Chen–Mangasarian, right panel) — the attribution holds as
 stated.** The velocity channel dominates at low $k$ and the operator channel
 (here the diffusion forcing) at high $k$, crossing over near $k\approx5$. The
-achieved residual sits about three orders of magnitude *below* both at low $k$ —
+achieved residual lies about three orders of magnitude *below* both at low $k$ —
 the network synthesises and subtracts the low-$k$ velocity channel, exactly the
 $R_\theta\approx-f$ cancellation measured in §3.1(3) — and **rises to track the
 operator-channel tail** at high $k$. The dashed residual coinciding with the red
@@ -242,12 +243,12 @@ the smooth Chen–Mangasarian one — and at the inception slice the two modes a
 within noise for the smooth extension (the convex form is even marginally worse:
 $6.22\times10^{-3}$ vs $9.52\times10^{-3}$, well inside one std).
 
-Mechanistically, the two modes forge the forcing $f=\mathcal{P}\Psi$ differently
+Mechanistically, the two modes construct the forcing $f=\mathcal{P}\Psi$ differently
 (channel decomposition measured in §3.1). The additive form uses the
 time-independent extension $\Psi=g$, so $f=\mathcal{L}g$ is a pure operator spike
 with **no** velocity channel. The convex form uses $\Psi=\lambda(t)\,g$, which
 simultaneously (a) **adds** a velocity channel $\lambda'(t)\,g$ and (b) **scales**
-the operator spike $\mathcal{L}g$ by $\lambda(t)\le1$. The two effects move the
+the operator spike $\mathcal{L}g$ by $\lambda(t)\le1$. The two effects change the
 floor in opposite directions but the *error* in only one:
 
 - The operator spike is damped by the time-average $\langle\lambda^2\rangle$;
@@ -270,10 +271,10 @@ inflates the floor $12\times$ — hence the convex mode's net gain falls within
 seed noise. In short, the mode matters precisely when the operator forcing
 $\mathcal{L}g$ is the binding term, i.e. when $g$ is rough; once $g$ is smooth the
 floor is dominated by the cancellable velocity channel and the algebra barely
-moves the error.
+changes the error.
 
-**(iii) Hard enforcement with a good extension matches — and at inception beats —
-the unconstrained PINN.** The `soft_pinn` reference is the most accurate in the
+**(iii) Hard enforcement with a low-floor extension matches — and at inception
+surpasses — the unconstrained PINN.** The `soft_pinn` reference is the most accurate in the
 interior, but it does **not** enforce the terminal datum: $\mathrm{tc}\approx
 7\times10^{-3}$. With the smooth Chen–Mangasarian extension the hard forms close
 most of that gap (space-time error within a factor $\sim2$ of `soft_pinn`) while
@@ -342,7 +343,7 @@ datum of the previous stage. The two findings above translate into a concrete
 prescription:
 
 - Smooth each stage-terminal datum with **Chen–Mangasarian**, not softplus — this
-  is where the order-of-magnitude accuracy lives, and it is the cheapest lever.
+  is the source of the order-of-magnitude accuracy, and it is the cheapest lever.
 - Use a **hard** form so the stage-terminal condition is enforced exactly (no
   $7\times10^{-3}$ terminal leak that would compound across stages); the
   additive-versus-convex choice is second order and can be fixed to `hard_convex`

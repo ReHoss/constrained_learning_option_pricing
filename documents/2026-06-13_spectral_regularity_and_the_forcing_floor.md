@@ -41,7 +41,7 @@ are measured.
 
 Let the **regularity index** $r$ be the order of the lowest discontinuous
 derivative: $g\in C^{r-1}$ but $g^{(r)}$ has a jump (so $g^{(r+1)}$ contains a
-Dirac at the singular point). Since a delta sits in $g^{(r+1)}$,
+Dirac at the singular point). Since a delta appears in $g^{(r+1)}$,
 $\widehat{g^{(r+1)}}(k)\to\text{const}\neq0$ as $k\to\infty$; combining with the
 differentiation rule $\widehat{g^{(r+1)}}(k)=(ik)^{r+1}\hat g(k)$ gives the tail
 
@@ -53,12 +53,12 @@ $$
 | singularity | $r$ | $|\hat g(k)|^2$ |
 |---|---|---|
 | jump in $g$ (step) | $0$ | $k^{-2}$ |
-| **kink** (jump in $g'$) | $1$ | $k^{-4}$ |
+| **first-derivative discontinuity** (jump in $g'$) | $1$ | $k^{-4}$ |
 | jump in $g''$ | $2$ | $k^{-6}$ |
 | $C^\infty$ / analytic | — | faster than any power (exponential) |
 
 *Integration-by-parts reading.* Each smooth integration by parts in
-$\hat g(k)=\int g\,e^{-ikx}\,dx$ buys one factor $1/(ik)$; the decay **stalls** at
+$\hat g(k)=\int g\,e^{-ikx}\,dx$ yields one factor $1/(ik)$; the decay **stalls** at
 the order $r+1$ where the first non-integrable derivative (the delta) appears,
 fixing the amplitude tail at $k^{-(r+1)}$.
 
@@ -120,7 +120,7 @@ $$
   singularity and essentially $\varepsilon$-independent — the datum is smooth
   enough relative to the operator order.
 
-*Real-space cross-check.* For a kink ($r=1$) under an order-$2p=2$ operator, the
+*Real-space cross-check.* For a first-derivative discontinuity ($r=1$) under an order-$2p=2$ operator, the
 smoothed $\mathcal{L}g$ is a regularised delta of height $\sim 1/\varepsilon$ and
 width $\sim\varepsilon$ carrying fixed area (the jump); its squared norm is
 height$^2\times$width $\sim\varepsilon^{-2}\cdot\varepsilon=\varepsilon^{-1}$,
@@ -136,14 +136,14 @@ $\mathcal{S}\approx\{\text{low-}k\}$ and $\mathcal{S}^\perp\approx\{\text{high-}
 The achievable error is governed by the **uncancellable** projection
 $\Pi_{\mathcal{S}^\perp}f$ (companion note §2.4). Consequently a forcing whose
 spectrum is **tilted to high $k$** — exactly what §I.3 says $\mathcal{L}g$ is —
-lands predominantly in $\mathcal{S}^\perp$ and dominates the error, whereas a
+lies predominantly in $\mathcal{S}^\perp$ and dominates the error, whereas a
 **low-$k$** forcing is cancellable.
 
 ---
 
 ## Part II — Specialisation to the backward heat equation and the call
 
-### II.1 Problem and the payoff kink
+### II.1 Problem and the payoff first-derivative discontinuity
 
 Backward heat operator $\mathcal{P}=\partial_t+\mathcal{L}$,
 $\mathcal{L}=\tfrac{\sigma^2}{2}\partial_{xx}$, so $2p=2$ ($p=1$); coordinate
@@ -154,7 +154,7 @@ $$
 g(x)\simeq K\,(x-x^\star)^+ \quad\text{near }x^\star,
 $$
 
-a **kink**: $g$ is continuous, $g'(x)=e^x\mathbf 1_{x>x^\star}$ jumps by
+a **first-derivative discontinuity**: $g$ is continuous, $g'(x)=e^x\mathbf 1_{x>x^\star}$ jumps by
 $e^{x^\star}=K$ at the strike, and
 
 $$
@@ -183,7 +183,7 @@ hence the binding term for the error.
 
 ### II.3 Smoothing: the $\varepsilon^{-1}$ floor and softplus vs Chen–Mangasarian
 
-The two extensions are mollifiers of the kink at scale $\varepsilon$:
+The two extensions are mollifiers of the first-derivative discontinuity at scale $\varepsilon$:
 
 - **softplus**, $\tfrac1\beta\log(1+e^{\beta z})$ smoothing of $z^+$, effective
   $\varepsilon\sim1/\beta$;

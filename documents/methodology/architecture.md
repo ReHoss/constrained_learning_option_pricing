@@ -90,7 +90,7 @@ This choice (i) satisfies the terminal condition exactly, (ii) captures the $\sq
 
 An alternative is $g_2(s,t) = P^{\text{BS}}(s, K, r, \sigma, \tau)$, the **exact** Black-Scholes European put price. This is smoother (fully analytic) but does not explicitly decompose the $\sqrt{\tau}$ singular behaviour.
 
-A third option is $g_2(s,t) = \bar{p}^{\mathrm{BS02}}(s, K, \tau, r, \sigma)$, the **Bjerksund–Stensland (2002) one-step American put approximation**. Unlike the European anchors above, the BS-2002 approximation contains a flat exercise boundary and a $C^0$ kink at the approximate early-exercise trigger $s^*$, absorbing the dominant singularity of the true American solution into $g_2$ analytically. The key consequence is that the BSM operator applied to $g_2$ is *not* zero ($\mathcal{F}(g_2) \neq 0$), producing a non-homogeneous PDE source term that the network must compensate for. However, because the kink in $\partial_s g_2$ at $s^*$ topologically aligns with the kink in the target American/Bermudan value function, the residual $\tilde{u}_\theta = V^{\mathrm{target}} - g_2$ is $C^1$ (or smoother) across $s^*$, yielding a much better-conditioned optimisation landscape for the neural network.
+A third option is $g_2(s,t) = \bar{p}^{\mathrm{BS02}}(s, K, \tau, r, \sigma)$, the **Bjerksund–Stensland (2002) one-step American put approximation**. Unlike the European anchors above, the BS-2002 approximation contains a flat exercise boundary and a $C^0$ first-derivative discontinuity at the approximate early-exercise trigger $s^*$, absorbing the dominant singularity of the true American solution into $g_2$ analytically. The key consequence is that the BSM operator applied to $g_2$ is *not* zero ($\mathcal{F}(g_2) \neq 0$), producing a non-homogeneous PDE source term that the network must compensate for. However, because the first-derivative discontinuity in $\partial_s g_2$ at $s^*$ topologically aligns with the first-derivative discontinuity in the target American/Bermudan value function, the residual $\tilde{u}_\theta = V^{\mathrm{target}} - g_2$ is $C^1$ (or smoother) across $s^*$, yielding a better-conditioned optimisation landscape for the neural network.
 
 The BS-2002 put approximation is implemented via the **put–call transformation** (Eq. 19 of the paper):
 
@@ -108,7 +108,7 @@ Code:
 
 ### 2.2 Bermuda options — singularity extraction ansatz
 
-**Notation convention:** We use a bar over the network parameters, $\bar{\theta}$, to denote weights that are frozen (i.e., already trained in a previous stage and no longer updated during the current optimization step).
+**Notation convention:** A bar over the network parameters, $\bar{\theta}$, denotes weights that are frozen (i.e., already trained in a previous stage and no longer updated during the current optimization step).
 
 For the sub-interval $[t_{k-1}, t_k]$ the terminal condition is
 
@@ -121,12 +121,12 @@ $$
 - For $s < s^*$ (exercise region, put): $\partial V^{\mathrm{Berm}}_{\bar{\theta}}/\partial s = -1$ (constant)
 - For $s > s^*$ (hold region): $\partial V^{\mathrm{Berm}}_{\bar{\theta}}/\partial s = \Delta_A(s)$, the hold delta — a smooth but non-constant function of $s$
 
-The first derivative has a jump discontinuity at $s^*$ of magnitude $[\![\partial_s V^{\mathrm{Berm}}_{\bar{\theta}}]\!]_{s^*} = \Delta_A(s^*) + 1$. Consequently, $\partial^2 V^{\mathrm{Berm}}_{\bar{\theta}}/\partial s^2$ contains a **Dirac distribution** at $s^*$. If a neural network is forced to learn this boundary condition, the infinite curvature causes the BSM PDE residual to explode (stiffness), destroying the optimisation.
+The first derivative has a jump discontinuity at $s^*$ of magnitude $[\![\partial_s V^{\mathrm{Berm}}_{\bar{\theta}}]\!]_{s^*} = \Delta_A(s^*) + 1$. Consequently, $\partial^2 V^{\mathrm{Berm}}_{\bar{\theta}}/\partial s^2$ contains a **Dirac distribution** at $s^*$. If a neural network is forced to learn this boundary condition, the infinite curvature causes the BSM PDE residual to diverge (stiffness), destroying the optimisation.
 
 **Solution (@RH: not sure it works): singularity extraction ansatz.**
-Instead of smoothing $V^{\mathrm{Berm}}_{\bar{\theta}}$ with an interpolant (which either introduces oscillations or drops the diffusion term), we analytically extract the singularity.
+Instead of smoothing $V^{\mathrm{Berm}}_{\bar{\theta}}$ with an interpolant (which either introduces oscillations or drops the diffusion term), the singularity is analytically extracted.
 
-The Stage B network must learn the **full price function** $V_\theta(s, t)$ on the sub-interval $[t_{k-1}, t_k]$, subject to the terminal condition $V_\theta(s, t_k) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_k)$. Note that $V_\theta(s, t)$ is a function of both $s$ and $t$, whereas $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_k)$ is only defined at the single time $t_k$. The kink in $V^{\mathrm{Berm}}_{\bar{\theta}}$ propagates into $V_\theta$ through the terminal condition, causing the BSM PDE residual $\mathcal{F}[V_\theta]$ to explode near $s^*$.
+The Stage B network must learn the **full price function** $V_\theta(s, t)$ on the sub-interval $[t_{k-1}, t_k]$, subject to the terminal condition $V_\theta(s, t_k) = V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_k)$. Note that $V_\theta(s, t)$ is a function of both $s$ and $t$, whereas $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_k)$ is only defined at the single time $t_k$. The first-derivative discontinuity in $V^{\mathrm{Berm}}_{\bar{\theta}}$ propagates into $V_\theta$ through the terminal condition, causing the BSM PDE residual $\mathcal{F}[V_\theta]$ to diverge near $s^*$.
 
 This full price $V_\theta(s, t)$ is decomposed as
 
@@ -134,7 +134,7 @@ $$
 V_\theta(s, t) = v(s, t) + \tilde{u}_\theta(s, t)
 $$
 
-where $v(s, t)$ is a **fictitious European put** designed to perfectly absorb the $C^0$ kink:
+where $v(s, t)$ is a **fictitious European put** designed to absorb the $C^0$ first-derivative discontinuity exactly:
 
 $$
 v(s, t) = c \cdot P^{\text{BS}}(s,\; s^*,\; r,\; \sigma,\; t_k - t)
@@ -165,7 +165,7 @@ TODO: why $g_2$ is time-independent?
 Note (Remy): Here it is enough to have a function that maps the derivative for the case $t=t_k$.
 
 
-**PDE structure and operator bypass.** Because the BSM operator $\mathcal{L}$ is linear and $v$ is an exact Black-Scholes solution ($\mathcal{L}v = 0$), analytically we have
+**PDE structure and operator bypass.** Because the BSM operator $\mathcal{L}$ is linear and $v$ is an exact Black-Scholes solution ($\mathcal{L}v = 0$), the following identity holds analytically:
 
 $$
 \mathcal{L}(V_\theta) = \mathcal{L}(v) + \mathcal{L}(\tilde{u}_\theta) = 0 + \mathcal{L}(\tilde{u}_\theta) = \mathcal{L}(\tilde{u}_\theta)
@@ -173,7 +173,7 @@ $$
 
 where $V_\theta$ is the full price function and $\tilde{u}_\theta$ is the smooth residual.
 
-However, in a discrete computational graph, relying on automatic differentiation to compute $\mathcal{L}(v)$ causes a fatal numerical instability. As $t \to t_k^-$, the derivatives of the fictitious put diverge to infinity at the kink $s^*$ ($\partial_{ss}v \to +\infty$, $\partial_t v \to -\infty$). When PyTorch sums these massive opposing terms, catastrophic floating-point cancellation occurs, producing large numerical noise instead of exactly `0.0`.
+However, in a discrete computational graph, relying on automatic differentiation to compute $\mathcal{L}(v)$ causes a fatal numerical instability. As $t \to t_k^-$, the derivatives of the fictitious put diverge to infinity at the first-derivative discontinuity $s^*$ ($\partial_{ss}v \to +\infty$, $\partial_t v \to -\infty$). When PyTorch sums these large opposing terms, catastrophic floating-point cancellation occurs, producing large numerical noise instead of exactly `0.0`.
 
 To solve this, the **operator bypass** (flag `--bypass-v`, `BermudaETCNN` only) drops only $v$ from the PDE loss and keeps $g_2$ in the computational graph.  This mechanism is **specific to the Bermudan singularity-extraction ansatz**: `AmericanPutETCNN` has no additive fictitious put $v$ in its trial solution ($V_\theta^A = g_1 u_\theta + g_2$ with no separate singular component), so the operator bypass is neither defined nor needed for the European or Stage A problems.
 
@@ -218,8 +218,8 @@ The interpolation module provides three interpolators for general use, though th
 
 | Interpolator | Regularity | Scope | Shape-preserving | Use case |
 |-------------|-----------|-------|-----------------|----------|
-| `CubicSplineInterpolator` | $C^2$ | Global | No | Smooth data without kinks |
-| `PchipInterpolator` | $C^1$ | Local | Yes | Extracted residual, data with kinks |
+| `CubicSplineInterpolator` | $C^2$ | Global | No | Smooth data without first-derivative discontinuities |
+| `PchipInterpolator` | $C^1$ | Local | Yes | Extracted residual, data with first-derivative discontinuities |
 | `PiecewiseLinearInterpolator` | $C^0$ | Local | Yes | Benchmarking only (drops diffusion) |
 
 Code: `learning_option_pricing/pricing/interpolation.py`.
@@ -374,7 +374,7 @@ Where:
 | Option type | $g_2$ at terminal date | TC satisfied |
 |-------------|------------------------|--------------|
 | European / American | Closed-form analytic ($V_1^e + V_2^e$ or $P^{\text{BS}}$) | **Exactly everywhere** — $g_1(s,T)=0$ and $g_2(s,T) = \Phi(s)$ at all $s$, regardless of network weights. $\mathcal{L}_{tc} \equiv 0$. |
-| Bermudan (each sub-interval) | PCHIP interpolation of the tabulated residual $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_k) - v(s, t_k)$ on $n_{\text{grid}}$ nodes | **Exactly at the $n_{\text{grid}}$ interpolation nodes** (PCHIP is a node-interpolating scheme); **approximately between nodes** (PCHIP error $O(h^2)$ near the kink at $s^*$, $O(h^4)$ on $C^2$ segments). |
+| Bermudan (each sub-interval) | PCHIP interpolation of the tabulated residual $V^{\mathrm{Berm}}_{\bar{\theta}}(s, t_k) - v(s, t_k)$ on $n_{\text{grid}}$ nodes | **Exactly at the $n_{\text{grid}}$ interpolation nodes** (PCHIP is a node-interpolating scheme); **approximately between nodes** (PCHIP error $O(h^2)$ near the first-derivative discontinuity at $s^*$, $O(h^4)$ on $C^2$ segments). |
 
 More precisely, at $t = t_k$ the Bermudan trial solution evaluates to
 
@@ -393,7 +393,7 @@ At a node $s_i$ this equals $V^{\mathrm{Berm}}_{\bar{\theta}}(s_i, t_k)$ exactly
 
 When using the singularity extraction ansatz (Section 2.2), the analytical interpolant $g_2(s)$ must remain coupled in the interior PDE evaluation to preserve the physical time diffusion: $U_{\mathrm{pde}} = g_1 u_\theta + g_2$. However, differentiating the non-smooth $\mathcal{C}^1$ PCHIP knot at the exercise boundary $s^*$ generates a localized gradient explosion that destabilizes the neural network.
 
-To resolve this, we implement an inverted Gaussian spatial weighting function $w(s)$ within the interior PDE loss $\mathcal{L}_f$. The spatial weight tensor $W$ is evaluated at the spatial collocation points $s$:
+To resolve this, an inverted Gaussian spatial weighting function $w(s)$ is implemented within the interior PDE loss $\mathcal{L}_f$. The spatial weight tensor $W$ is evaluated at the spatial collocation points $s$:
 
 $$
 w(s) = 1 - (1 - \epsilon_w) \exp\left( - \frac{(s - s^*)^2}{2\sigma_w^2} \right)

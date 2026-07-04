@@ -92,13 +92,13 @@ $$
 $$
 
 The floor is exactly $\mathcal{L}$ evaluated at $R_\theta = 0$ — i.e. the loss of
-the **untrained** ansatz. It ignores that the optimiser *moves* $R_\theta$.
+the **untrained** ansatz. It ignores that the optimiser *varies* $R_\theta$.
 
 ### 2.3 What the optimiser can actually achieve
 
 Let $\mathcal{R} = \{\mathcal{P}[(1-\lambda)\Phi_\theta] : \theta\in\Theta\}$ be
 the set of network-reachable forcings — the residual fields the network can
-*reach* by varying its weights $\theta$. The trained loss is the squared
+*attain* by varying its weights $\theta$. The trained loss is the squared
 $L^2(\mu)$-distance from the target $-f$ to that set,
 
 $$
@@ -163,7 +163,7 @@ denotes the $L^2(\mu)$-orthogonal projector onto $\mathcal{S}^\perp$.)
 
 ### 2.4 Error is set by the uncancellable residual, not the floor
 
-Two distinct quantities must be related here, and they live on different sides of
+Two distinct quantities must be related here, and they lie on different sides of
 the PDE:
 
 - $\text{rel }L^2 = \|\hat u_\theta - u^\star\|/\|u^\star\|$ — the relative error
@@ -224,11 +224,11 @@ $$
 
 requires two further, *non-proven* assumptions:
 
-1. **Tightness.** The stability bound is not wildly loose, i.e. $\|e\| \approx
+1. **Tightness.** The stability bound is not excessively loose, i.e. $\|e\| \approx
    C\sqrt{\mathcal{L}^\star}$ rather than $\|e\| \ll C\sqrt{\mathcal{L}^\star}$. A
    residual concentrated in the near-null-space of $\mathcal{P}$ could make the
-   error much larger than the bound's converse suggests; we assume we are not in
-   that regime.
+   error substantially larger than the bound's converse suggests; the assumption
+   made here is that this regime does not hold.
 2. **Common constant.** Across the objects being *compared* — the four forms at
    fixed problem (§1b) — the operator $\mathcal{P}$, the domain, and the
    collocation measure $\mu$ are shared, so the stability constant $C$ and the
@@ -281,7 +281,8 @@ $$
 - $f_{\rm op} \propto \mathcal{L}g$ carries the profile of the **operator applied
   to $g$**. A degree-$2m$ elliptic $\mathcal{L}$ multiplies a Fourier mode of
   wavenumber $k$ by $\sim |k|^{2m}$ — it **amplifies high frequencies**. For a
-  near-kinked $g$ (the call payoff), $\mathcal{L}g$ is a sharp spike ⟹
+  $g$ whose first derivative is nearly discontinuous (the call payoff),
+  $\mathcal{L}g$ is a sharp spike ⟹
   high-frequency ⟹ lies in $\mathcal{S}^\perp$ ⟹ **uncancellable** ⟹ dominates
   $\mathcal{L}^\star$.
 
@@ -308,7 +309,7 @@ achieve a **smaller error** than a form with a lower but spiky floor. This is
 exactly the `call_cm` inversion (`hard_convex_linear`: floor $943$, error
 $0.0095$, vs `hard_constant`: floor $43$, error $0.0144$).
 
-**Crisp statement.** The floor is $\|\mathcal{P}\Psi\|^2$; the achievable error is
+**Precise statement.** The floor is $\|\mathcal{P}\Psi\|^2$; the achievable error is
 governed by $\|\Pi_{\mathcal{S}^\perp}\mathcal{P}\Psi\|^2$ — the high-frequency,
 spectrally **uncancellable** part of the forcing. The floor predicts accuracy
 *across problems at fixed form* (where the cancellable fraction is roughly
