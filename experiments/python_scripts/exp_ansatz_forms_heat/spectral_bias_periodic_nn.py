@@ -168,7 +168,7 @@ def main(argv=None) -> int:
     # restrict to wavenumbers carrying forcing (the datum band); smooth the ratio
     # with a short running mean, then read the effective soft cutoff as the first
     # in-band wavenumber where the smoothed cancellation ratio reaches 1/2.
-    band = fpow > 1e-2 * fpow.max()
+    band = fpow > 1e-5 * fpow.max()
     kmax_band = int(k[band].max()) if band.any() else int(k[-1])
     w = 7
     rsm = np.convolve(np.clip(ratio, 0.0, 1.5), np.ones(w) / w, mode="same")
