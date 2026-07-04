@@ -184,7 +184,7 @@ def smooth_call_payoff(x: torch.Tensor, K: float, *, beta: float) -> torch.Tenso
 
     which is ``C^\infty`` and converges uniformly to ``(e^x - K)^+`` as
     ``beta -> infinity`` (the ``-log 2 / beta`` shift makes the smoothing pass
-    through the origin of the kink).  This matches the construction used in
+    through the origin of the first-derivative discontinuity).  This matches the construction used in
     ``exp_singularity_european_call``.
 
     Args:
@@ -280,7 +280,7 @@ def heat_propagate(
         t_terminal: Terminal time of the stage.
         sigma:      Diffusion scale.
         y_lo, y_hi: Quadrature support (must comfortably cover where ``g`` and the
-                    Gaussian mass live).
+                    Gaussian mass are supported).
         n_quad:     Number of quadrature nodes.
     """
     y = torch.linspace(y_lo, y_hi, n_quad, dtype=x.dtype, device=x.device)
@@ -426,7 +426,7 @@ def smooth_call_payoff_cm_time(
         K:    Strike.
         T:    Terminal time.
         eps0: Bandwidth at ``t = 0`` (price units); ``eps0 = 0`` recovers the
-              exact kinked payoff at all times.
+              exact non-differentiable payoff at all times.
     """
     diff = torch.exp(x) - K
     eps = eps0 * (T - t) / T

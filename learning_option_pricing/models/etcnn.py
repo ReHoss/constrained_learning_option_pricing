@@ -137,7 +137,7 @@ class ETCNN(nn.Module):
     def forward_neural_manifold(self, x: torch.Tensor) -> torch.Tensor:
         """Return strictly the neural manifold component g1(s,t) · u_θ(s,t).
 
-        Drops g2 entirely so that the BSM operator sees only the smooth,
+        Drops g2 entirely so that the BSM operator acts only on the smooth,
         network-learned part of the solution.  Used by BermudaETCNN.forward_pde
         to implement the Ultimate Operator Bypass.
 
@@ -174,7 +174,7 @@ class AmericanPutETCNN(ETCNN):
     - ``"bs2002"``: $g_2 = \bar{p}^{\mathrm{BS02}}(s, K, \tau, r, \sigma)$,
       the Bjerksund–Stensland (2002) one-step American put approximation.
       Unlike the European anchors, this contains a flat exercise boundary
-      and a $C^0$ kink at $s^*$, absorbing the dominant singularity of the
+      and a $C^0$ first-derivative discontinuity at $s^*$, absorbing the dominant singularity of the
       true American solution.  The BSM operator applied to $g_2$ is *not*
       zero ($\mathcal{F}(g_2) \neq 0$), producing a non-homogeneous source
       term that the network compensates for.
@@ -323,7 +323,7 @@ class BermudaETCNN(nn.Module):
     where
 
     * $v(s, t) = c \cdot P^{\text{BS}}(s, s^*, r, \sigma, t_1 - t)$ is a
-      fictitious European put that analytically absorbs the $C^0$ kink at
+      fictitious European put that analytically absorbs the $C^0$ first-derivative discontinuity at
       the exercise boundary $s^*$.  It is an exact BSM solution
       ($\mathcal{L}v = 0$).
     * $\tilde{u}_\theta$ is a standard :class:`ETCNN` whose $g_2$ equals the

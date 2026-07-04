@@ -4,7 +4,7 @@ At an exercise date $t_1$, the intermediate terminal condition
 
 $$V^{\\mathrm{Berm}}_\\theta(s, t_1) = \\max(\\Phi(s), \\tilde{u}^{(A)}_\\theta(s, t_1))$$
 
-has a $C^0$ non-differentiable kink at the optimal exercise boundary $s^*$.
+has a $C^0$ first-derivative discontinuity at the optimal exercise boundary $s^*$.
 The first spatial derivative jumps discontinuously, and the second derivative
 (Gamma) contains a Dirac delta singularity.  Forcing a standard neural network
 to learn this boundary causes the PDE residual to explode.
@@ -190,7 +190,7 @@ class FictitiousEuropeanPut(nn.Module):
     $$v(s, t) = c \cdot P^{\text{BS}}(s,\; s^*,\; r,\; \sigma,\; t_1 - t)$$
 
     This is an exact solution to the BSM PDE ($\mathcal{L}v = 0$), designed
-    to absorb the $C^0$ derivative kink in the Bermudan intermediate
+    to absorb the $C^0$ first-derivative discontinuity in the Bermudan intermediate
     condition at the exercise boundary $s^*$.
 
     At maturity $t = t_1$: $v(s, t_1) = c \cdot (s^* - s)^+$.
