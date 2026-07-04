@@ -2059,7 +2059,7 @@ class _VPINNLossForwardLogS_ATM(torch.nn.Module):
     integrated" weak residual.  This variant replaces the basis with a
     single Gaussian bump centred at ``x_atm = ln K`` with bandwidth ``h``,
     L² -normalised over [X_LO, X_HI].  The result is a localized weak
-    residual that probes the kink/ATM region only, providing the fair
+    residual that probes the first-derivative-discontinuity/ATM region only, providing the fair
     weak-form analog of the at-ATM strong-form residual.
 
     Bandwidth ``h`` is chosen small enough that the boundary terms from
@@ -2194,15 +2194,15 @@ def _compute_residual_spectrum_profile(
         The flat spectrum is consistent with a near-Dirac contribution to
         $\partial_{xx} V$ at $x = \ln K$: the hard-IC ansatz
         $V = g_1\,\mathrm{resnet} + g_2$ with $g_2 = (\mathrm{e}^x - K)^+$
-        is $C^0$ only — the kink in $g_2$ propagates into $V$ at every $t$,
+        is $C^0$ only — the first-derivative discontinuity in $g_2$ propagates into $V$ at every $t$,
         and a Dirac in $\partial_{xx} V$ has a flat Fourier spectrum.
-        The weak form sidesteps this via IBP (it never touches
+        The weak form avoids this via IBP (it never involves
         $\partial_{xx} V$), so VPINN can train successfully despite the
         underlying strong-form residual being broadband-large.
 
       * Strong-form PINN (naive / truncated / smooth): spectrum is flat AND
         small ($\sim 10^{-6}$) across all $k$, because minimising the
-        pointwise $|\mathcal{F}[V]|^2$ forces the network to fight the
+        pointwise $|\mathcal{F}[V]|^2$ forces the network to counteract the
         Dirac contribution explicitly — at the cost of distorting the
         global solution (rel_L2 = 0.18 vs VPINN's 0.026).
 
@@ -2218,7 +2218,7 @@ def _compute_residual_spectrum_profile(
       * ``residual_spectrum_x_nodes``  shape (n_quad,) — Gauss-Legendre nodes
       * ``residual_spectrum_F_x``      shape (n_tau, n_quad) — the *physical-
         space* residual ``F[V](x, T-τ)`` evaluated at those nodes (NOT squared,
-        so the sign at the kink is visible).  Plotted as the bottom row of
+        so the sign at the first-derivative discontinuity is visible).  Plotted as the bottom row of
         ``residual_spectrum.png`` so the reader can see *where* in $x$ the
         spectral mass comes from.
     """
@@ -2512,7 +2512,7 @@ _FORMULA_RESIDUAL_SPECTRUM = "\n".join([
     _FORMULA_OP,
     r"Top-row integral and bottom-row pointwise samples are over the FULL domain"
     r" $x\in[X_{lo},X_{hi}]$ via Gauss-Legendre quadrature ($n_{quad}=1024$).",
-    r"With the C$^0$ hard-IC ansatz ($g_2$ has a kink at $x=\ln K$), $\partial_{xx}\hat V$ contains a near-Dirac at $\ln K$,"
+    r"With the C$^0$ hard-IC ansatz ($g_2$ has a first-derivative discontinuity at $x=\ln K$), $\partial_{xx}\hat V$ contains a near-Dirac at $\ln K$,"
     r" whose sine coefficient is $\sin(k\pi\alpha)$ with $\alpha=(\ln K-X_{lo})/(X_{hi}-X_{lo})$"
     r" — gives the $\sin^2(k\pi\alpha)$ oscillation envelope (top row) on top of a smooth resnet baseline,"
     r" and a localised spike at $x=\ln K$ visible directly in the bottom row.",
@@ -2631,7 +2631,7 @@ def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
     ----------
     payoff_type :
         ``"exact"`` (default) sets $g_2(x, t) = (e^x - K)^+$ — the exact
-        European-call payoff with a kink at $x = \ln K$.  Time-constant.
+        European-call payoff with a first-derivative discontinuity at $x = \ln K$.  Time-constant.
         ``"smooth"`` sets $g_2(x, t) = \mathrm{softplus}(e^x - K, \beta) -
         \log 2 / \beta$, the $C^\infty$ spatial smoothing of the payoff
         (still time-constant); pick its sharpness via ``beta``.
@@ -2641,7 +2641,7 @@ def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
         Zhang–Guo–Lu (2026) discounted-strike ansatz.  The smoothing
         kernel under the sqrt is $2SK(1 - e^{-r(T-t)})$ which vanishes
         at $t = T$; $\epsilon_{\mathrm{safe}}$ keeps autograd safe at
-        the kink $(K, T)$ at the cost of a $0.5$-bias at $S = K$.
+        the first-derivative discontinuity $(K, T)$ at the cost of a $0.5$-bias at $S = K$.
         ``beta``, ``cm_eps`` ignored.
         ``"cm_static"`` sets $g_2(x, t) = \frac{1}{2}\left(S - K +
         \sqrt{(S-K)^2 + \varepsilon^2}\right)$ — Chen–Mangasarian
@@ -2654,7 +2654,7 @@ def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
         with $\varepsilon(t) = \varepsilon_0 \cdot (T-t)/T$ vanishing
         linearly at maturity ($\varepsilon_0 = $ ``cm_eps``).  Same
         $\epsilon_{\mathrm{safe}} = 1$ trick as ``smooth_t`` to bound
-        the kink derivative at $(K, T)$, so $t = T$ behaviour matches
+        the derivative near the first-derivative discontinuity $(K, T)$, so $t = T$ behaviour matches
         ``smooth_t`` exactly while interior smoothing is *weaker* than
         ``smooth_t`` (kernel $\varepsilon(t)^2$ vs $2SK(1 - e^{-rt})$).
         ``beta`` ignored.
@@ -2692,23 +2692,26 @@ def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
         # coordinates: x = ln(S), so S = e^x.  The radicand
         #     S^2 + K^2 - 2 S K e^{-r(T-t)}
         # rearranges to (S - K)^2 + 2 S K (1 - e^{-r(T-t)}), which is the
-        # original kink-squared term plus a strictly positive smoothing
+        # original $(S-K)^2$ term plus a strictly positive smoothing
         # correction that vanishes at t = T (i.e. T - t = 0).
         #
         # NUMERICAL FIX (2026-05-13).  At (S, t) = (K, T) the radicand is
         # exactly zero, so sqrt's derivative is f' / (2 sqrt 0) = inf and
         # autograd produces NaN.  Even one collocation point landing near
-        # (K, T) poisons the batch mean and Adam blows the whole model up
-        # within a few iterations.  We add a tiny constant epsilon under
-        # the sqrt to bound the kink derivative:
+        # (K, T) poisons the batch mean and Adam drives the whole model to
+        # divergence within a few iterations.  A tiny constant epsilon is
+        # added under the sqrt to bound the derivative near the
+        # first-derivative discontinuity:
         #     |dg2/dtau|  ~  K^2 r / sqrt(epsilon)
         # With epsilon = 1 (price-squared units, so eps_S ~ 1 = 1% of K
-        # in price units), the kink derivative is bounded by ~K^2 r = 200
+        # in price units), the derivative near the first-derivative
+        # discontinuity is bounded by ~K^2 r = 200
         # and Adam is stable.  Bias is g2(K, T) = 0.5 (vs exact 0) but
         # decays to < 0.01 once |S - K| > 1, so the impact on the
-        # binomial-tree comparison is negligible — the kink is a measure-
-        # zero set anyway.  ``clamp(min=0.0)`` is belt-and-braces against
-        # fp32 negativity near the kink.
+        # binomial-tree comparison is negligible — the first-derivative
+        # discontinuity is a measure-zero set anyway.  ``clamp(min=0.0)``
+        # is belt-and-braces against fp32 negativity near the
+        # first-derivative discontinuity.
         K_const = float(K)
         r_const = float(r)
         T_const = float(T)
@@ -2729,7 +2732,7 @@ def _build_hard_ic_ansatz_pinn(payoff_type: str = "exact",
         # Chen-Mangasarian static hyperbolic mollifier.  Replaces |S - K|
         # with sqrt((S-K)^2 + eps^2), giving a globally C^infty payoff.
         # The smoothing scale ``eps`` is *constant* in time, so g_2(S, T)
-        # is biased everywhere (not just at the kink) by ~eps/2 around
+        # is biased everywhere (not just at the first-derivative discontinuity) by ~eps/2 around
         # S = K.  Gamma = d^2 g_2 / dS^2 is the bell-shaped bounded
         # function eps^2 / (2 ((S-K)^2 + eps^2)^{3/2}) with peak height
         # 1 / (2 eps) at S = K.
@@ -2965,8 +2968,8 @@ def _plot_gt_per_variant(res: dict, vdir: Path) -> None:
 
 # Variants to exclude from all comparison figures.  Data and checkpoints are
 # still saved (training runs normally) — only the visual output is suppressed.
-# Single source of truth lives in `_ablation_catalogue` so the torch-free
-# init/launcher tooling sees the same exclusion list.
+# Single source of truth resides in `_ablation_catalogue` so the torch-free
+# init/launcher tooling reads the same exclusion list.
 _PLOT_EXCLUDED_VARIANTS = _cat._PLOT_EXCLUDED_VARIANTS
 
 
@@ -3767,9 +3770,9 @@ def _plot_diagnostics(results: list[dict], ablation_dir: Path) -> None:
       $|\\hat{\\mathcal{F}}_k(\\tau)|^2$ of the strong-form PDE residual, plotted
       on log-y as a function of mode index $k$, one panel per τ slice in
       ``_DIAGNOSTIC_TAU_SLICES``.  A vertical line at $k=20$ marks the VPINN
-      training basis size.  Variants whose residual spectrum sits at floor
-      for $k \\le 20$ but jumps sharply for $k > 20$ are the ones VPINN
-      "couldn't see" during training.
+      training basis size.  Variants whose residual spectrum lies at the floor
+      for $k \\le 20$ but increases sharply for $k > 20$ are the ones the
+      VPINN training basis cannot represent.
     """
     diag_dir = ablation_dir / "comparison_diagnostics"
     valid = [r for r in results
@@ -3823,7 +3826,8 @@ def _plot_diagnostics(results: list[dict], ablation_dir: Path) -> None:
     # ── Row 1 — physical-space view: F[V](x, T-τ) vs x ─────────────────────
     # Plotted with symlog y so both the broad-band floor *and* the near-Dirac
     # spike at x = ln K stay visible without one swamping the other; signs
-    # are preserved (the residual flips around the kink under hard-IC).
+    # are preserved (the residual changes sign across the first-derivative
+    # discontinuity under hard-IC).
     if have_physical:
         x_nodes_arr = np.asarray(first_gt["residual_spectrum_x_nodes"])
         # Pick a symlog threshold from the data so the linear band sits just
@@ -3856,12 +3860,12 @@ def _plot_diagnostics(results: list[dict], ablation_dir: Path) -> None:
         r"Diagnostic: PDE residual $\mathcal{F}[\hat V]$ — spectral (top) "
         r"and physical-space (bottom) views",
         r"Top: $|\hat{\mathcal{F}}_k(\tau)|^2$ vs sine mode index $k$ "
-        r"(flat $\Rightarrow$ near-Dirac $\partial_{xx}V$ at the kink).  "
+        r"(flat $\Rightarrow$ near-Dirac $\partial_{xx}V$ at the first-derivative discontinuity).  "
         r"Bottom: $\mathcal{F}[\hat V](x,\,T-\tau)$ vs $x$ — locates the spectral mass.",
     ] if have_physical else [
         r"Diagnostic: Fourier sine spectrum of $\mathcal{F}[\hat V]$, "
         r"integrated over the FULL spatial domain $x\in[X_{lo},X_{hi}]$",
-        r"Flat baseline $\Rightarrow$ near-Dirac $\partial_{xx}V$ at the kink; "
+        r"Flat baseline $\Rightarrow$ near-Dirac $\partial_{xx}V$ at the first-derivative discontinuity; "
         r"$\sin^2(k\pi\alpha)$ envelope $\Rightarrow$ Dirac position $\ln K$ relative to domain",
     ]
     fig.suptitle("\n".join(suptitle_lines) + "\n" + _SUPTITLE, fontsize=9)
@@ -4405,7 +4409,7 @@ def main() -> None:
         _log_environment()
         logger.info(f"device={p3.DEVICE}  N_TC={n_tc}  N_F={n_f}")
 
-        # The CLI flag wins over what's recorded in metadata.yaml when both
+        # The CLI flag takes precedence over what's recorded in metadata.yaml when both
         # are provided.  When --num-iterations is omitted, fall back to the
         # value the init step persisted (which itself may be null = use
         # per-variant defaults).

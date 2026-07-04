@@ -1,13 +1,13 @@
 r"""Empirical confirmation of the forcing-floor scaling law (Proposition 8.5).
 
-The operator-channel floor of a kink-mollified datum obeys, for a second-order
-generator ($\mathcal{L}^X=\tfrac{\sigma^2}{2}\partial_{xx}$, order $2p=2$) acting on
-a kink (regularity index $r=1$),
+The operator-channel floor of a mollified first-derivative discontinuity obeys, for
+a second-order generator ($\mathcal{L}^X=\tfrac{\sigma^2}{2}\partial_{xx}$, order
+$2p=2$) acting on a first-derivative discontinuity (regularity index $r=1$),
 
     floor(eps) = || (sigma^2/2) g_eps'' ||^2  ~  eps^{-(4p-2r-1)} = eps^{-1}.
 
 Both the softplus (effective width ~ 1/beta) and the Chen--Mangasarian (width eps)
-smoothings of the call kink are swept; the operator-channel energy is computed by
+smoothings of the call first-derivative discontinuity are swept; the operator-channel energy is computed by
 exact second differentiation on a grid refined to resolve the spike
 (dx <= eps/8), and the log-log slope is fitted. The prediction is a slope of -1.
 
@@ -46,7 +46,7 @@ def _operator_channel_energy(g_of_x, eps: float) -> float:
     """Return the integral of ((sigma^2/2) g'')^2 over a window around the strike,
     isolating the singular (spike) part of the operator channel.
 
-    The mollified kink is a spike in g'' whose width in the log-price coordinate
+    The mollified first-derivative discontinuity is a spike in g'' whose width in the log-price coordinate
     is ~ eps/K (the smoother acts on z = e^x - K, and z ~ K (x - x_strike) near the
     strike, so a width-eps feature in z is width-eps/K in x). The window is taken
     proportional to eps/K so the integral is spike-dominated rather than
@@ -119,7 +119,7 @@ def main(argv=None) -> int:
     fig.tight_layout()
     finalize_figure(
         fig, out / "forcing_floor_scaling.png", legends=[leg], axes=[ax],
-        formula=(r"kink ($r=1$) under a second-order operator ($p=1$): "
+        formula=(r"first-derivative discontinuity ($r=1$) under a second-order operator ($p=1$): "
                  r"$\|\mathcal{L}^X g_\varepsilon\|^2\sim\varepsilon^{-(4p-2r-1)}=\varepsilon^{-1}$; "
                  r"both smoothers measured on grids refined to resolve the spike"),
         formula_fontsize=8)

@@ -1124,7 +1124,7 @@ def bermudan_problem(
             ``"pchip"`` uses a C^1 PCHIP interpolant;
             ``"linear"`` uses the original C^0 piecewise-linear interpolant.
         put_ansatz: If True, use the singularity extraction ansatz to
-            decompose U_B = v + u_tilde, removing the C^0 kink at s*.
+            decompose U_B = v + u_tilde, removing the C^0 first-derivative discontinuity at s*.
             Default False (standard interpolation approach).
         weight_decay: L2 regularization penalty for Adam.
         load_etcnn_a: Path to pre-trained ETCNN_A model to skip Stage A training.
@@ -1964,9 +1964,9 @@ def bermudan_problem(
     #     need to fix the extra dimensions — not applicable here.
     #   Check 3 — Physical: for a put option the exercise boundary satisfies
     #     s* < K when r > 0. If r <= 0 it can be optimal to never exercise early,
-    #     making s* = 0 and the PDE residual uniform (no kink to reveal).
+    #     making s* = 0 and the PDE residual uniform (no first-derivative discontinuity to reveal).
     #   Check 4 — Domain coverage: s* must lie inside [S_EVAL_LO, S_EVAL_HI] for
-    #     the heatmap to capture the kink region.
+    #     the heatmap to capture the first-derivative-discontinuity region.
     logger.info("Running Plot B9b — Spatio-temporal PDE residual heatmap ...")
 
     # Check 1
@@ -1982,7 +1982,7 @@ def bermudan_problem(
     if _b9b_ok and r <= 0.0:
         logger.warning(
             "[WARN] Plot B9b — r <= 0: early exercise may never be optimal for "
-            "a put (s* → 0), so the kink region may not appear in the heatmap. "
+            "a put (s* → 0), so the first-derivative-discontinuity region may not appear in the heatmap. "
             f"r = {r}. Proceeding anyway."
         )
 
@@ -1992,7 +1992,7 @@ def bermudan_problem(
             logger.warning(
                 f"[WARN] Plot B9b — exercise boundary s* = {s_star:.2f} lies "
                 f"outside evaluation domain [{S_EVAL_LO}, {S_EVAL_HI}]; "
-                "kink may not be visible in the heatmap."
+                "the first-derivative discontinuity may not be visible in the heatmap."
             )
         elif s_star >= K:
             logger.warning(
@@ -2002,7 +2002,7 @@ def bermudan_problem(
         else:
             logger.info(
                 f"  [OK] s* = {s_star:.2f} < K = {K}, inside eval domain — "
-                "kink region will be visible."
+                "first-derivative-discontinuity region will be visible."
             )
 
     if _b9b_ok:
@@ -2231,7 +2231,7 @@ def main():
     parser.add_argument(
         "--put-ansatz", action="store_true",
         help="Enable singularity extraction ansatz for Stage B (default: off). "
-             "Decomposes U_B = v + u_tilde, removing the C^0 kink at s*.",
+             "Decomposes U_B = v + u_tilde, removing the C^0 first-derivative discontinuity at s*.",
     )
     parser.add_argument(
         "--bypass-v", action="store_true",

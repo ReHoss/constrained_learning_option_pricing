@@ -76,8 +76,8 @@ from learning_option_pricing.utils.run_context import script_data_dir
 # Time slices used for Greeks-vs-BT comparison.  Mirrors the
 # ``_GT_TAU_SLICES`` constant in ablation_singularity_logS but expressed as
 # absolute Stage B times in [0, t1] rather than time-to-maturity.  The final
-# slice deliberately sits very close to t1 to expose how each variant
-# behaves near the C0 kink in the intermediate terminal condition.
+# slice deliberately lies very close to t1 to expose how each variant
+# behaves near the C0 first-derivative discontinuity in the intermediate terminal condition.
 # Resolved at module load via lambda to defer access to ``p3.t1`` (which
 # is the canonical t1 value from phase3_training).
 def _build_greeks_t_slices() -> list[float]:
@@ -213,7 +213,7 @@ _FORMULA_METRICS = "\n".join([
 _FORMULA_GREEKS = "\n".join([
     r"$\Delta(S) = \partial_S V(S, 0)$,  $\Gamma(S) = \partial_{SS} V(S, 0)$  (via autograd)",
     r"Reference: $\Delta^{\mathrm{BT}} = \nabla_S V^{\mathrm{BT}}$,  $\Gamma^{\mathrm{BT}} = \nabla_S^2 V^{\mathrm{BT}}$  (centred finite differences on the binomial-tree price curve)",
-    r"BT Gamma is noisy near $S=K$ because the early-exercise kink is sharper than the BT grid; treat as a qualitative reference only",
+    r"BT Gamma is noisy near $S=K$ because the early-exercise first-derivative discontinuity is sharper than the BT grid; treat as a qualitative reference only",
 ])
 _FORMULA_PDE_PROFILE = "\n".join([
     r"$\bar{F}(t) = \frac{1}{N}\sum_{i=1}^{N}|\mathcal{F}[\tilde{u}^{(B)}_\theta](K,\,t)|$   ($N=50$ points at $S=K$ per slice)",
@@ -236,7 +236,7 @@ def _add_s_star_line(ax, s_star) -> None:
 
         V(s, t1) = max(Phi(s), V^e(s, t1))
 
-    where the two branches of the max meet — the only kink of the Bermudan
+    where the two branches of the max meet — the only first-derivative discontinuity of the Bermudan
     value function on the Stage-B time interval, and a useful visual cue when
     comparing prices / errors / Greeks at ``t=0``.  No-op when ``s_star`` is
     missing, NaN, or the literal string ``"nan"`` (which is how
@@ -307,8 +307,8 @@ def compute_metrics_stage_b(
     # Gamma = d^2V/dS^2  (second autograd pass on the same graph)
     # References come from one-sided / centred finite differences on the
     # binomial-tree price curve (np.gradient applied once for Delta, twice
-    # for Gamma).  The Gamma reference is noisy at the kink at S = K, so
-    # we also report it for diagnostic purposes only.
+    # for Gamma).  The Gamma reference is noisy at the first-derivative discontinuity at S = K, so
+    # it is reported for diagnostic purposes only.
     try:
         s_d = torch.tensor(
             s_eval_arr, dtype=torch.get_default_dtype(), device=device
@@ -375,8 +375,8 @@ def compute_metrics_stage_b(
     # --- Multi-slice Greeks (mirrors ablation_singularity_logS pattern) -------
     # Compute Delta and Gamma at several t-slices in [0, t1] and compare to the
     # binomial-tree reference at each slice.  This exposes the near-singularity
-    # behaviour as t → t1 (where V(·, t) has a sharper kink at s*).
-    # We reuse the same S evaluation grid as for the t=0 metrics.
+    # behaviour as t → t1 (where V(·, t) has a sharper first-derivative discontinuity at s*).
+    # The same S evaluation grid as for the t=0 metrics is reused.
     greeks_slices: dict | None = None
     try:
         t_slices = _build_greeks_t_slices()
@@ -399,7 +399,7 @@ def compute_metrics_stage_b(
 
             # BT reference at t > 0: run a Bermudan BT with remaining maturity
             # T-t and a single exercise date at t1-t (or no exercise dates if
-            # t >= t1, which puts us past the kink in pure-European territory).
+            # t >= t1, which lies past the first-derivative discontinuity in pure-European territory).
             t_rem  = float(p3.T) - float(t_val)
             t1_rem = float(p3.t1) - float(t_val)
             exer_dates = [t1_rem] if t1_rem > 0.0 else []
@@ -977,7 +977,7 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int) -> N
                 ax_g.legend(fontsize=7, loc="best")
         fig.suptitle(
             f"Ablation — Greeks at multiple $t$-slices in $[0,\\,t_1]$\n"
-            f"{_SUPTITLE_PARAMS}  |  last slice $t\\to t_1^-$ probes the kink",
+            f"{_SUPTITLE_PARAMS}  |  last slice $t\\to t_1^-$ probes the first-derivative discontinuity",
             fontsize=10,
         )
         fig.tight_layout(rect=[0, 0.10, 1, 1])

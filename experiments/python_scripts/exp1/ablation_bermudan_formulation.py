@@ -311,7 +311,7 @@ VARIANTS: list[dict] = [
     # with eps_safe = 1 (fp32 autograd safety, fixed throughout).  So eps_0=0
     # collapses to eps_safe-only smoothing (~1 price unit, essentially CM-static
     # with eps=1), while eps_0=20 gives a ~20-price-unit bell around s* (20% of
-    # K=100) — very smooth, almost obliterates the kink.
+    # K=100) — very smooth, almost entirely removes the first-derivative discontinuity.
     # All variants:
     #   * Same mollifier family: CM time-dependent eps(t) = eps_0 * (t1-t)/t1.
     #   * No V^E noise (sigma=0).
@@ -467,7 +467,7 @@ def _build_soft_pinn() -> PINN:
 # ε_safe (price^2 units) added under every sqrt that could see a zero radicand
 # at (s, t) = (s*, t1).  Same value as the European hard_ic_smooth_t / cm_time
 # variants so the two studies remain fair (price-domain bias of magnitude
-# eps_safe / 2 = 0.5 at the kink, decaying to <0.01 once |a - b| > 1).
+# eps_safe / 2 = 0.5 at the first-derivative discontinuity, decaying to <0.01 once |a - b| > 1).
 _MOLL_EPS_SAFE = 1.0
 
 
@@ -587,9 +587,10 @@ def _build_mollifier_g2(variant: dict) -> Callable[[torch.Tensor, torch.Tensor],
             return _bs_european_put_torch(s, t1)
 
     # ── Phi(s, t) — put payoff, optionally smoothed in s ─────────────────
-    # For the bermudan max((K-s)+, V^E), the (K-s)+ kink at s = K is hidden
-    # beneath V^E (V^E(K, t1) > 0 = (K-s)+(K)), so we leave (K-s)+ as-is for
-    # every variant.  The only kink visible in V_target is the exercise
+    # For the bermudan max((K-s)+, V^E), the (K-s)+ first-derivative
+    # discontinuity at s = K is hidden beneath V^E (V^E(K, t1) > 0 = (K-s)+(K)),
+    # so (K-s)+ is left as-is for every variant.  The only first-derivative
+    # discontinuity visible in V_target is the exercise
     # boundary s = s*, which is what the M_epsilon smoothing addresses.
     def Phi(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         return torch.clamp(K - s, min=0.0)
@@ -648,7 +649,7 @@ def train_stage_b_mollifier_ansatz(
 
     The ansatz is V_theta(s, t) = (t1 - t)/t1 * NN(s, t) + g_2^B(s, t),
     so the Bermudan TC is enforced exactly (up to the mollifier bias) at
-    t = t1 and the network only sees a PDE-residual loss on [0, t1].
+    t = t1 and the network is trained only against a PDE-residual loss on [0, t1].
     """
     from learning_option_pricing.models.etcnn import ETCNN
 
@@ -842,7 +843,7 @@ def _add_s_star_line(ax, s_star, *, with_label: bool = True) -> None:
     .. math::
         V_{\mathrm{target}}(s) = \max(\Phi(s),\, V^{\mathrm{eur}}(s, t_1)),
 
-    where the two branches of the $\max$ meet -- the only kink of the Bermudan
+    where the two branches of the $\max$ meet -- the only first-derivative discontinuity of the Bermudan
     value function on the Stage-B time interval, and a useful visual cue when
     comparing prices / errors / Greeks at $t=0$.  Silently no-ops when
     ``s_star`` is missing, NaN, or non-finite (so the helper is safe to call
@@ -1048,7 +1049,7 @@ def _compute_slice_evaluations(
         t_slices:   Tuple of times in $[0, t_1]$ at which to evaluate.  The
                     canonical choice is ``(0.0, t_1/2, t_1)``; the ends pin
                     the Stage-B initial / terminal sides and the midpoint
-                    exposes any backward-time leakage of the $t_1$ kink.
+                    exposes any backward-time leakage of the $t_1$ first-derivative discontinuity.
 
     Returns:
         Dict with shape ``(len(t_slices), len(s_eval_arr))``:
@@ -1141,7 +1142,7 @@ def compute_metrics_stage_b(
 
     # --- Delta and Gamma comparison ----------------------------------------
     # Reference Greeks come from finite differences on the binomial-tree price
-    # curve.  Gamma is the second FD of BT prices and is noisy near the kink,
+    # curve.  Gamma is the second FD of BT prices and is noisy near the first-derivative discontinuity,
     # but the relative L² ratio is still informative when comparing variants
     # under the same reference.
     try:
@@ -1766,8 +1767,8 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
     # ------------------------------------------------------------------
     # Two side-by-side panels: absolute error (linear y) and relative
     # error (log y).  Relative error uses a price-floor at 1 % of the
-    # max |V^BT| so the deep-OTM tail (where V^BT -> 0) doesn't blow
-    # up by 0/0; the floor keeps the curve well-defined across the
+    # max |V^BT| so the deep-OTM tail (where V^BT -> 0) doesn't diverge
+    # by 0/0; the floor keeps the curve well-defined across the
     # whole S grid while preserving the relative ranking where prices
     # are not vanishing.
     fig, (ax_abs, ax_rel) = plt.subplots(1, 2, figsize=(16, 6), sharex=True)
@@ -1955,10 +1956,10 @@ def _plot_comparison(results: list[dict], ablation_dir: Path, iters_b: int,
     # Ported from ablation_singularity_logS.py's price_slices.png:  one
     # column per probed time, all variants overlaid.  BT-tree reference
     # at t=0 (left column) and analytical V_target at t=t1 (right column);
-    # no analytical reference at intermediate times so we just show the
-    # predicted curves there.  Conceptual companion to form_prices.png
-    # (which is the t=0 column only) — useful to see the kink at s*
-    # appear as t -> t1.
+    # no analytical reference at intermediate times, so only the predicted
+    # curves are shown there.  Conceptual companion to form_prices.png
+    # (which is the t=0 column only) — useful to observe the first-derivative
+    # discontinuity at s* appear as t -> t1.
     slice_results = [
         res for res in results
         if res.get("metrics") is not None
@@ -2493,7 +2494,7 @@ def _plot_mollifier_shapes(ablation_dir: Path, mode: str,
     # fig-level rows-1-2 legend (~12 %), and the formula box (~10 %).
     fig.tight_layout(rect=[0, 0.32, 1, 1])
     formula = "\n".join([
-        r"Bermudan terminal: $V_{\mathrm{target}}(s) = \max((K-s)^+, V^E_{\mathrm{BS}}(s, t_1))$ — single kink at $s = s^*$",
+        r"Bermudan terminal: $V_{\mathrm{target}}(s) = \max((K-s)^+, V^E_{\mathrm{BS}}(s, t_1))$ — single first-derivative discontinuity at $s = s^*$",
         r"Identity: $\max(a, b) = \frac{1}{2}(a + b + |a - b|)$;  every mollifier replaces $|\cdot|$ by a smooth surrogate",
         r"Naïve: exact max ($C^0$ at $s^*$) | Softplus: $\frac{1}{\beta}\ln(e^{\beta a}+e^{\beta b})$",
         r"CM static: $\frac{1}{2}(a + b + \sqrt{(a-b)^2 + \varepsilon^2})$ | CM time-dep: $\varepsilon \to \varepsilon(t)=\varepsilon_0(t_1-t)/t_1$ (exact at $t_1$)",
@@ -2526,8 +2527,8 @@ def _replot(ablation_dir: Path, *, extra_exclude: list[str] | None = None) -> No
     inspection-only mode: the listed variant names are dropped, per-variant
     figures are left untouched, and the comparison figures are written to
     ``comparison_excl_<sorted-names-joined-by-_>/`` so the canonical folder
-    is preserved.  Useful when one regularisation strength clearly wins and
-    we want a clean two-way comparison without losing the full figure set.
+    is preserved.  Useful when one regularisation strength is clearly preferable
+    and a clean two-way comparison is wanted without losing the full figure set.
     """
     extra_exclude = list(extra_exclude or [])
     metadata_path = ablation_dir / "metadata.yaml"
@@ -2873,7 +2874,7 @@ def main() -> None:
         args.ablation_dir = cfg_yaml["ablation_dir"]
         # Remaining keys are optional overrides.  Only apply them when the
         # YAML explicitly carries the field; otherwise keep the argparse
-        # default so command-line overrides on the worker still win.
+        # default so command-line overrides on the worker still take precedence.
         if cfg_yaml.get("iters_a") is not None:
             args.iters_a = int(cfg_yaml["iters_a"])
         if cfg_yaml.get("iters_b") is not None:

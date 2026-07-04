@@ -287,8 +287,9 @@ def _build_variants(mode: str) -> list[dict]:
                  # Zhang-Guo-Lu (2026) discounted-strike ansatz: g_2 stays
                  # equal to the exact payoff (e^x - K)^+ at t = T but is
                  # C^infinity on (x, t) for t < T, so the network only has
-                 # to compensate a *single* boundary kink at (ln K, T)
-                 # rather than the full t-constant kink line x = ln K.
+                 # to compensate a *single* boundary first-derivative
+                 # discontinuity at (ln K, T) rather than the full t-constant
+                 # non-smooth line x = ln K.
                  label=r"Hard-IC ansatz — Smooth-in-$t$ $g_2$ (discounted strike)",
                  sampler_type="naive", payoff_type="smooth_t",
                  eps=0.0, beta=None,
@@ -305,7 +306,8 @@ def _build_variants(mode: str) -> list[dict]:
                  #   g_2(S, t) = 0.5 (S - K + sqrt((S-K)^2 + eps^2))
                  # Time-constant smoothing scale eps (price units).  Gamma
                  # is a bounded bell of peak height 1/(2 eps) at S = K for
-                 # every t — *including* t = T, so the IC kink is removed
+                 # every t — *including* t = T, so the IC first-derivative
+                 # discontinuity is removed
                  # at the cost of a permanent bias around the strike.
                  # Companion to hard_ic_smooth (softplus) for a side-by-
                  # side comparison of two static C-infty mollifications.

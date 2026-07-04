@@ -38,19 +38,19 @@ Three terminal data with controlled spectra are compared:
   (an *exact* spectral gap);
 * ``smooth``        -- :math:`g=e^{\cos x}` (analytic; :math:`\hat g_k` decays
   super-exponentially);
-* ``kink``          -- a triangle wave (:math:`|\hat g_k|^2\sim k^{-4}`; the
-  regularised-payoff analogue).
+* ``nonsmooth``     -- a triangle wave (:math:`|\hat g_k|^2\sim k^{-4}`; the
+  regularised-payoff analogue, a first-derivative discontinuity).
 
 Figures (saved under ``data/spectral_toy_operator_channel/<timestamp>/``):
 
 * ``gap_vs_cutoff.png``   -- residual energy and solution error as a function of the
   filter cutoff :math:`k^\star`: performance is set by the forcing mass above
-  :math:`k^\star`.  Band-limited drops to a cliff, smooth decays fast, kink has a
-  slow power-law tail.
+  :math:`k^\star`.  The band-limited datum drops sharply, the smooth datum decays
+  fast, the non-smooth datum has a slow power-law tail.
 * ``channel_amplification.png`` -- the datum spectrum :math:`|\hat g_k|^2` and the
   operator-channel spectrum :math:`(\tfrac{\sigma^2}{2}k^2)^2|\hat g_k|^2`: the
-  :math:`k^4` amplification turns the kink's decaying datum into a flat white
-  plateau, and leaves the smooth datum decaying.
+  :math:`k^4` amplification turns the non-smooth datum's decaying spectrum into a
+  flat white plateau, and leaves the smooth datum decaying.
 * ``residual_vs_error.png`` -- (left) a single high mode's residual and error over
   time: the residual maps to the error through the operator inverse (heat
   propagation), which damps high :math:`k`, so the error peaks in the interior and
@@ -93,9 +93,9 @@ def _terminal_data(x: np.ndarray) -> dict:
     band = np.cos(3 * x) + 0.5 * np.cos(5 * x)
     # smooth analytic: Fourier coefficients are modified Bessel I_k(1) ~ 1/(2^k k!)
     smooth = np.exp(np.cos(x)) - np.i0(1.0)  # subtract mean (I_0(1)) so hat g_0 = 0
-    # kink: triangle wave, C^0 with slope jumps -> |hat g_k|^2 ~ k^{-4}
-    kink = (2.0 / np.pi) * np.arcsin(np.sin(x))
-    return {"band_limited": band, "smooth": smooth, "kink": kink}
+    # non-smooth: triangle wave, C^0 with slope jumps -> |hat g_k|^2 ~ k^{-4}
+    nonsmooth = (2.0 / np.pi) * np.arcsin(np.sin(x))
+    return {"band_limited": band, "smooth": smooth, "nonsmooth": nonsmooth}
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +175,7 @@ def _self_check(ghat, k, kstar) -> float:
         # Normalise the discrepancy by a fixed problem scale (the datum coefficient
         # magnitude), not by the residual itself: when the extension is fully
         # cancellable (band-limited / smooth) the residual is genuinely ~0, and a
-        # residual-relative norm would blow up a harmless finite-difference error.
+        # residual-relative norm would spuriously amplify a harmless finite-difference error.
         scale = max(np.max(np.abs(p_u_closed)), np.max(np.abs(ghat)), 1e-12)
         worst = max(worst, float(np.max(np.abs(p_u_numeric - p_u_closed)) / scale))
     return worst
@@ -200,10 +200,10 @@ def _operator_channel_probe(k, kstar, k_probe=25) -> float:
 # Figures
 # ---------------------------------------------------------------------------
 
-COLORS = {"band_limited": "#2e7d32", "smooth": "#1b6ca8", "kink": "#d1495b"}
+COLORS = {"band_limited": "#2e7d32", "smooth": "#1b6ca8", "nonsmooth": "#d1495b"}
 DISP = {"band_limited": "band-limited $g$ (exact gap)",
         "smooth": r"smooth $g=e^{\cos x}$",
-        "kink": "kink $g$ (triangle wave)"}
+        "nonsmooth": "non-smooth $g$ (triangle wave)"}
 T_SLICES = np.array([0.1, 0.3, 0.5, 0.7, 0.9]) * T  # for time-averaged residual
 
 
@@ -216,7 +216,7 @@ def _fig_gap_vs_cutoff(ghats, k, out):
         res, err = [], []
         u_norm2 = float(np.sum([_energy(_exact_hat(ghat, k, t)) for t in ts_err]))
         for ks in kstars:
-            # left: time-averaged residual energy (what the training objective sees)
+            # left: time-averaged residual energy (the quantity the training objective penalises)
             r = float(np.mean([_energy(_residual_hat(ghat, k, t, ks)) for t in T_SLICES]))
             # right: relative L2 solution error over the space-time window
             e2 = float(np.sum([_energy(_error_hat(ghat, k, t, ks)) for t in ts_err]))
@@ -239,9 +239,9 @@ def _fig_gap_vs_cutoff(ghats, k, out):
     fig.tight_layout(rect=[0, 0.22, 1, 0.94])
     finalize_figure(
         fig, out / "gap_vs_cutoff.png", legends=[leg], axes=[axL, axR],
-        formula=(r"band-limited $g$: residual and error drop to a cliff once $k^\star$ passes "
+        formula=(r"band-limited $g$: residual and error drop sharply once $k^\star$ passes "
                  r"its top mode (exact gap). smooth $g$: both fall fast." "\n"
-                 r"kink $g$: the residual is a near-flat white plateau (operator channel "
+                 r"non-smooth $g$: the residual is a near-flat white plateau (operator channel "
                  r"$\sim k^4|\hat g_k|^2=$const), yet the error still decays — the operator "
                  r"inverse damps the uncancelled high-$k$ modes"),
         formula_fontsize=8)
@@ -253,7 +253,7 @@ def _fig_channel_amplification(ghats, k, out, kstar):
     kk = k[order]
     pos = kk > 0
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
-    for ax, name in zip(axes, ("kink", "smooth")):
+    for ax, name in zip(axes, ("nonsmooth", "smooth")):
         ghat = ghats[name][order]
         datum = np.abs(ghat) ** 2
         op = (0.5 * SIGMA**2 * kk**2) ** 2 * datum  # |operator channel|^2 ~ k^4 |ghat|^2
@@ -280,7 +280,7 @@ def _fig_channel_amplification(ghats, k, out, kstar):
     fig.tight_layout(rect=[0, 0.16, 1, 0.94])
     finalize_figure(
         fig, out / "channel_amplification.png", legends=[leg], axes=list(axes),
-        formula=(r"kink: $|\hat g_k|^2\sim k^{-4}\Rightarrow$ operator channel "
+        formula=(r"non-smooth: $|\hat g_k|^2\sim k^{-4}\Rightarrow$ operator channel "
                  r"$\sim k^4 k^{-4}=$ const to leading order (near-flat plateau, overhangs "
                  r"the cutoff $k^\star$, dotted); smooth: $|\hat g_k|^2$ decays fast enough "
                  r"that $k^4|\hat g_k|^2$ still decays (fits below $k^\star$)"),
@@ -292,8 +292,8 @@ def _fig_residual_vs_error(ghats, k, out, kstar):
     ts = np.linspace(0.0, T, 200)
     fig, (axL, axR) = plt.subplots(1, 2, figsize=(12, 5))
 
-    # left: a single high mode's |residual| and |error| over time (kink datum)
-    ghat = ghats["kink"]
+    # left: a single high mode's |residual| and |error| over time (non-smooth datum)
+    ghat = ghats["nonsmooth"]
     k0 = 20  # a wavenumber above the cutoff
     idx = int(np.argmin(np.abs(k - k0)))
     g0 = ghat[idx]
@@ -316,7 +316,7 @@ def _fig_residual_vs_error(ghats, k, out, kstar):
     legL = axL.legend(loc="upper left", bbox_to_anchor=(0.0, -0.16), fontsize=8, frameon=True)
 
     # right: aggregate error vs residual traced over time -> a curve, not a line
-    ghat = ghats["kink"]
+    ghat = ghats["nonsmooth"]
     res_agg, err_agg = [], []
     for t in ts:
         res_agg.append(np.sqrt(_energy(_residual_hat(ghat, k, t, kstar))))

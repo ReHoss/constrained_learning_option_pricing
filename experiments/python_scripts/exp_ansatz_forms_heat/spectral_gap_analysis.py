@@ -2,7 +2,7 @@ r"""Spectral-gap analysis of the terminal-data extension forcing.
 
 Tests the hypothesis: the best terminal-data extension is the one whose
 operator image P Psi exhibits a spectral gap with respect to the
-network-reachable forcings -- i.e. P Psi's energy sits *below* the frequency
+network-reachable forcings -- i.e. P Psi's energy lies *below* the frequency
 cutoff at which the network can no longer cancel, so the uncancellable part
 Pi_{S^perp} P Psi is small.
 
@@ -277,7 +277,7 @@ def main(argv=None) -> int:
                 ax.set_ylabel(r"power $|\widehat{\cdot}_k|^2$")
             ax.grid(True, which="both", alpha=0.3)
         handlesc, labsc = axesc[0, 0].get_legend_handles_labels()
-        # legend sits clearly above the two-line formula box (anchored ~0.012 by
+        # legend is placed clearly above the two-line formula box (anchored ~0.012 by
         # finalize_figure) so the two never overlap.
         legc = figc.legend(handlesc, labsc, loc="lower center", ncol=3, fontsize=8,
                            frameon=True, bbox_to_anchor=(0.5, 0.13))
@@ -362,7 +362,7 @@ def main(argv=None) -> int:
     finalize_figure(
         figs, out / "softplus_spike_resolution.png", legends=[legL, legR],
         axes=[axL, axR],
-        formula=(r"operator channel $\mathcal{L}g$ of the softplus-regularised kink "
+        formula=(r"operator channel $\mathcal{L}g$ of the softplus-regularised first-derivative discontinuity "
                  r"($\beta=100$, $K=100$): a near-singular spike of width "
                  r"$\sim1/(\beta K)\sim10^{-4}$ in $x$, resolved only for "
                  r"$N_X\gtrsim1.6\times10^4$ ($dx\lesssim5\times10^{-5}$)" "\n"

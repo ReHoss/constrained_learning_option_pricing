@@ -12,7 +12,7 @@ Setup. On the circle x in [0, 2 pi), P u = d_t u + (sigma^2/2) d_xx u = 0,
 terminal datum g. Hard-constrained ansatz u_hat = (1 - lambda(t)) Phi_theta + lambda(t) g,
 lambda(t) = t/T, so u_hat(.,T) = g exactly. Phi_theta is a tanh MLP on the periodic
 features [cos x, sin x, t/T]; its spectral bias (low wavenumbers learned first) is
-what we measure. Training minimises the mean-squared PDE residual.
+the quantity measured here. Training minimises the mean-squared PDE residual.
 
 Measurement. On a fine grid at several time slices, the forcing f = P(lambda g) =
 lambda' g + lambda (sigma^2/2) g'' and the achieved residual r = P u_hat are
@@ -49,14 +49,15 @@ T_SLICES = (0.1, 0.3, 0.5, 0.7, 0.9)
 
 
 def _terminal_data(name, n_modes=20):
-    """Return a smooth, trainable periodic datum. The 'kink' datum is a triangle
-    wave truncated to its first ``n_modes`` odd harmonics: it carries the kink's
-    k^{-2} amplitude envelope (so its operator channel k^2 * ghat is flat up to the
-    truncation, a white forcing to measure the network cutoff against) while being
-    C^infinity, so g'' is bounded and the hard-ansatz residual is well posed. The
-    raw triangle wave has a singular (Dirac) g'' and cannot be trained on directly."""
-    if name == "kink":
-        # seeded rough field with a kink envelope |ghat_k| ~ k^{-2} at EVERY
+    """Return a smooth, trainable periodic datum. The 'nonsmooth' datum is a triangle
+    wave truncated to its first ``n_modes`` odd harmonics: it carries the
+    first-derivative discontinuity's k^{-2} amplitude envelope (so its operator
+    channel k^2 * ghat is flat up to the truncation, a white forcing to measure the
+    network cutoff against) while being C^infinity, so g'' is bounded and the
+    hard-ansatz residual is well posed. The raw triangle wave has a singular (Dirac)
+    g'' and cannot be trained on directly."""
+    if name == "nonsmooth":
+        # seeded rough field with a first-derivative-discontinuity envelope |ghat_k| ~ k^{-2} at EVERY
         # wavenumber up to k_max (not the odd-only triangle comb): its operator
         # channel k^2 * ghat is white up to k_max, defined at every k, so the
         # network's cancellation ratio can be read cleanly and probed past its reach.
@@ -150,7 +151,7 @@ def _spectra(field, g_fn, device):
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--datum", default="kink", choices=["kink", "smooth"])
+    p.add_argument("--datum", default="nonsmooth", choices=["nonsmooth", "smooth"])
     p.add_argument("--iters", type=int, default=8000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cpu")
