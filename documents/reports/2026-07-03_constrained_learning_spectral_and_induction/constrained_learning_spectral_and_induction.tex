@@ -290,7 +290,7 @@ Chen--Mangasarian & soft     & $4.34\!\times\!10^{-3}\!\pm\!3\!\times\!10^{-4}$ 
 
 The unconstrained control ($\mathtt{pure\_nn}$) collapses to
 $\relLtwo\approx1$: the residual objective alone does not determine the solution
-(the homogeneous equation has many solutions), so the field settles on a trivial
+(the homogeneous equation has many solutions), so the learned field is a trivial
 one. It is omitted from the comparison plots for scale and is not tabulated as a
 competitor.
 
@@ -375,7 +375,7 @@ Corollary~\ref{cor:white}, and the achieved residual coincides with it across th
 band: the network cancels the low-wavenumber velocity channel but leaves the
 operator spike uncancelled (Empirical finding~\ref{find:residual}). For the
 Chen--Mangasarian extension the operator channel is band-limited and the residual
-sits far below both channels --- it is cancellable. Figure~\ref{fig:h2-spike}
+lies far below both channels --- it is cancellable. Figure~\ref{fig:h2-spike}
 shows the softplus operator channel resolving from an aliased artefact into the
 broadband plateau as the grid refines, with its band-integrated energy converging
 to $\approx1.9\times10^{4}$.
@@ -383,7 +383,7 @@ to $\approx1.9\times10^{4}$.
 \begin{figure}[htbp]\centering
   \includegraphics[width=0.98\textwidth]{figures/2026-06-12_operator_channel_spike.png}
   \caption{Resolving the softplus operator channel. Left: the curvature spike in
-    real space, which a coarse grid steps over. Right: its spectrum converging to
+    real space, which a coarse grid does not resolve. Right: its spectrum converging to
     a plateau as the grid refines.}\label{fig:h2-spike}
 \end{figure}
 
@@ -442,7 +442,7 @@ oracle (exact continuation) & --- & $1.2\times10^{-3}$\\
 \begin{figure}[htbp]\centering
   \includegraphics[width=0.82\textwidth]{figures/2026-06-13_bermudan_inception.png}
   \caption{Inception price. Solid: learned. Dashed (same colour): exact for that
-    $\numExerciseDates$. The learned values sit above the European put (a positive
+    $\numExerciseDates$. The learned values lie above the European put (a positive
     early-exercise premium) and increase with $\numExerciseDates$.}\label{fig:h3-price}
 \end{figure}
 
@@ -453,7 +453,7 @@ per-stage terminal mismatch ($\boundaryResidual\approx7\times10^{-3}$,
 Table~\ref{tab:main}) is inherited by the stage below and accumulates, whereas the
 hard form carries none. The exact-continuation oracle reaches $1.2\times10^{-3}$,
 so the representational limit of a single learned stage is small; the learned
-chain's larger error is the price of learning, rather than being handed, the
+chain's larger error is attributable to learning, rather than being supplied, the
 continuation. Measured, one seed. Hypothesis~H3 holds.
 \end{finding}
 
@@ -482,12 +482,12 @@ The close agreement at $\numExerciseDates=2,3$ ($3.18\times10^{-2}$ against
 $3.09\times10^{-2}$) does not persist: at $\numExerciseDates=10$ the inception
 error is $1.44\times10^{-1}$ and the per-date error peaks near $1.9\times10^{-1}$
 in mid-life, roughly a fivefold increase (Figure~\ref{fig:h3-prop}). Two effects
-push the same way as $\numExerciseDates$ grows: each interval is shorter, so its
+act in the same direction as $\numExerciseDates$ grows: each interval is shorter, so its
 Gaussian propagation smooths the payoff and exercise-boundary curvature less --- the
 smoothing length $\sigma\sqrt{\timeHorizon/\numExerciseDates}$ falls from $0.18$ at
 $\numExerciseDates=2$ to $0.08$ at $\numExerciseDates=10$, raising the per-stage
 operator channel by Proposition~\ref{prop:floor} --- and there are more stages to
-accumulate. The learned $\numExerciseDates=10$ inception price sits visibly below
+accumulate. The learned $\numExerciseDates=10$ inception price lies visibly below
 its exact reference for large spot. Measured, one seed; the growth rate in
 $\numExerciseDates$ is not yet characterised. Hypothesis~H4 is refuted.
 \end{observation}
@@ -547,8 +547,8 @@ moving energy towards high wavenumbers.
 Multiplication by the symbol in Fourier space, then Proposition~\ref{prop:decay}.
 \end{proof}
 
-\begin{corollary}[The operator channel of a kinked datum is white]\label{cor:white}
-For a kink ($\regularityIndex=1$) under a second-order generator
+\begin{corollary}[The operator channel of a non-differentiable datum is white]\label{cor:white}
+For a first-derivative discontinuity ($\regularityIndex=1$) under a second-order generator
 ($\operatorHalfOrder=1$) the net exponent in \eqref{eq:amp} is
 $4\operatorHalfOrder-2(\regularityIndex+1)=0$: the operator channel
 $\generatorUnderlying\payoff$ has a flat (white) spectrum and infinite
@@ -567,7 +567,7 @@ upper-cutoff dominated and
   \;\sim\;\int_{0}^{1/\smoothingScale}\wavenumber^{\,4\operatorHalfOrder-2\regularityIndex-2}\,d\wavenumber
   \;\sim\;\smoothingScale^{-(4\operatorHalfOrder-2\regularityIndex-1)} .
 \end{equation}
-For the kink under the heat operator ($\operatorHalfOrder=\regularityIndex=1$)
+For the first-derivative discontinuity under the heat operator ($\operatorHalfOrder=\regularityIndex=1$)
 this is $\norm{\generatorUnderlying\payoff_{\smoothingScale}}^{2}\sim\smoothingScale^{-1}$:
 finite once smoothed, but growing as the smoothing sharpens.
 \end{proposition}
@@ -620,12 +620,13 @@ numerical to machine precision in the reproduction script.
 \end{proof}
 
 Figure~\ref{fig:toy-gap} sweeps the cutoff $\cutoffWavenumber$: a band-limited
-datum drops to an exact cliff (an exact spectral gap gives an exact solution), a
-smooth datum falls exponentially, and a kink leaves the near-flat white plateau
+datum drops exactly to zero (an exact spectral gap gives an exact solution), a
+smooth datum falls exponentially, and a first-derivative discontinuity leaves the
+near-flat white plateau
 of Corollary~\ref{cor:white} in the residual --- yet its solution error still
 decays, because the operator inverse damps the uncancelled high modes.
 Figure~\ref{fig:toy-amp} shows the $\wavenumber^{4}$ amplification turning the
-kink's $\wavenumber^{-4}$ datum into that plateau. Figure~\ref{fig:toy-rve} shows
+first-derivative discontinuity's $\wavenumber^{-4}$ datum into that plateau. Figure~\ref{fig:toy-rve} shows
 that the residual and the error have different time profiles, so the residual is
 not a universal predictor of the error --- the link is the $\timePoint$-dependent
 operator inverse.
@@ -633,14 +634,16 @@ operator inverse.
 \begin{figure}[htbp]\centering
   \includegraphics[width=0.98\textwidth]{figures/2026-07-03_toy_gap_vs_cutoff.png}
   \caption{Ideal-filter model. Left: the uncancellable residual versus the cutoff
-    $\cutoffWavenumber$; the kink is a near-flat plateau. Right: the space-time
-    solution error; the kink still decays. Solid curves, colour-coded by datum
+    $\cutoffWavenumber$; the first-derivative discontinuity is a near-flat plateau.
+    Right: the space-time
+    solution error; the first-derivative discontinuity still decays. Solid curves,
+    colour-coded by datum
     regularity.}\label{fig:toy-gap}
 \end{figure}
 \begin{figure}[htbp]\centering
   \includegraphics[width=0.98\textwidth]{figures/2026-07-03_toy_channel_amplification.png}
   \caption{The $\wavenumber^{4}$ operator amplification. Datum spectrum (dashed)
-    and operator channel (solid): a kink's $\wavenumber^{-4}$ datum becomes a
+    and operator channel (solid): a first-derivative discontinuity's $\wavenumber^{-4}$ datum becomes a
     white plateau; a smooth datum stays below the cutoff (dotted).}\label{fig:toy-amp}
 \end{figure}
 \begin{figure}[htbp]\centering
@@ -657,7 +660,7 @@ On the high-resolution spectra of Section~\ref{sec:h2} the achieved residual of
 the sharp (softplus) extension coincides with its operator channel across the
 whole band --- their band-integrated energies agree to two significant figures
 ($6.33\times10^{3}$ against $6.34\times10^{3}$) --- while for the smooth
-(Chen--Mangasarian) extension the residual sits far below the forcing
+(Chen--Mangasarian) extension the residual lies far below the forcing
 ($8.85\times10^{-1}$). Measured, one seed, from the spectra of
 Figure~\ref{fig:h2-spectra}.
 \end{finding}
@@ -739,7 +742,7 @@ Every figure and number traces to a named script in the repository
 \texttt{constrained\_learning\_option\_pricing} and a run directory under
 \texttt{data/}. Figure scripts derive their data folder from their own filename.
 
-The scripts below sit under
+The scripts below are located under
 \fp{experiments/python_scripts/exp_ansatz_forms_heat/} unless a fuller path is
 given.
 \begin{itemize}
