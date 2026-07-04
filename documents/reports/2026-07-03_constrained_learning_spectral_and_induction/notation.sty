@@ -1,0 +1,287 @@
+% notation.sty -- Mathematical notation for constrained PDE learning
+% Requires: mathtools, scalerel (document may load amsmath, amssymb)
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{notation}[2026/02/16 Mathematical notation for PDE learning]
+
+\RequirePackage{mathtools}
+\RequirePackage{scalerel}
+
+% ---------------------------------------------------------------------------
+% Operators (from basis)
+% ---------------------------------------------------------------------------
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\support}{Supp}
+\DeclarePairedDelimiter\floor{\lfloor}{\rfloor}
+
+% ---------------------------------------------------------------------------
+% PDE setting: domain, reals, boundary, normal
+% ---------------------------------------------------------------------------
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\domain}{\Omega}
+\newcommand{\boundary}{\partial \Omega}
+\newcommand{\distanceToBoundary}{\mathrm{d}_{\boundary}}  % distance to boundary (vanishes on \boundary)
+\newcommand{\distanceFunction}{\mathrm{d}_{\domain}}      % distance function to the domain boundary
+\newcommand{\normal}{n}
+
+% ---------------------------------------------------------------------------
+% PDE operators and spaces (long names + short aliases)
+% ---------------------------------------------------------------------------
+\newcommand{\pdeOperator}{\mathcal{L}}           % PDE (interior) operator
+\newcommand{\pdeOperatorEstimate}{\widehat{\pdeOperator}}
+\newcommand{\linearPdeOperator}{\mathcal{L}}     % linear PDE operator (strong form, e.g. -\Delta)
+\newcommand{\boundaryOperator}{\mathcal{B}}      % boundary operator
+\newcommand{\constraintTransformationOperator}{\mathcal{T}}  % maps estimator onto BC-satisfying subspace
+\newcommand{\dataOperator}{\mathcal{D}}          % data/observation operator
+\newcommand{\lossFunction}{\mathcal{L}}           % generic loss functional
+\newcommand{\lossObjective}{\mathcal{J}}          % objective/loss functional (e.g. J: U -> R)
+\newcommand{\constraintOperator}{\mathcal{G}}     % generic constraint / coupling operator
+\newcommand{\solutionSpace}{\mathcal{U}}          % solution space
+\newcommand{\constraintSpace}{\mathcal{C}}        % constraint space
+\newcommand{\solutionSpaceDimension}{p}            % dimension of solution space (e.g. \solutionSpace \subset \R^{\solutionSpaceDimension})
+
+% ---------------------------------------------------------------------------
+% Mathematical finance: payoff, exercise region, risk-neutral measure
+% (used by Bermudan option pricing notes; aligned with CAL bermudan_iterations.tex)
+% ---------------------------------------------------------------------------
+\newcommand{\payoff}{g}                          % intrinsic payoff: g(s) = (K-s)^+ for put, max(0, s-K) for call (CAL convention)
+\newcommand{\compactPayoff}{\payoff}             % alias kept when emphasising the compact-form max(0, s-K)
+\newcommand{\exerciseRegion}{\mathcal{E}}        % early-exercise region of an American/Bermudan claim
+\newcommand{\riskNeutralMeasure}{\mathbb{Q}}     % risk-neutral probability measure
+
+% ---------------------------------------------------------------------------
+% Bermudan iterations / PINN ansatz (CAL bermudan_iterations.tex)
+% Naming kept consistent with CAL's notes:
+%   \architectureOutput   = \Phi  -- full architecture output  \Phi_\theta
+%   \freeNetwork          = \Psi  -- free neural network       \Psi_\theta
+%   \terminalExtension    = h     -- hard-constraint extension h(T,x)=g(x)
+%   \interpolationCoefficient = b -- interpolation coefficient with b(T)=1
+%   \architectureOutput_\theta = (1-b(t)) \freeNetwork_\theta + h(t,x)
+%   (stage-k effective payoff: written inline as h_{k,\bar\theta_{k+1}}(\cdot, t_k))
+% ---------------------------------------------------------------------------
+\newcommand{\architectureOutput}{\Phi}                   % full architecture output: \architectureOutput_\theta
+\newcommand{\freeNetwork}{\Psi}                          % free neural network: \freeNetwork_\theta
+\newcommand{\terminalExtension}{h}                       % terminal-data extension h(t,x) with h(T,x) = g(x)
+\newcommand{\interpolationCoefficient}{b}                % b(t) with b(T)=1, used in \architectureOutput = (1-b)\freeNetwork + b h
+\newcommand{\generatorUnderlying}{\pdeOperator^{\stateProcess}}  % infinitesimal generator of the underlying X under Q
+\newcommand{\continuationValue}{\ell}                    % \continuationValue(s,\tau) := E[g(S_T) e^{-r(T-\tau)} | S_\tau=s]
+\newcommand{\implicitStrike}{\kappa}                     % \implicitStrike(s,\tau) := s - \continuationValue(s,\tau)
+\newcommand{\pdeResidual}{R}                             % BSm residual: R_\architectureOutput := \partial_t \Phi + L^X \Phi - r \Phi
+\newcommand{\smoothMax}{\mathcal{M}}                     % one-parameter family of smoothed max operators (not in CAL's notes)
+\newcommand{\smoothMaxCM}{\smoothMax^{\mathrm{CM}}}      % Chen-Mangasarian smoothing
+\newcommand{\smoothingScale}{\varepsilon}                % smoothing bandwidth in \smoothMax_\varepsilon
+\newcommand{\frakL}{\mathfrak{L}}                        % PINN loss functional (CAL)
+\newcommand{\frakC}{\mathfrak{C}}                        % compensator loss functional (CAL)
+
+% ---------------------------------------------------------------------------
+% Vector-field / PDE solution and RHS (one entry or scalar component)
+% ---------------------------------------------------------------------------
+\newcommand{\solutionField}{u}                    % solution field (one component: u, u_i)
+\newcommand{\sourceTerm}{f}                      % RHS in domain (e.g. T u = f)
+\newcommand{\boundaryRhs}{g}                     % RHS on boundary (e.g. B u = g)
+\newcommand{\initialCondition}{\solutionField_0} % initial condition (e.g. I u = u_0)
+
+% Running example: heat equation (for use in slides)
+\newcommand{\heateq}{\partial_{\timePoint} \solutionField - \partial_{\spacePoint\spacePoint} \solutionField = \sourceTerm\;\text{ on }\;(0,L)\times(0,\timeHorizon),\;\; \solutionField=0\;\text{ at }\spacePoint=0,L,\;\; \solutionField(\cdot,0)=\solutionField_0}
+
+% ---------------------------------------------------------------------------
+% Points: space, time, weights
+% ---------------------------------------------------------------------------
+\newcommand{\spacePoint}{x}
+\newcommand{\timePoint}{t}
+\newcommand{\weights}{\theta}
+\newcommand{\weight}{\theta}
+\newcommand{\weightSpace}{\Theta}
+
+% ---------------------------------------------------------------------------
+% Processes (from basis)
+% ---------------------------------------------------------------------------
+\newcommand{\stateProcess}{X}
+\newcommand{\controlProcess}{U}
+\newcommand{\observationProcess}{Y}
+\newcommand{\historyProcess}{H}
+\newcommand{\disturbanceProcess}{v}
+\newcommand{\brownianMotion}{W}
+\newcommand{\initialProcess}{\xi}
+
+% ---------------------------------------------------------------------------
+% Operators (from basis)
+% ---------------------------------------------------------------------------
+\newcommand{\dynamicsOperator}{F}
+\newcommand{\continuousDynamicsOperator}{f}
+\newcommand{\observationOperator}{\mathcal{G}}
+\newcommand{\continuousObservationOperator}{g}
+\newcommand{\objectiveFunction}{J}
+\newcommand{\identityOperator}{I\hspace{-0.05cm}d}
+\newcommand{\probabilityOperator}{\mathbb{P}}
+\newcommand{\stateTransitionProbability}{\mathcal{P}}
+\newcommand{\observationTransitionProbability}{\mathcal{G}}
+\newcommand{\timeDelayTransitionProbability}{\mathcal{O}}
+\newcommand{\stateDelayTransitionProbability}{\mathcal{Q}}
+\newcommand{\policy}{\pi}
+\newcommand{\qFunction}{Q}
+\newcommand{\vFunction}{V}
+\newcommand{\MPCpolicy}{\pi^{\text{\normalfont MPC}}}
+\newcommand{\MPCpolicyEstimator}{\widehat{\pi}^{\text{\normalfont MPC}}}
+\newcommand{\generalLossFunction}{\mathcal{L}}
+\newcommand{\lagrangian}{\mathscr{L}}
+\newcommand{\adjointStatePoint}{\lambda^{\lagrangian}}
+
+% ---------------------------------------------------------------------------
+% Functions (from basis)
+% ---------------------------------------------------------------------------
+\newcommand{\costFunction}{c}
+\newcommand{\repartitionFunction}{F}
+\newcommand{\feedbackLoopFunction}{u}
+\newcommand{\learningTask}{\ell}
+
+% ---------------------------------------------------------------------------
+% Scalars and vectors (from basis)
+% ---------------------------------------------------------------------------
+\newcommand{\startEquilibrium}{x_{e}}
+\newcommand{\statePoint}{x}
+\newcommand{\controlPoint}{u}
+\newcommand{\disturbancePoint}{v}
+\newcommand{\timeDelayPoint}{\tau}
+\newcommand{\discreteTimeDelayPoint}{r}
+\newcommand{\historyPoint}{h}
+\newcommand{\continuousTimePoint}{t}
+\newcommand{\samplingTimePoint}{s}
+\newcommand{\interdecisionTimePoint}{\sigma}
+\newcommand{\startEquilibriumStd}{\sigma_{e}}
+\newcommand{\discountFactor}{\gamma}
+\newcommand{\spatialPoint}{z}
+\newcommand{\observationPoint}{y}
+\newcommand{\outcomePoint}{\omega}
+\newcommand{\sampleComplexity}{m}
+
+% ---------------------------------------------------------------------------
+% Algorithm parameters (from basis)
+% ---------------------------------------------------------------------------
+\newcommand{\entropyRegularisation}{\alpha^{\!\text{\tiny $\entropy$}}}
+
+% ---------------------------------------------------------------------------
+% Information theory and statistics (from basis)
+% ---------------------------------------------------------------------------
+\newcommand{\expectedInformationGain}{\text{\normalfont EIG}}
+\newcommand{\mutualInformation}{\text{\normalfont MI}}
+\newcommand{\entropy}{\mathcal{H}}
+\newcommand{\KL}{D_{\text{\normalfont KL}}}
+\newcommand{\wassersteinDistance}{W}
+\newcommand{\fisherInformation}{\mathcal{I}}
+\newcommand{\expectationOperator}{\mathbb{E}}
+\newcommand{\dataset}{\mathcal{D}}
+
+% ---------------------------------------------------------------------------
+% Indexing (from basis)
+% ---------------------------------------------------------------------------
+\newcommand{\discreteTimeIndex}{k}
+\newcommand{\samplingIndex}{i}
+\newcommand{\samplingIteration}{n}
+\newcommand{\randomDiscreteTime}{\kappa}
+\newcommand{\randomInterdecisionTime}{\eta}
+\newcommand{\deltaDiscreteTime}{\delta}
+
+% ---------------------------------------------------------------------------
+% Constants (from basis)
+% ---------------------------------------------------------------------------
+\newcommand{\timeHorizon}{T}
+\newcommand{\discreteTimeHorizon}{K}
+\newcommand{\discretisationSize}{N}
+\newcommand{\sampleSize}{K}
+
+% ---------------------------------------------------------------------------
+% Distributional RL (from basis)
+% ---------------------------------------------------------------------------
+\newcommand{\randomObjectiveValue}{Z}
+\newcommand{\quantile}{q}
+\newcommand{\quantileFunction}{F_{\quantile}}
+\newcommand{\quantileLevel}{\lambda}
+\newcommand{\NQuantiles}{N_{\quantile}}
+\newcommand{\quantileRegressionLoss}{\generalLossFunction^{\text{\normalfont QR}}}
+\newcommand{\distritributionalBellmanOperator}{\mathcal{T}}
+
+% ---------------------------------------------------------------------------
+% Maximum-entropy, BARL, GP, RL, MPC (from basis)
+% ---------------------------------------------------------------------------
+\newcommand{\ERUN}{\mathcal{R}}
+\newcommand{\complexityMeasure}{\mathcal{M}}
+\newcommand{\BARL}{\text{\normalfont BARL}}
+\newcommand{\SMTIP}{\text{\normalfont SM-TIP}}
+\newcommand{\TIP}{\text{\normalfont TIP}}
+\newcommand{\stateControlDataset}{\mathcal{D}}
+\newcommand{\GP}{\mathcal{GP}}
+\newcommand{\GPmean}{\mu}
+\newcommand{\GPcovariance}{\Sigma}
+\newcommand{\rhoRL}{\rho}
+\newcommand{\timehorizonMPC}{K^{\text{\normalfont MPC}}}
+
+% ---------------------------------------------------------------------------
+% Spaces (from basis)
+% ---------------------------------------------------------------------------
+\newcommand{\stateSpace}{\mathcal{X}}
+\newcommand{\controlSpace}{\mathcal{U}}
+\newcommand{\admissibleControlSpace}{\mathscr{A}_{\controlSpace}}
+\newcommand{\admissiblePolicySpace}{\mathscr{A}_{\policySpace}}
+\newcommand{\observationSpace}{\mathcal{Y}}
+\newcommand{\disturbanceSpace}{\mathcal{V}}
+\newcommand{\sampleSpace}{\Omega}
+\newcommand{\sampleSpaceSigmaAlgebra}{\mathcal{F}}
+\newcommand{\interdecisionTimeSpace}{\mathcal{S}}
+\newcommand{\sigmaAlgebra}{\mathscr{F}}
+\newcommand{\timeInterval}{I}
+\newcommand{\policySpace}{\Pi}
+\newcommand{\historySpace}{\mathscr{H}}
+\newcommand{\hypothesisSpace}{\mathcal{F}}
+
+% ---------------------------------------------------------------------------
+% Dimensions (from basis)
+% ---------------------------------------------------------------------------
+\newcommand{\stateDimension}{d_{\stateProcess}}
+\newcommand{\controlDimension}{d_{\controlProcess}}
+\newcommand{\observationDimension}{d_{\observationProcess}}
+\newcommand{\spatialDimension}{d_{\spatialPoint}}
+\newcommand{\weightsDimension}{d_{\weights}}
+
+% ---------------------------------------------------------------------------
+% Noise, algorithm, general (from basis)
+% ---------------------------------------------------------------------------
+\newcommand{\stateNoise}{\epsilon_\stateProcess}
+\newcommand{\observationNoise}{\epsilon_\observationProcess}
+\newcommand{\algorithm}{\mathcal{A}}
+\newcommand{\generalSpace}{E}
+
+% ===========================================================================
+% Report-specific extensions (2026-07-03 spectral-and-induction report).
+% Genuinely new objects only; every reused object is bound to a macro above.
+% Bourbaki conventions: single-letter/calligraphic symbols, superscript star
+% for the reference/critical quantity, no word-subscripts.
+% ===========================================================================
+
+% --- delimiters (formatting; standard mathtools paired delimiters) ---
+\DeclarePairedDelimiter\norm{\lVert}{\rVert}
+\DeclarePairedDelimiter\abs{\lvert}{\rvert}
+\DeclarePairedDelimiter\inner{\langle}{\rangle}
+
+% --- network-reachable subspace and its complement (spectral bias) ---
+\newcommand{\reachableSet}{\mathcal{S}}                 % network-reachable subspace
+\newcommand{\reachableSetPerp}{\reachableSet^{\perp}}   % uncancellable complement
+\newcommand{\projReachablePerp}{\Pi_{\reachableSetPerp}}% orthogonal projection onto it
+
+% --- Fourier / spectral objects ---
+\newcommand{\wavenumber}{\xi}                           % spatial wavenumber (NOT k: k is the induction stage index)
+\newcommand{\fouriertransform}[1]{\widehat{#1}}         % Fourier transform of its argument
+\newcommand{\regularityIndex}{\rho}                     % order of the lowest discontinuous derivative of g
+\newcommand{\operatorHalfOrder}{p}                      % elliptic generator has order 2p
+\newcommand{\cutoffWavenumber}{\wavenumber^{\star}}     % effective spectral cutoff (network reach)
+
+% --- metrics ---
+\newcommand{\relLtwo}{\eta}                             % relative L^2 error against the reference
+\newcommand{\boundaryResidual}{R_{\boundaryOperator}}   % terminal-constraint (feasibility) residual
+
+% --- finance specifics not already in the package ---
+\newcommand{\strike}{K}                                 % strike
+\newcommand{\spot}{S}                                   % spot price process value
+\newcommand{\numExerciseDates}{m}                       % number of Bermudan exercise dates (last = maturity)
+
+\endinput

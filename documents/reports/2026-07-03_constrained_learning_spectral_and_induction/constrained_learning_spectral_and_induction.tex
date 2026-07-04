@@ -1,0 +1,770 @@
+% Constrained learning of terminal-value PDEs: the operator-channel mechanism
+% and its propagation through a Bermudan backward induction.
+% Self-contained: reuses the constrained-learning notation.sty (copied locally).
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools,scalerel}
+\usepackage{mathrsfs}          % \mathscr (used by notation.sty)
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
+\usepackage[colorlinks=true,allcolors=blue!55!black]{hyperref}
+\usepackage{url}\urlstyle{tt}
+% breakable typewriter path (splits at slashes; underscores need no escaping)
+\newcommand{\fp}[1]{\path{#1}}
+
+% Reuse (and locally extend) Remy's constrained-learning notation package.
+\usepackage{notation}
+
+% --- claim-strength environments (shared counter, Bourbaki style) ----------
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{finding}[theorem]{Empirical finding}
+\theoremstyle{remark}
+\newtheorem{observation}[theorem]{Observation}
+\newtheorem{remark}[theorem]{Remark}
+
+\title{Constrained learning of terminal-value PDEs:\\
+  the operator-channel mechanism and its propagation\\
+  through a Bermudan backward induction}
+\author{}
+\date{3 July 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+For the boundary-constrained learning of terminal-value parabolic PDEs, the
+achieved error of a hard-constrained trial solution is governed by the
+uncancellable, high-wavenumber part of the operator channel
+$\generatorUnderlying\terminalExtension$ --- a quantity fixed by the regularity of
+the terminal datum. This is established as a chain of Fourier estimates (regularity
+$\Rightarrow$ spectral decay $\Rightarrow$ elliptic amplification $\Rightarrow$ a
+forcing-floor scaling law) and in a closed-form ideal-filter model, and measured on
+a European call: the terminal extension controls the error by an order of
+magnitude, the additive-versus-convex trial-solution algebra by a factor of two,
+and the achieved residual is measurably the operator channel. Enforcing the
+terminal constraint exactly (feasibility residual zero) propagates less error
+through a Bermudan backward induction than a soft penalty; but accuracy is not
+maintained as the number of exercise dates grows --- a pre-registered hypothesis
+that the ten-date instance refutes. Every number is measured against an exact
+reference and traces to a named script and run directory.
+\end{abstract}
+
+% ===========================================================================
+\section{Common framework}\label{sec:framework}
+% Definitions only; the reference, the constrained trial solution (by its
+% equations), the methods compared including the oracle, the learning problem,
+% and the metrics.
+
+\subsection{The terminal-value problem and the reference solution}\label{sec:problem}
+
+\begin{definition}[Backward terminal-value problem]\label{def:problem}
+Let $\domain\subseteq\R$ be the spatial domain, $\timeHorizon>0$ the terminal
+time, and $\pdeOperator=\partial_{\timePoint}+\generatorUnderlying$ the backward
+parabolic operator, with $\generatorUnderlying$ a constant-coefficient elliptic
+generator of order $2\operatorHalfOrder$. The terminal-value problem prescribes
+the datum at $\timePoint=\timeHorizon$ and propagates it to $\timePoint=0$:
+\begin{equation}\label{eq:tvp}
+  \pdeOperator\,\solutionField=0
+  \quad\text{on}\quad \domain\times(0,\timeHorizon),
+  \qquad
+  \solutionField(\cdot,\timeHorizon)=\payoff .
+\end{equation}
+The instance studied is the pure backward heat equation, for which
+$\generatorUnderlying=\tfrac{\sigma^{2}}{2}\,\partial_{\spacePoint\spacePoint}$
+($\operatorHalfOrder=1$), in the log-price coordinate
+$\spacePoint=\ln\spot$ with volatility $\sigma$; the datum $\payoff$ is a
+(European or Bermudan) option payoff.
+\end{definition}
+
+Under Definition~\ref{def:problem} the substitution $\tau=\timeHorizon-\timePoint$
+turns \eqref{eq:tvp} into a forward heat equation, so the reference solution is
+the heat-semigroup (Gaussian-kernel) image of the datum.
+
+\begin{definition}[Reference solution]\label{def:reference}
+The reference $\solutionField^{\star}$ is the exact solution of \eqref{eq:tvp}:
+the Gaussian convolution of $\payoff$ over the elapsed variance
+$\sigma^{2}(\timeHorizon-\timePoint)$, available in closed form for the smoothed
+European payoffs and, for the Bermudan datum, as the exact chained convolution of
+Definition~\ref{def:exact-bermudan}. All errors below are measured against
+$\solutionField^{\star}$.
+\end{definition}
+
+\subsection{The constrained trial solution and the hard-constraint projection}\label{sec:ansatz}
+
+The learned solution is a trial field that carries the terminal datum by
+construction. Writing $\freeNetwork_{\weights}$ for a free neural network of
+weights $\weights\in\weightSpace$, $\terminalExtension$ for an extension of the
+datum with $\terminalExtension(\cdot,\timeHorizon)=\payoff$, and
+$\interpolationCoefficient$ for a scalar interpolation coefficient with
+$\interpolationCoefficient(\timeHorizon)=1$, the construction follows the
+stage ansatz of the companion constrained-learning report.
+
+\begin{definition}[Hard-constrained trial solution]\label{def:ansatz}
+The trial solution is
+\begin{equation}\label{eq:ansatz}
+  \architectureOutput_{\weights}(\spacePoint,\timePoint)
+  =\bigl(1-\interpolationCoefficient(\timePoint)\bigr)\,
+     \freeNetwork_{\weights}(\spacePoint,\timePoint)
+   +\interpolationCoefficient(\timePoint)\,
+     \terminalExtension(\spacePoint,\timePoint).
+\end{equation}
+Since $\interpolationCoefficient(\timeHorizon)=1$, the trial solution satisfies
+the terminal constraint exactly, $\architectureOutput_{\weights}(\cdot,\timeHorizon)=\payoff$,
+for every $\weights$. Equivalently, \eqref{eq:ansatz} defines a projection
+$\constraintTransformationOperator$ of the free network onto the affine subspace
+of fields that meet the terminal datum, $\architectureOutput_{\weights}=\constraintTransformationOperator\freeNetwork_{\weights}$.
+\end{definition}
+
+\begin{definition}[Residual decomposition]\label{def:residual}
+Substituting \eqref{eq:ansatz} into \eqref{eq:tvp} splits the residual into a
+$\weights$-dependent network contribution and a $\weights$-independent forcing
+inherited from the extension:
+\begin{equation}\label{eq:residual}
+  \pdeOperator\architectureOutput_{\weights}
+  =\underbrace{\bigl(1-\interpolationCoefficient\bigr)\,\pdeOperator\freeNetwork_{\weights}
+      -\interpolationCoefficient'\,\freeNetwork_{\weights}}_{
+      \pdeResidual_{\weights}\ (\text{network contribution})}
+   +\underbrace{\pdeOperator\terminalExtension}_{\text{extension forcing}} .
+\end{equation}
+The extension forcing further splits, for $\terminalExtension=\interpolationCoefficient\,\payoff$, into an
+\emph{interpolation-velocity} channel and an \emph{operator channel},
+\begin{equation}\label{eq:channels}
+  \pdeOperator\terminalExtension
+  =\underbrace{\interpolationCoefficient'\,\payoff}_{\text{velocity}}
+   +\underbrace{\interpolationCoefficient\,\generatorUnderlying\payoff}_{\text{operator channel}} .
+\end{equation}
+\end{definition}
+
+\subsection{The methods compared, and the oracle}\label{sec:methods}
+
+Four forms are compared, differing only in how the datum is imposed.
+
+\begin{definition}[Terminal-enforcement forms]\label{def:forms}
+With $\freeNetwork_{\weights}$ the free network and $\payoff$ the (smoothed) datum:
+\begin{itemize}
+  \item \textbf{additive} ($\mathtt{hard\_constant}$):
+    $\architectureOutput_{\weights}=(1-\interpolationCoefficient)\freeNetwork_{\weights}+\terminalExtension$
+    with $\terminalExtension$ constant in $\timePoint$;
+  \item \textbf{convex combination} ($\mathtt{hard\_convex}$):
+    $\architectureOutput_{\weights}=(1-\interpolationCoefficient)\freeNetwork_{\weights}+\interpolationCoefficient\,\terminalExtension$;
+  \item \textbf{soft} ($\mathtt{soft\_pinn}$): $\architectureOutput_{\weights}=\freeNetwork_{\weights}$,
+    the datum imposed only through an added penalty in the objective;
+  \item \textbf{unconstrained} ($\mathtt{pure\_nn}$): $\architectureOutput_{\weights}=\freeNetwork_{\weights}$
+    with no datum term at all --- a non-identifiable control.
+\end{itemize}
+The additive and convex forms satisfy the constraint exactly
+($\boundaryResidual=0$); the soft form satisfies it only approximately.
+\end{definition}
+
+\begin{definition}[Oracle]\label{def:oracle}
+A deliberately strong, non-deployable baseline, chosen with hindsight, that
+separates a \emph{representational} limit from an \emph{optimisation} one.
+\begin{itemize}
+  \item \emph{Ideal-filter projection} (single problem). The trial solution whose
+    network part cancels exactly the network-reachable component of the extension
+    forcing, leaving only the uncancellable remainder
+    $\projReachablePerp\pdeOperator\terminalExtension$. It is the best a
+    hard-constrained field of the given spectral reach could achieve; if it too
+    is inaccurate, the limit is representational. It is realised in closed form in
+    the analytic model of Section~\ref{sec:mechanism}.
+  \item \emph{Exact-continuation oracle} (backward induction). Each stage is
+    supplied the \emph{analytic} continuation value $\continuationValue$ as its
+    terminal datum instead of the learned value of the stage above; it isolates
+    the per-stage learning error from the error propagated along the induction.
+\end{itemize}
+\end{definition}
+
+\subsection{The learning problem}\label{sec:learning}
+
+\begin{definition}[Objective and optimisation]\label{def:learning}
+The weights minimise the mean-squared PDE residual over interior collocation
+points drawn from a sampler $\mu$,
+\begin{equation}\label{eq:objective}
+  \frakL(\weights)
+  =\expectationOperator_{\mu}\!\bigl[\pdeResidual_{\weights}^{2}\bigr]
+   \quad(\text{hard forms}),
+  \qquad
+  \frakL(\weights)
+  =a\,\expectationOperator_{\mu}\!\bigl[(\pdeOperator\architectureOutput_{\weights})^{2}\bigr]
+   +(1-a)\,\expectationOperator_{\nu}\!\bigl[(\architectureOutput_{\weights}(\cdot,\timeHorizon)-\payoff)^{2}\bigr]
+   \quad(\text{soft}),
+\end{equation}
+with the terminal penalty on a boundary sampler $\nu$ and weight $a=\tfrac12$.
+Optimisation is by Adam with cosine-annealed step size; the best-objective state
+is restored at termination. All forms share the network width and depth, the
+collocation budget, and the seed within a comparison.
+\end{definition}
+
+\subsection{Metrics}\label{sec:metrics}
+
+Three quantities are reported, each with a single symbol.
+\begin{itemize}
+  \item \emph{Accuracy} --- the relative $\mathrm{L}^{2}$ error against the
+    reference over an evaluation window,
+    $\relLtwo=\norm{\architectureOutput_{\weights}-\solutionField^{\star}}\big/\norm{\solutionField^{\star}}$;
+    reported both over the space-time window and on the back-propagated inception
+    slice $\timePoint=0$.
+  \item \emph{Constraint feasibility} --- the terminal-mismatch residual
+    $\boundaryResidual=\norm{\architectureOutput_{\weights}(\cdot,\timeHorizon)-\payoff}\big/\norm{\payoff}$;
+    it is exactly $0$ for the hard forms of Definition~\ref{def:forms} and is
+    measured for the soft form. This is the structural property reported alongside
+    the error.
+  \item \emph{Sensitivities} --- the spot Greeks $\Delta=\partial_{\spot}\vFunction$
+    and $\Gamma=\partial^{2}_{\spot\spot}\vFunction$, compared against the
+    reference Greeks (Appendix~\ref{app:greeks}).
+\end{itemize}
+
+% ===========================================================================
+\section{Hypotheses}\label{sec:hypotheses}
+
+The body is organised by hypothesis; each is stated here, before any measured
+section, and receives its own verdict. Hypotheses~H1--H3 were framed before the
+measurements that test them; the pre-registration status of H4 is stated
+explicitly with it.
+
+\begin{itemize}
+  \item \textbf{H1 (extension over algebra).} The regularity of the terminal
+    extension $\terminalExtension$ controls the achieved error by a larger factor
+    than the trial-solution algebra (additive versus convex combination).
+    \emph{Pre-registered as the design of the two-factor ablation of
+    Section~\ref{sec:h1}.}
+  \item \textbf{H2 (operator channel sets the error).} The achievable error is
+    governed by the uncancellable, high-wavenumber part of the operator channel,
+    $\projReachablePerp \generatorUnderlying \terminalExtension$, not by the total
+    forcing floor. \emph{Pre-registered as the forcing-floor / uncancellable-residual
+    hypothesis of the companion theory.}
+  \item \textbf{H3 (exact enforcement propagates less error).} Through a chained
+    backward induction, a form that enforces the terminal constraint exactly
+    ($\boundaryResidual = 0$) accumulates less error than a soft-penalty form
+    ($\boundaryResidual > 0$). \emph{Predicted from the single-problem study of
+    Section~\ref{sec:h1} before the induction runs of Section~\ref{sec:h3}.}
+  \item \textbf{H4 (accuracy is maintained as the number of exercise dates grows).}
+    The inception error stays bounded as $\numExerciseDates$ increases. \emph{The
+    close agreement measured at $\numExerciseDates=2,3$ is a post-hoc reading; H4
+    was posed as a question and the $\numExerciseDates=10$ run of
+    Section~\ref{sec:h4} was performed to test it. The result refutes H4.}
+\end{itemize}
+
+% ===========================================================================
+\section{Comprehensive results}\label{sec:results}
+
+The European-call instance is solved with each terminal datum $\times$ each form,
+under an identical budget ($2\times10^{4}$ iterations, one architecture, three
+seeds). Table~\ref{tab:main} reports the accuracy $\relLtwo$ (space-time and
+inception) and the feasibility residual $\boundaryResidual$ per cell; every entry
+is a mean $\pm$ standard deviation over the three seeds, not an aggregate over
+cells. The datum is smoothed either by a softplus of sharpness $\beta=100$ or by a
+Chen--Mangasarian operator $\smoothMaxCM$ of bandwidth $\smoothingScale$; the
+interpolation coefficient is linear, $\interpolationCoefficient(\timePoint)=\timePoint/\timeHorizon$.
+
+\begin{table}[htbp]\centering
+\caption{European call, three seeds. Accuracy $\relLtwo$ over the space-time
+  window and on the inception slice, and feasibility residual $\boundaryResidual$.
+  The hard forms satisfy the constraint exactly ($\boundaryResidual=0$); the soft
+  form does not.}\label{tab:main}
+\begin{tabular}{llccc}
+\toprule
+extension $\terminalExtension$ & form & $\relLtwo$ (space-time) & $\relLtwo$ ($\timePoint=0$) & $\boundaryResidual$\\
+\midrule
+softplus & additive & $1.39\!\times\!10^{-1}\!\pm\!2\!\times\!10^{-2}$ & $1.85\!\times\!10^{-1}\!\pm\!2\!\times\!10^{-2}$ & $0$\\
+softplus & convex   & $6.94\!\times\!10^{-2}\!\pm\!1\!\times\!10^{-2}$ & $5.42\!\times\!10^{-2}\!\pm\!1\!\times\!10^{-2}$ & $0$\\
+softplus & soft     & $4.69\!\times\!10^{-3}\!\pm\!4\!\times\!10^{-4}$ & $1.11\!\times\!10^{-2}\!\pm\!1\!\times\!10^{-3}$ & $7.0\!\times\!10^{-3}$\\
+\midrule
+Chen--Mangasarian & additive & $1.44\!\times\!10^{-2}\!\pm\!2\!\times\!10^{-3}$ & $6.22\!\times\!10^{-3}\!\pm\!4\!\times\!10^{-3}$ & $0$\\
+Chen--Mangasarian & convex   & $9.47\!\times\!10^{-3}\!\pm\!3\!\times\!10^{-3}$ & $9.52\!\times\!10^{-3}\!\pm\!5\!\times\!10^{-3}$ & $0$\\
+Chen--Mangasarian & soft     & $4.34\!\times\!10^{-3}\!\pm\!3\!\times\!10^{-4}$ & $1.03\!\times\!10^{-2}\!\pm\!8\!\times\!10^{-4}$ & $7.1\!\times\!10^{-3}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The unconstrained control ($\mathtt{pure\_nn}$) collapses to
+$\relLtwo\approx1$: the residual objective alone does not determine the solution
+(the homogeneous equation has many solutions), so the field settles on a trivial
+one. It is omitted from the comparison plots for scale and is not tabulated as a
+competitor.
+
+% ===========================================================================
+\section{H1 --- the terminal extension dominates the ansatz algebra}\label{sec:h1}
+
+Reading Table~\ref{tab:main} down the extension axis and across the form axis
+separates the two levers of hypothesis~H1. The loss-component decomposition of
+\eqref{eq:residual}--\eqref{eq:channels} is logged during training and reported in
+Table~\ref{tab:decomp}: the objective $\frakL$ splits into the network energy
+$\norm{\pdeResidual_{\weights}}^{2}$, the cross term
+$2\inner{\pdeResidual_{\weights}}{\pdeOperator\terminalExtension}$, and the
+$\weights$-independent floor $\norm{\pdeOperator\terminalExtension}^{2}$, and the
+floor into its velocity and operator channels.
+
+\begin{table}[htbp]\centering
+\caption{Loss-component decomposition, three seeds, averaged over the final
+  $10\%$ of iterations (single-minibatch estimates, hence the spread on the
+  floor). The additive form has no velocity channel
+  ($\interpolationCoefficient'\equiv0$).}\label{tab:decomp}
+\begin{tabular}{llrrrrrr}
+\toprule
+$\terminalExtension$ & form & floor & velocity & operator & net.\ energy & cross & $\frakL$\\
+\midrule
+softplus & additive & $7200\!\pm\!1200$ & $0$ & $7200\!\pm\!1200$ & $2330\!\pm\!260$ & $-4390\!\pm\!1100$ & $5160\!\pm\!1500$\\
+softplus & convex   & $3830\!\pm\!1100$ & $841\!\pm\!7$ & $2920\!\pm\!1100$ & $1320\!\pm\!50$ & $-2760\!\pm\!290$ & $2390\!\pm\!1100$\\
+Chen--Mang.\ & additive & $80\!\pm\!26$ & $1.7$ & $91\!\pm\!27$ & $42\!\pm\!22$ & $-82\!\pm\!42$ & $39\!\pm\!45$\\
+Chen--Mang.\ & convex   & $974\!\pm\!30$ & $841\!\pm\!7$ & $65\!\pm\!26$ & $948\!\pm\!3$ & $-1897\!\pm\!6$ & $25\!\pm\!25$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]\centering
+  \includegraphics[width=0.98\textwidth]{figures/2026-06-12_terminal_extension_vs_mode.png}
+  \caption{Accuracy per extension (colour) and form (axis), mean $\pm$ std over
+    three seeds. Left: space-time window. Right: inception price.}\label{fig:h1}
+\end{figure}
+
+\begin{finding}[The extension is the dominant lever]\label{find:h1}
+Holding the form fixed, replacing the softplus extension by the
+Chen--Mangasarian one lowers $\relLtwo$ by a factor $9.7$ for the additive form
+($1.39\times10^{-1}\to1.44\times10^{-2}$) and $7.3$ for the convex form, reaching
+a factor $30$ on the inception slice. Holding the extension fixed, the
+additive-to-convex change lowers $\relLtwo$ by a factor $2.0$ on the sharp
+softplus datum and $1.5$ on the smooth one --- within one standard deviation for
+the smooth datum. The extension controls the error by roughly an order of
+magnitude, the form by a factor of two. Measured, three seeds, from
+Tables~\ref{tab:main}--\ref{tab:decomp}. Hypothesis~H1 holds.
+\end{finding}
+
+\begin{observation}[Exact enforcement plus a smooth extension is competitive with the unconstrained penalty]\label{obs:h1}
+The soft form has the lowest space-time error but does not satisfy the constraint
+($\boundaryResidual\approx7\times10^{-3}$). With the Chen--Mangasarian extension
+the hard forms close most of that gap while enforcing the datum exactly, and on
+the inception slice --- the priced quantity --- the exactly-constrained additive
+form ($6.22\times10^{-3}$) is more accurate than the soft form
+($1.03\times10^{-2}$). Measured, three seeds, Table~\ref{tab:main}.
+\end{observation}
+
+% ===========================================================================
+\section{H2 --- the error is the uncancellable operator channel}\label{sec:h2}
+
+Hypothesis~H2 is tested directly by resolving the spatial power spectra of the two
+forcing channels of \eqref{eq:channels} and of the achieved residual
+$\pdeOperator\architectureOutput$, for the convex form on the sharp (softplus) and
+smooth (Chen--Mangasarian) extensions (Figure~\ref{fig:h2-spectra}). The
+comparison is computed at high resolution ($N=32768$ grid points) so that the
+softplus operator channel --- a sub-grid curvature spike of width
+$\sim1/(\beta\strike)\sim10^{-4}$ --- is represented rather than aliased.
+
+\begin{figure}[htbp]\centering
+  \includegraphics[width=0.98\textwidth]{figures/2026-06-12_spectral_channels_vs_residual.png}
+  \caption{Channel spectra versus achieved residual (convex form, high
+    resolution). Velocity channel $\interpolationCoefficient'\payoff$, operator
+    channel $\interpolationCoefficient\generatorUnderlying\payoff$, and residual
+    $\pdeOperator\architectureOutput$. Left: softplus. Right:
+    Chen--Mangasarian.}\label{fig:h2-spectra}
+\end{figure}
+
+For the softplus extension the operator channel is the broadband white plateau of
+Corollary~\ref{cor:white}, and the achieved residual coincides with it across the
+band: the network cancels the low-wavenumber velocity channel but leaves the
+operator spike uncancelled (Empirical finding~\ref{find:residual}). For the
+Chen--Mangasarian extension the operator channel is band-limited and the residual
+sits far below both channels --- it is cancellable. Figure~\ref{fig:h2-spike}
+shows the softplus operator channel resolving from an aliased artefact into the
+broadband plateau as the grid refines, with its band-integrated energy converging
+to $\approx1.9\times10^{4}$.
+
+\begin{figure}[htbp]\centering
+  \includegraphics[width=0.98\textwidth]{figures/2026-06-12_operator_channel_spike.png}
+  \caption{Resolving the softplus operator channel. Left: the curvature spike in
+    real space, which a coarse grid steps over. Right: its spectrum converging to
+    a plateau as the grid refines.}\label{fig:h2-spike}
+\end{figure}
+
+\begin{observation}[Verdict on H2]\label{obs:h2}
+The achieved error is set by the uncancellable, high-wavenumber operator channel,
+not by the total floor: the sharp extension, whose operator channel is white and
+uncancellable (Empirical finding~\ref{find:residual}), is the least accurate; the
+smooth extension, whose operator channel is band-limited, is an order of magnitude
+more accurate (Empirical finding~\ref{find:h1}). Notably the total floor is not
+the predictor --- the convex Chen--Mangasarian cell has a floor of $974$, twelve
+times the additive cell's $80$ (Table~\ref{tab:decomp}), yet a smaller objective
+$\frakL$, because its large floor is the \emph{cancellable} velocity channel.
+Hypothesis~H2 holds.
+\end{observation}
+
+% ===========================================================================
+\section{H3 --- exact enforcement propagates less error}\label{sec:h3}
+
+A Bermudan put with exercise dates $\timePoint_{1}<\dots<\timePoint_{\numExerciseDates}=\timeHorizon$
+is priced by backward induction: on each inter-exercise interval the value solves
+\eqref{eq:tvp}, and at each date the holder takes the smoothed maximum
+$\smoothMaxCM$ of the payoff and the continuation value $\continuationValue$. The
+learned induction (Section~\ref{sec:h3}) solves every interval with a hard-form
+trial solution whose terminal datum is the smoothed maximum of the payoff and the
+\emph{learned} value of the interval above; no analytic value is injected. Each
+stage is compared against the exact chained-convolution reference of
+Definition~\ref{def:exact-bermudan}; the per-date error is $\relLtwo$ on the spot
+window.
+
+Table~\ref{tab:induction} reports the two-date instance ($\numExerciseDates=2$):
+the learned hard and soft forms, and the exact-continuation oracle of
+Definition~\ref{def:oracle}, which supplies the analytic European continuation as
+the single intermediate datum. Figures~\ref{fig:h3-prop}--\ref{fig:h3-price} show
+the per-date error and the inception price.
+
+\begin{table}[htbp]\centering
+\caption{Two-date Bermudan ($\numExerciseDates=2$), one seed. Relative error
+  $\relLtwo$ near maturity and at inception. The oracle is supplied the exact
+  continuation and learns only the remaining stage.}\label{tab:induction}
+\begin{tabular}{lcc}
+\toprule
+form & $\relLtwo$ ($\timePoint=\timeHorizon/2$) & $\relLtwo$ (inception)\\
+\midrule
+hard convex (learned) & $2.15\times10^{-2}$ & $3.18\times10^{-2}$\\
+soft (learned)        & $2.91\times10^{-2}$ & $4.97\times10^{-2}$\\
+oracle (exact continuation) & --- & $1.2\times10^{-3}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]\centering
+  \includegraphics[width=0.82\textwidth]{figures/2026-06-13_bermudan_error_propagation.png}
+  \caption{Error at each exercise date, maturity (right) to inception (left).
+    Solid: hard convex. Dashed: soft.}\label{fig:h3-prop}
+\end{figure}
+\begin{figure}[htbp]\centering
+  \includegraphics[width=0.82\textwidth]{figures/2026-06-13_bermudan_inception.png}
+  \caption{Inception price. Solid: learned. Dashed (same colour): exact for that
+    $\numExerciseDates$. The learned values sit above the European put (a positive
+    early-exercise premium) and increase with $\numExerciseDates$.}\label{fig:h3-price}
+\end{figure}
+
+\begin{finding}[Exact enforcement propagates less error than a penalty]\label{find:h3}
+Through the two-date induction the hard convex form reaches an inception error of
+$3.18\times10^{-2}$ against $4.97\times10^{-2}$ for the soft form: the soft form's
+per-stage terminal mismatch ($\boundaryResidual\approx7\times10^{-3}$,
+Table~\ref{tab:main}) is inherited by the stage below and accumulates, whereas the
+hard form carries none. The exact-continuation oracle reaches $1.2\times10^{-3}$,
+so the representational limit of a single learned stage is small; the learned
+chain's larger error is the price of learning, rather than being handed, the
+continuation. Measured, one seed. Hypothesis~H3 holds.
+\end{finding}
+
+% ===========================================================================
+\section{H4 --- accuracy is not maintained as the exercise count grows}\label{sec:h4}
+
+Table~\ref{tab:mscaling} reports the hard convex induction at
+$\numExerciseDates\in\{2,3,10\}$: the inception error and the peak per-date error.
+
+\begin{table}[htbp]\centering
+\caption{Hard convex induction versus number of exercise dates
+  $\numExerciseDates$, one seed. Inception error and peak per-date error.}\label{tab:mscaling}
+\begin{tabular}{lcc}
+\toprule
+$\numExerciseDates$ & $\relLtwo$ (inception) & $\relLtwo$ (peak per-date)\\
+\midrule
+2  & $3.18\times10^{-2}$ & $3.18\times10^{-2}$\\
+3  & $3.09\times10^{-2}$ & $5.75\times10^{-2}$ (near maturity)\\
+10 & $1.44\times10^{-1}$ & $1.92\times10^{-1}$ (mid-life)\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{observation}[The error grows with the number of exercise dates; H4 is refuted]\label{obs:h4}
+The close agreement at $\numExerciseDates=2,3$ ($3.18\times10^{-2}$ against
+$3.09\times10^{-2}$) does not persist: at $\numExerciseDates=10$ the inception
+error is $1.44\times10^{-1}$ and the per-date error peaks near $1.9\times10^{-1}$
+in mid-life, roughly a fivefold increase (Figure~\ref{fig:h3-prop}). Two effects
+push the same way as $\numExerciseDates$ grows: each interval is shorter, so its
+Gaussian propagation smooths the payoff and exercise-boundary curvature less --- the
+smoothing length $\sigma\sqrt{\timeHorizon/\numExerciseDates}$ falls from $0.18$ at
+$\numExerciseDates=2$ to $0.08$ at $\numExerciseDates=10$, raising the per-stage
+operator channel by Proposition~\ref{prop:floor} --- and there are more stages to
+accumulate. The learned $\numExerciseDates=10$ inception price sits visibly below
+its exact reference for large spot. Measured, one seed; the growth rate in
+$\numExerciseDates$ is not yet characterised. Hypothesis~H4 is refuted.
+\end{observation}
+
+% ===========================================================================
+\section{Mechanism: regularity, spectral decay, and the operator channel}\label{sec:mechanism}
+
+The findings of Sections~\ref{sec:h1}--\ref{sec:h2} are explained by a chain of
+Fourier estimates that is \emph{proven} (Section~\ref{sec:mech-proven}), a
+closed-form model that is \emph{proven} (Section~\ref{sec:mech-toy}), measured
+evidence kept \emph{separate} (Section~\ref{sec:mech-measured}), and one
+\emph{conjectured} link to network trainability (Section~\ref{sec:mech-ntk}). The
+Fourier convention is $\fouriertransform{\payoff}(\wavenumber)=\int_{\R}\payoff(\spacePoint)\,e^{-i\wavenumber\spacePoint}\,d\spacePoint$.
+
+\subsection{The proven spectral laws}\label{sec:mech-proven}
+
+\begin{definition}[Regularity index]\label{def:reg}
+The regularity index $\regularityIndex$ of the datum $\payoff$ is the order of its
+lowest discontinuous derivative: $\payoff\in C^{\regularityIndex-1}$ while
+$\payoff^{(\regularityIndex)}$ has a jump, so $\payoff^{(\regularityIndex+1)}$
+contains a Dirac mass at the singular point.
+\end{definition}
+
+\begin{proposition}[Regularity governs spectral decay]\label{prop:decay}
+If $\payoff$ has regularity index $\regularityIndex$ with a jump of size $J$ in
+$\payoff^{(\regularityIndex)}$ at $\spacePoint^{\star}$, then
+\begin{equation}\label{eq:decay}
+  \abs{\fouriertransform{\payoff}(\wavenumber)}^{2}
+  \sim J^{2}\,\wavenumber^{-2(\regularityIndex+1)}
+  \qquad(\wavenumber\to\infty).
+\end{equation}
+\end{proposition}
+\begin{proof}
+Integrating $\fouriertransform{\payoff}(\wavenumber)=\int\payoff\,e^{-i\wavenumber\spacePoint}\,d\spacePoint$
+by parts $\regularityIndex+1$ times gives
+$\fouriertransform{\payoff}(\wavenumber)=(i\wavenumber)^{-(\regularityIndex+1)}\,\fouriertransform{\payoff^{(\regularityIndex+1)}}(\wavenumber)$.
+The distribution $\payoff^{(\regularityIndex+1)}$ is the sum of an integrable part,
+whose transform decays, and a Dirac $J\,\delta(\cdot-\spacePoint^{\star})$, whose
+transform is the constant $J\,e^{-i\wavenumber\spacePoint^{\star}}$. Hence
+$\fouriertransform{\payoff}(\wavenumber)=(i\wavenumber)^{-(\regularityIndex+1)}\bigl(J\,e^{-i\wavenumber\spacePoint^{\star}}+o(1)\bigr)$,
+which is \eqref{eq:decay}. The decay stalls exactly at the order where the first
+non-integrable derivative appears.
+\end{proof}
+
+\begin{proposition}[Elliptic amplification]\label{prop:amp}
+For the generator $\generatorUnderlying$ of order $2\operatorHalfOrder$ with Fourier
+symbol growing as $\abs{\wavenumber}^{2\operatorHalfOrder}$,
+\begin{equation}\label{eq:amp}
+  \abs{\fouriertransform{\generatorUnderlying\payoff}(\wavenumber)}^{2}
+  \sim \abs{\wavenumber}^{4\operatorHalfOrder}\,\abs{\fouriertransform{\payoff}(\wavenumber)}^{2}
+  \sim J^{2}\,\wavenumber^{\,4\operatorHalfOrder-2(\regularityIndex+1)} .
+\end{equation}
+Applying $\generatorUnderlying$ tilts the spectrum up by $\abs{\wavenumber}^{4\operatorHalfOrder}$,
+moving energy towards high wavenumbers.
+\end{proposition}
+\begin{proof}
+Multiplication by the symbol in Fourier space, then Proposition~\ref{prop:decay}.
+\end{proof}
+
+\begin{corollary}[The operator channel of a kinked datum is white]\label{cor:white}
+For a kink ($\regularityIndex=1$) under a second-order generator
+($\operatorHalfOrder=1$) the net exponent in \eqref{eq:amp} is
+$4\operatorHalfOrder-2(\regularityIndex+1)=0$: the operator channel
+$\generatorUnderlying\payoff$ has a flat (white) spectrum and infinite
+$\mathrm{L}^{2}$ norm; indeed $\generatorUnderlying\payoff=\tfrac{\sigma^{2}}{2}J\,\delta(\cdot-\spacePoint^{\star})$
+is a Dirac. For the call/put in log-price the slope jump is $J=\strike$.
+\end{corollary}
+
+\begin{proposition}[Forcing-floor scaling under smoothing]\label{prop:floor}
+Let $\payoff_{\smoothingScale}$ be the datum with its singularity mollified at
+spatial scale $\smoothingScale$, so its spectrum is essentially unchanged for
+$\abs{\wavenumber}\lesssim1/\smoothingScale$ and cut off above. If
+$4\operatorHalfOrder-2\regularityIndex-1>0$ the operator-channel floor is
+upper-cutoff dominated and
+\begin{equation}\label{eq:floor}
+  \norm{\generatorUnderlying\payoff_{\smoothingScale}}^{2}
+  \;\sim\;\int_{0}^{1/\smoothingScale}\wavenumber^{\,4\operatorHalfOrder-2\regularityIndex-2}\,d\wavenumber
+  \;\sim\;\smoothingScale^{-(4\operatorHalfOrder-2\regularityIndex-1)} .
+\end{equation}
+For the kink under the heat operator ($\operatorHalfOrder=\regularityIndex=1$)
+this is $\norm{\generatorUnderlying\payoff_{\smoothingScale}}^{2}\sim\smoothingScale^{-1}$:
+finite once smoothed, but growing as the smoothing sharpens.
+\end{proposition}
+\begin{proof}
+Parseval and \eqref{eq:amp} give the integrand; the cutoff at $1/\smoothingScale$
+(Definition of the mollifier scale) and the assumed exponent make the integral
+dominated by its upper limit, yielding \eqref{eq:floor}. A real-space check for
+$\regularityIndex=1$: $\generatorUnderlying\payoff_{\smoothingScale}$ is a
+regularised delta of height $\sim\smoothingScale^{-1}$ and width $\sim\smoothingScale$
+carrying fixed area, so its squared norm is
+$\text{height}^{2}\times\text{width}\sim\smoothingScale^{-1}$.
+\end{proof}
+
+\subsection{The analytic toy: an exactly solvable model of the mechanism}\label{sec:mech-toy}
+
+To isolate the mechanism with no network and no optimisation, replace the free
+network by its idealised spectral behaviour --- an ideal low-pass filter that
+represents (hence cancels) every mode of wavenumber $\abs{\wavenumber}\le\cutoffWavenumber$
+and nothing above. On the circle, with $\pdeOperator=\partial_{\timePoint}+\generatorUnderlying$
+and $\terminalExtension=\interpolationCoefficient\payoff$, every mode decouples and
+the residual minimisation is closed form. This is the exact realisation of the
+ideal-filter oracle of Definition~\ref{def:oracle}.
+
+\begin{proposition}[Closed-form residual and error of the ideal-filter model]\label{prop:toy}
+With $\interpolationCoefficient(\timePoint)=\timePoint/\timeHorizon$ the low modes
+($\abs{\wavenumber}\le\cutoffWavenumber$) are reproduced exactly, with zero residual;
+for the high modes ($\abs{\wavenumber}>\cutoffWavenumber$) the free-network
+coefficient vanishes, $\architectureOutput_{\wavenumber}(\timePoint)=\interpolationCoefficient(\timePoint)\,\fouriertransform{\payoff}(\wavenumber)$, and
+\begin{equation}\label{eq:toy}
+  \bigl(\pdeOperator\architectureOutput\bigr)_{\wavenumber}
+  =\Bigl(\interpolationCoefficient'-\tfrac{\sigma^{2}}{2}\wavenumber^{2}\interpolationCoefficient\Bigr)\fouriertransform{\payoff}(\wavenumber),
+  \qquad
+  \bigl(\architectureOutput-\solutionField^{\star}\bigr)_{\wavenumber}
+  =\Bigl(\interpolationCoefficient(\timePoint)-e^{-\frac{\sigma^{2}}{2}\wavenumber^{2}(\timeHorizon-\timePoint)}\Bigr)\fouriertransform{\payoff}(\wavenumber).
+\end{equation}
+The achieved residual is exactly the uncancellable projection
+$\projReachablePerp\pdeOperator\terminalExtension$: the network removes the
+low-wavenumber velocity channel and is left with the high-wavenumber operator
+channel.
+\end{proposition}
+\begin{proof}
+For $\abs{\wavenumber}\le\cutoffWavenumber$ the filter can set
+$\architectureOutput_{\wavenumber}=\solutionField^{\star}_{\wavenumber}=\fouriertransform{\payoff}(\wavenumber)\,e^{-\frac{\sigma^{2}}{2}\wavenumber^{2}(\timeHorizon-\timePoint)}$,
+which solves $\pdeOperator\solutionField^{\star}=0$ mode-wise and matches the datum
+at $\timeHorizon$; the residual there is $0$. For $\abs{\wavenumber}>\cutoffWavenumber$
+the network coefficient is $0$, so $\architectureOutput_{\wavenumber}=\interpolationCoefficient\fouriertransform{\payoff}(\wavenumber)$;
+applying $\pdeOperator=\partial_{\timePoint}-\tfrac{\sigma^{2}}{2}\wavenumber^{2}$
+mode-wise and subtracting the exact mode give \eqref{eq:toy}. The verification is
+numerical to machine precision in the reproduction script.
+\end{proof}
+
+Figure~\ref{fig:toy-gap} sweeps the cutoff $\cutoffWavenumber$: a band-limited
+datum drops to an exact cliff (an exact spectral gap gives an exact solution), a
+smooth datum falls exponentially, and a kink leaves the near-flat white plateau
+of Corollary~\ref{cor:white} in the residual --- yet its solution error still
+decays, because the operator inverse damps the uncancelled high modes.
+Figure~\ref{fig:toy-amp} shows the $\wavenumber^{4}$ amplification turning the
+kink's $\wavenumber^{-4}$ datum into that plateau. Figure~\ref{fig:toy-rve} shows
+that the residual and the error have different time profiles, so the residual is
+not a universal predictor of the error --- the link is the $\timePoint$-dependent
+operator inverse.
+
+\begin{figure}[htbp]\centering
+  \includegraphics[width=0.98\textwidth]{figures/2026-07-03_toy_gap_vs_cutoff.png}
+  \caption{Ideal-filter model. Left: the uncancellable residual versus the cutoff
+    $\cutoffWavenumber$; the kink is a near-flat plateau. Right: the space-time
+    solution error; the kink still decays. Solid curves, colour-coded by datum
+    regularity.}\label{fig:toy-gap}
+\end{figure}
+\begin{figure}[htbp]\centering
+  \includegraphics[width=0.98\textwidth]{figures/2026-07-03_toy_channel_amplification.png}
+  \caption{The $\wavenumber^{4}$ operator amplification. Datum spectrum (dashed)
+    and operator channel (solid): a kink's $\wavenumber^{-4}$ datum becomes a
+    white plateau; a smooth datum stays below the cutoff (dotted).}\label{fig:toy-amp}
+\end{figure}
+\begin{figure}[htbp]\centering
+  \includegraphics[width=0.98\textwidth]{figures/2026-07-03_toy_residual_vs_error.png}
+  \caption{Residual is not error. Left: one high mode's residual (solid) and error
+    (dashed) over time. Right: the error-versus-residual trace over time is a
+    curve, not a line.}\label{fig:toy-rve}
+\end{figure}
+
+\subsection{Measured confirmation (kept separate from the proofs)}\label{sec:mech-measured}
+
+\begin{finding}[The operator channel is the achieved residual]\label{find:residual}
+On the high-resolution spectra of Section~\ref{sec:h2} the achieved residual of
+the sharp (softplus) extension coincides with its operator channel across the
+whole band --- their band-integrated energies agree to two significant figures
+($6.33\times10^{3}$ against $6.34\times10^{3}$) --- while for the smooth
+(Chen--Mangasarian) extension the residual sits far below the forcing
+($8.85\times10^{-1}$). Measured, one seed, from the spectra of
+Figure~\ref{fig:h2-spectra}.
+\end{finding}
+
+\begin{finding}[The floor ratio matches the effective-cutoff ratio]\label{find:floor}
+The measured operator-channel floor of the additive form is $7.2\times10^{3}$ for
+the softplus extension against $9.1\times10^{1}$ for the Chen--Mangasarian one, a
+ratio $\approx79$ (Table~\ref{tab:decomp}), consistent with
+Proposition~\ref{prop:floor}: at fixed payoff and operator the floor ratio is, to
+leading order, the ratio of effective smoothing cutoffs. Measured, mean over three
+seeds.
+\end{finding}
+
+\subsection{The conjectured trainability link}\label{sec:mech-ntk}
+
+\begin{remark}[Spectral bias, conjectured]\label{rem:ntk}
+The step from ``white forcing'' to ``error-dominating'' rests on identifying the
+network-reachable subspace $\reachableSet$ with the low-wavenumber band. Under the
+neural-tangent-kernel approximation of training, gradient descent fills
+$\reachableSet$ in decreasing kernel-eigenvalue order, which on a bounded domain
+corresponds to increasing wavenumber, so within a finite budget
+$\reachableSet\approx\{\text{low }\wavenumber\}$ and
+$\reachableSetPerp\approx\{\text{high }\wavenumber\}$. This identification is
+corroborated by the measured spectra of Section~\ref{sec:h2} but is not proven
+here; the ideal-filter model of Proposition~\ref{prop:toy} assumes it in its
+sharpest (hard-cutoff) form.
+\end{remark}
+
+% ===========================================================================
+\section{Conclusion}\label{sec:conclusion}
+
+Four hypotheses received verdicts. The regularity of the terminal extension
+controls the achieved error by an order of magnitude, the trial-solution algebra
+by a factor of two (H1, held); the achieved error is the uncancellable
+high-wavenumber operator channel, not the total floor (H2, held); exact terminal
+enforcement propagates less error through a Bermudan backward induction than a soft
+penalty (H3, held); but accuracy is not maintained as the number of exercise dates
+grows (H4, refuted at ten dates). The mechanism is proven as a chain of Fourier
+estimates and in a closed-form model, kept separate from the measured evidence; the
+one step from spectral content to network trainability remains conjectural
+(Remark~\ref{rem:ntk}). The measured results rest on a single seed for the
+induction and a single architecture and payoff throughout; the growth of the
+induction error with the number of exercise dates, and the neural-tangent-kernel
+identification of the reachable subspace, are the open directions.
+
+% ===========================================================================
+\appendix
+\section{Spot Greeks}\label{app:greeks}
+
+In the log-price coordinate $\spacePoint=\ln\spot$ the spot sensitivities of a
+value field $\vFunction$ are $\Delta=\partial_{\spot}\vFunction=e^{-\spacePoint}\partial_{\spacePoint}\vFunction$
+and $\Gamma=\partial^{2}_{\spot\spot}\vFunction=e^{-2\spacePoint}(\partial_{\spacePoint\spacePoint}\vFunction-\partial_{\spacePoint}\vFunction)$,
+compared against the reference Greeks by relative $\mathrm{L}^{2}$ error over the
+evaluation window. On the smoothed European instances all four forms of
+Definition~\ref{def:forms} reproduce $\Delta$ and $\Gamma$ within the evaluation
+window; the second derivative $\Gamma$ is the hardest, with its largest error at
+the money, consistent with the operator channel of Section~\ref{sec:mechanism}
+being a curvature at the strike.
+
+\section{The exact multi-stage Bermudan reference}\label{app:exact}
+
+\begin{definition}[Exact Bermudan value]\label{def:exact-bermudan}
+For exercise dates $\timePoint_{1}<\dots<\timePoint_{\numExerciseDates}=\timeHorizon$
+the exact value solves the dynamic program with $\vFunction(\timeHorizon,\cdot)=\payoff$,
+$\continuationValue(\timePoint_{j},\cdot)=e^{(\timePoint_{j+1}-\timePoint_{j})\generatorUnderlying}\vFunction(\timePoint_{j+1},\cdot)$,
+$\vFunction(\timePoint_{j},\cdot)=\max(\payoff,\continuationValue(\timePoint_{j},\cdot))$.
+Between exercise dates the propagation is the exact heat semigroup, i.e.\ Gaussian
+convolution (one step per interval, no time discretisation), and the maximum is
+taken exactly. This is the machine-precision target of Definition~\ref{def:reference};
+its defining properties (the continuation at the last intermediate date equals the
+European value, the value at maturity is the payoff, the value dominates the
+European value, and it is monotone in $\numExerciseDates$) are verified in the test
+suite.
+\end{definition}
+
+\section{Reproduction}\label{app:repro}
+
+Every figure and number traces to a named script in the repository
+\texttt{constrained\_learning\_option\_pricing} and a run directory under
+\texttt{data/}. Figure scripts derive their data folder from their own filename.
+
+The scripts below sit under
+\fp{experiments/python_scripts/exp_ansatz_forms_heat/} unless a fuller path is
+given.
+\begin{itemize}
+  \item \textbf{Comprehensive results and H1} (Tables~\ref{tab:main}--\ref{tab:decomp},
+    Figure~\ref{fig:h1}): trainer \fp{ablation_ansatz_forms.py}; cross-seed
+    aggregation \fp{ansatz_forms_cross_seed_summary.py}; figure
+    \fp{terminal_extension_vs_mode_comparison.py}. Runs
+    \fp{data/ablation_ansatz_forms/*_call*_iters20000_seed{0,1,2}} and the
+    \texttt{call\_cm} twin.
+  \item \textbf{H2 spectra} (Figures~\ref{fig:h2-spectra}--\ref{fig:h2-spike},
+    Empirical findings~\ref{find:residual}--\ref{find:floor}):
+    \fp{spectral_gap_analysis.py} (high-resolution channel split and spike
+    resolution), reading the trained \texttt{seed0} call / call\_cm models.
+  \item \textbf{Mechanism toy} (Proposition~\ref{prop:toy},
+    Figures~\ref{fig:toy-gap}--\ref{fig:toy-rve}):
+    \fp{spectral_toy_operator_channel.py} (torch-free; prints the numerical
+    self-check of the closed-form residual, including an operator-channel probe).
+  \item \textbf{H3/H4 induction} (Tables~\ref{tab:induction}--\ref{tab:mscaling},
+    Figures~\ref{fig:h3-prop}--\ref{fig:h3-price}): driver
+    \fp{bermudan_backward_induction.py}; cross-run figures
+    \fp{bermudan_induction_comparison.py}; exact reference
+    \fp{learning_option_pricing/pde/heat_references.py}
+    (\texttt{bermudan\_put\_value\_exact}). Runs
+    \fp{data/bermudan_backward_induction/*_m{2,3,10}_*_seed0} and the
+    \texttt{soft\_pinn} twin, trained on Jean~Zay (\texttt{akz@v100}).
+\end{itemize}
+
+\end{document}
