@@ -140,6 +140,20 @@ def main(argv=None) -> int:
     for kk, g, pr in zip(wavenumbers, gains, predicted):
         print(f"  k={kk:2d}  gain={g:.3e}  predicted(heat)={pr:.3e}")
 
+    # persist the measured gains so the figure (and any report table) can be
+    # regenerated without recomputing the exact induction
+    import yaml
+    with open(out / "gains.yaml", "w") as f:
+        yaml.safe_dump({
+            "m": args.m, "amp": args.amp, "t_inject": float(t_inject),
+            "frequency_gains": [
+                {"k": int(kk), "gain": float(g), "predicted_heat": float(pr)}
+                for kk, g, pr in zip(wavenumbers, gains, predicted)],
+            "distance_gains": [
+                {"t_inject": float(t), "gain": float(g)}
+                for t, g in zip(inject_times, dist_gains)],
+        }, f, sort_keys=False)
+
     fig, (axL, axR) = plt.subplots(1, 2, figsize=(12, 5))
     axL.semilogy(wavenumbers, np.clip(gains, 1e-30, None), "-o", color="#1b6ca8",
                  lw=1.6, ms=4, label="measured gain (exact induction)")
