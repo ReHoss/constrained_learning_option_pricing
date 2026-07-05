@@ -426,24 +426,27 @@ the single intermediate datum. Figures~\ref{fig:h3-prop}--\ref{fig:h3-price} sho
 the per-date error and the inception price.
 
 \begin{table}[htbp]\centering
-\caption{Two-date Bermudan ($\numExerciseDates=2$), one seed. Relative error
-  $\relLtwo$ near maturity and at inception. The oracle is supplied the exact
-  continuation and learns only the remaining stage.}\label{tab:induction}
+\caption{Two-date Bermudan ($\numExerciseDates=2$), mean over three seeds (seed
+  standard deviation below $1\times10^{-4}$). Relative error $\relLtwo$ near maturity
+  and at inception. The oracle (a single run) is supplied the exact continuation and
+  learns only the remaining stage.}\label{tab:induction}
 \begin{tabular}{lcc}
 \toprule
 form & $\relLtwo$ ($\timePoint=\timeHorizon/2$) & $\relLtwo$ (inception)\\
 \midrule
-hard convex (learned) & $2.15\times10^{-2}$ & $3.18\times10^{-2}$\\
-soft (learned)        & $2.91\times10^{-2}$ & $4.97\times10^{-2}$\\
+hard convex (learned) & $2.15\times10^{-2}$ & $3.17\times10^{-2}$\\
+soft (learned)        & $2.92\times10^{-2}$ & $4.98\times10^{-2}$\\
 oracle (exact continuation) & --- & $1.2\times10^{-3}$\\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[htbp]\centering
-  \includegraphics[width=0.82\textwidth]{figures/2026-06-13_bermudan_error_propagation.png}
-  \caption{Error at each exercise date, maturity (right) to inception (left).
-    Solid: hard convex. Dashed: soft.}\label{fig:h3-prop}
+  \includegraphics[width=0.82\textwidth]{figures/2026-07-04_bermudan_error_propagation_seeds.png}
+  \caption{Error at each exercise date, maturity (right) to inception (left); seed
+    mean over three seeds, with a min--max band narrower than the markers (seed
+    spread below $0.5\%$). Colour by the number of exercise dates
+    $\numExerciseDates$; hard convex solid, soft dashed.}\label{fig:h3-prop}
 \end{figure}
 \begin{figure}[htbp]\centering
   \includegraphics[width=0.82\textwidth]{figures/2026-06-13_bermudan_inception.png}
@@ -454,13 +457,14 @@ oracle (exact continuation) & --- & $1.2\times10^{-3}$\\
 
 \begin{finding}[Exact enforcement propagates less error than a penalty]\label{find:h3}
 Through the two-date induction the hard convex form reaches an inception error of
-$3.18\times10^{-2}$ against $4.97\times10^{-2}$ for the soft form: the soft form's
+$3.17\times10^{-2}$ against $4.98\times10^{-2}$ for the soft form: the soft form's
 per-stage terminal mismatch ($\boundaryResidual\approx7\times10^{-3}$,
 Table~\ref{tab:main}) is inherited by the stage below and accumulates, whereas the
 hard form carries none. The exact-continuation oracle reaches $1.2\times10^{-3}$,
 so the representational limit of a single learned stage is small; the learned
 chain's larger error is attributable to learning, rather than being supplied, the
-continuation. Measured, one seed. Hypothesis~H3 holds.
+continuation. Measured as the mean over three seeds (seed standard deviation below
+$1\times10^{-4}$). Hypothesis~H3 holds.
 \end{finding}
 
 % ===========================================================================
@@ -471,31 +475,39 @@ $\numExerciseDates\in\{2,3,10\}$: the inception error and the peak per-date erro
 
 \begin{table}[htbp]\centering
 \caption{Hard convex induction versus number of exercise dates
-  $\numExerciseDates$, one seed. Inception error and peak per-date error.}\label{tab:mscaling}
+  $\numExerciseDates$, mean over three seeds (seed standard deviation
+  $<5\times10^{-4}$ throughout). Inception error and peak per-date error.}\label{tab:mscaling}
 \begin{tabular}{lcc}
 \toprule
 $\numExerciseDates$ & $\relLtwo$ (inception) & $\relLtwo$ (peak per-date)\\
 \midrule
-2  & $3.18\times10^{-2}$ & $3.18\times10^{-2}$\\
-3  & $3.09\times10^{-2}$ & $5.75\times10^{-2}$ (near maturity)\\
+2  & $3.17\times10^{-2}$ & $3.17\times10^{-2}$\\
+3  & $3.10\times10^{-2}$ & $5.77\times10^{-2}$ (near maturity)\\
+5  & $5.93\times10^{-2}$ & $1.02\times10^{-1}$ (mid-life)\\
 10 & $1.44\times10^{-1}$ & $1.92\times10^{-1}$ (mid-life)\\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{observation}[The error grows with the number of exercise dates; H4 is refuted]\label{obs:h4}
-The close agreement at $\numExerciseDates=2,3$ ($3.18\times10^{-2}$ against
-$3.09\times10^{-2}$) does not persist: at $\numExerciseDates=10$ the inception
-error is $1.44\times10^{-1}$ and the per-date error peaks near $1.9\times10^{-1}$
-in mid-life, roughly a fivefold increase (Figure~\ref{fig:h3-prop}). Two effects
-act in the same direction as $\numExerciseDates$ grows: each interval is shorter, so its
-Gaussian propagation smooths the payoff and exercise-boundary curvature less --- the
-smoothing length $\sigma\sqrt{\timeHorizon/\numExerciseDates}$ falls from $0.18$ at
-$\numExerciseDates=2$ to $0.08$ at $\numExerciseDates=10$, raising the per-stage
-operator channel by Proposition~\ref{prop:floor} --- and there are more stages to
-accumulate. The learned $\numExerciseDates=10$ inception price lies visibly below
-its exact reference for large spot. Measured, one seed; the growth rate in
-$\numExerciseDates$ is not yet characterised. Hypothesis~H4 is refuted.
+The close agreement at $\numExerciseDates=2,3$ ($3.17\times10^{-2}$ against
+$3.10\times10^{-2}$) does not persist: the inception error then grows monotonically,
+$5.93\times10^{-2}$ at $\numExerciseDates=5$ and $1.44\times10^{-1}$ at
+$\numExerciseDates=10$, where the per-date error peaks near $1.9\times10^{-1}$ in
+mid-life --- roughly a fourfold rise in the inception error, and sixfold in the peak
+per-date error, from $\numExerciseDates=2$ to $10$ (Figure~\ref{fig:h3-prop}). Two
+effects act in the same direction as $\numExerciseDates$ grows: each interval is
+shorter, so its Gaussian propagation smooths the payoff and exercise-boundary
+curvature less --- the smoothing length
+$\sigma\sqrt{\timeHorizon/\numExerciseDates}$ falls from $0.18$ at
+$\numExerciseDates=2$ through $0.11$ at $\numExerciseDates=5$ to $0.08$ at
+$\numExerciseDates=10$, raising the per-stage operator channel by
+Proposition~\ref{prop:floor} --- and there are more stages to accumulate. The
+learned $\numExerciseDates=10$ inception price lies visibly below its exact
+reference for large spot. Measured over three seeds; the seed standard deviation is
+below $5\times10^{-4}$ at every date and every $\numExerciseDates$, so the growth is
+a systematic effect and not seed noise, though its exact rate in $\numExerciseDates$
+is not characterised. Hypothesis~H4 is refuted.
 \end{observation}
 
 \begin{remark}[Computational cost of the learned induction grows quadratically in $\numExerciseDates$]\label{rem:cost}
@@ -740,8 +752,9 @@ penalty (H3, held); but accuracy is not maintained as the number of exercise dat
 grows (H4, refuted at ten dates). The mechanism is proven as a chain of Fourier
 estimates and in a closed-form model, kept separate from the measured evidence; the
 one step from spectral content to network trainability remains conjectural
-(Remark~\ref{rem:ntk}). The measured results rest on a single seed for the
-induction and a single architecture and payoff throughout; the growth of the
+(Remark~\ref{rem:ntk}). The measured results rest on three seeds for the induction
+(the error growth is systematic, seed standard deviation below $5\times10^{-4}$) and
+a single architecture and payoff throughout; the precise growth rate of the
 induction error with the number of exercise dates, and the neural-tangent-kernel
 identification of the reachable subspace, are the open directions.
 
