@@ -358,21 +358,24 @@ def bermudan_put_value_exact(
         return heat_put_payoff(y, K)
 
     # Build the value-at-exercise callables V(t_k, .) bottom-up (top = maturity).
+    # Every loop-dependent quantity (including the evaluation date t_k) must be
+    # bound as a make_value argument: a bare ``et[k]`` inside ``value`` would be
+    # captured by reference and late-bound to the loop's final k, silently
+    # propagating every intermediate stage to the wrong date for m >= 3 dates
+    # (regression-tested in test_heat_references.py).
     value_at = {m - 1: payoff}
     for k in range(m - 2, -1, -1):
-        t_kp1 = et[k + 1]
-        v_kp1 = value_at[k + 1]
 
-        def make_value(v_kp1, t_kp1):
+        def make_value(v_kp1, t_k, t_kp1):
             def value(y):
                 cont = heat_propagate(
-                    v_kp1, y, torch.full_like(y, et[k]), t_terminal=t_kp1,
+                    v_kp1, y, torch.full_like(y, t_k), t_terminal=t_kp1,
                     sigma=sigma, y_lo=y_lo, y_hi=y_hi, n_quad=n_quad,
                 )
                 return torch.maximum(payoff(y), cont)
             return value
 
-        value_at[k] = make_value(v_kp1, t_kp1)
+        value_at[k] = make_value(value_at[k + 1], et[k], et[k + 1])
 
     def value_at_time(xv: torch.Tensor, t0: float) -> torch.Tensor:
         # On an exercise date: the with-exercise value.  Strictly inside an

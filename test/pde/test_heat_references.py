@@ -261,3 +261,41 @@ def test_bermudan_value_monotone_in_exercise_dates():
     v2 = _berm(x, torch.zeros_like(x), [0.5, T], K=K, sigma=sigma)
     v3 = _berm(x, torch.zeros_like(x), [1.0 / 3, 2.0 / 3, T], K=K, sigma=sigma)
     assert (v3 - v2).min().item() > -2e-3
+
+
+def test_bermudan_intermediate_date_reduces_to_european_continuation():
+    # Regression test for the late-binding closure defect: at the LAST
+    # intermediate date t_2 of a three-date chain the continuation is the
+    # European put over [t_2, T], so
+    #     V(t_2, .) = max(payoff, European(t_2, .)).
+    # Before the fix, the stage callable propagated the payoff over the elapsed
+    # time T - t_1 instead of T - t_2 (the loop variable was captured by
+    # reference), which fails this identity by O(1e-1).
+    K, sigma, T = 100.0, 0.25, 1.0
+    t1, t2 = 1.0 / 3, 2.0 / 3
+    x = torch.linspace(math.log(50.0), math.log(150.0), 60, dtype=torch.float64)
+    got = _berm(x, torch.full_like(x, t2), [t1, t2, T], K=K, sigma=sigma)
+    european = heat_put_exact(x, torch.full_like(x, t2), K=K, T=T, sigma=sigma)
+    want = torch.maximum(heat_put_payoff(x, K), european)
+    assert torch.allclose(got, want, atol=2e-3), (got - want).abs().max().item()
+
+
+def test_bermudan_dynamic_program_tower_property():
+    # DP self-consistency on a four-date chain: the value at t_1 with the full
+    # remaining date list must equal the max-glued one-interval propagation of
+    # the value at t_2 with its own remaining list,
+    #     V(t_1, .) = max(payoff, S_{t_2-t_1} V(t_2, .)).
+    # This is the identity the induction relies on stage by stage.
+    K, sigma, T = 100.0, 0.25, 1.0
+    t1, t2, t3 = 0.25, 0.5, 0.75
+    x = torch.linspace(math.log(60.0), math.log(140.0), 40, dtype=torch.float64)
+    lhs = _berm(x, torch.full_like(x, t1), [t1, t2, t3, T], K=K, sigma=sigma)
+
+    def v_t2(y):
+        return _berm(y, torch.full_like(y, t2), [t2, t3, T], K=K, sigma=sigma)
+
+    cont = heat_propagate(v_t2, x, torch.full_like(x, t1), t_terminal=t2,
+                          sigma=sigma, y_lo=math.log(5.0), y_hi=math.log(600.0),
+                          n_quad=1500)
+    rhs = torch.maximum(heat_put_payoff(x, K), cont)
+    assert torch.allclose(lhs, rhs, atol=5e-3), (lhs - rhs).abs().max().item()
