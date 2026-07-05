@@ -157,6 +157,47 @@ def _make_stage_problem(k, exercise_times, tau, cont_above_fn, coarse_exact):
 
 
 # ---------------------------------------------------------------------------
+# Chain reconstruction from saved artefacts (revalidation / post-hoc analysis)
+# ---------------------------------------------------------------------------
+
+def rebuild_models(run_dir: Path, meta: dict) -> dict:
+    """Rebuild the frozen stage chain top-down from the saved per-stage state
+    dicts, exactly mirroring the training-time construction (each stage's
+    terminal datum closes over the frozen stage above).  Returns ``{k: model}``
+    in float64 eval mode with gradients disabled."""
+    import torch
+
+    from ablation_ansatz_forms import build_ansatz
+
+    variant = cat.variant_by_name(meta["variant"])
+    hparams = dict(cat.DEFAULT_HPARAMS)
+    hparams["num_iterations"] = meta["num_iterations"]
+    exercise_times, tau, m = meta["exercise_times"], meta["tau"], meta["m"]
+
+    models: dict = {}
+    cont_above_fn = lambda x: torch.zeros_like(x)  # noqa: E731  (nothing above maturity)
+    dummy_exact = lambda x, t: torch.zeros_like(x)  # noqa: E731  (unused at evaluation)
+    for k in range(m - 1, -1, -1):
+        problem = _make_stage_problem(k, exercise_times, tau, cont_above_fn, dummy_exact)
+        ansatz = build_ansatz(variant, problem, hparams, model_seed=0)
+        state = torch.load(run_dir / f"stage{k}" / "model.pt", map_location="cpu")
+        ansatz.load_state_dict(state)
+        ansatz.double().eval()
+        for p in ansatz.parameters():
+            p.requires_grad_(False)
+        models[k] = ansatz
+
+        def make_cont(frozen):
+            def cont(x):
+                xc = x.reshape(-1, 1).to(torch.float64)
+                xt = torch.cat([xc, torch.zeros_like(xc)], dim=1)
+                return frozen(xt).reshape(x.shape).to(x.dtype)
+            return cont
+        cont_above_fn = make_cont(ansatz)
+    return models
+
+
+# ---------------------------------------------------------------------------
 # Validation against the exact reference
 # ---------------------------------------------------------------------------
 
@@ -318,6 +359,11 @@ def build_parser():
                    help="prefix the output dir with _debug_ (exploratory runs)")
     p.add_argument("--replot", type=str, default=None,
                    help="redraw figures from a saved run dir and exit")
+    p.add_argument("--revalidate", type=str, default=None,
+                   help="rebuild the chain from a saved run dir, recompute the "
+                        "validation against the exact reference (overwriting "
+                        "validation.npz, figures, and the metadata error fields), "
+                        "and exit; no training")
     return p
 
 
@@ -338,6 +384,28 @@ def main(argv=None) -> int:
         meta = yaml.safe_load(open(run_dir / "metadata.yaml"))
         _plot(val, run_dir, meta.get("variant_label", meta.get("variant", "")))
         logger.info("replotted into %s", run_dir)
+        return 0
+
+    if args.revalidate is not None:
+        import yaml
+        run_dir = Path(args.revalidate)
+        meta = yaml.safe_load(open(run_dir / "metadata.yaml"))
+        logger.info("revalidating %s (m=%d, variant=%s) against the exact reference",
+                    run_dir.name, meta["m"], meta["variant"])
+        models = rebuild_models(run_dir, meta)
+        exercise_times = [float(s) for s in meta["exercise_times"]]
+        tau = [float(s) for s in meta["tau"]]
+        val = _validate(models, exercise_times, tau)
+        _save_arrays(val, run_dir)
+        _plot(val, run_dir, meta.get("variant_label", meta.get("variant", "")))
+        meta["rel_l2_per_stage"] = {f"k{s['k']}_t{s['t_global']:.3f}": s["rel_l2"]
+                                    for s in val["stages"]}
+        meta["inception_rel_l2"] = val["stages"][0]["rel_l2"]
+        meta["revalidated"] = True
+        with open(run_dir / "metadata.yaml", "w") as f:
+            yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
+        logger.info("revalidated: inception rel_l2=%.3e (metadata + npz + figures updated)",
+                    val["stages"][0]["rel_l2"])
         return 0
 
     if args.num_iterations < SMOKE_TEST_NUM_ITERATIONS_THRESHOLD and not args.debug:
