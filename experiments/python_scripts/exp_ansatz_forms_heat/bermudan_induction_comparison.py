@@ -54,10 +54,72 @@ def _load(run_dir: Path) -> dict:
             "inception_rel_l2": stages[0]["rel_l2"]}
 
 
+def _aggregate(runs, out) -> int:
+    """Group runs by ``(m, form)`` and plot the per-stage relative-error seed mean
+    with a min--max band, colour-coded by the number of exercise dates. Writes the
+    figure and a ``seed_statistics.yaml`` (inception and peak-per-date error, seed
+    mean and standard deviation per group). Returns ``0``."""
+    import yaml
+    from collections import defaultdict
+
+    formdisp = {"hard_convex_linear": "hard convex", "soft_pinn": "soft"}
+    groups = defaultdict(list)
+    for r in runs:
+        groups[(r["m"], r["form"])].append(r)
+    keys = sorted(groups, key=lambda k: (k[0], 0 if k[1].startswith("hard") else 1))
+    ms = sorted({m for m, _ in keys})
+    cmap = plt.cm.viridis(np.linspace(0.12, 0.85, len(ms)))
+    mcol = {m: c for m, c in zip(ms, cmap)}
+
+    fig, ax = plt.subplots(figsize=(8.5, 5))
+    summary = []
+    for (m, form) in keys:
+        grp = groups[(m, form)]
+        n_stages = len(grp[0]["stages"])
+        ts = np.array([grp[0]["stages"][k]["t_global"] for k in range(n_stages)])
+        # (n_seeds, n_stages) relative errors, stages aligned by index (shared t_global)
+        errs = np.array([[run["stages"][k]["rel_l2"] for k in range(n_stages)]
+                         for run in grp])
+        mean, lo, hi = errs.mean(0), errs.min(0), errs.max(0)
+        col, ls = mcol[m], ("--" if form == "soft_pinn" else "-")
+        ax.fill_between(ts, lo, hi, color=col, alpha=0.18, lw=0)
+        ax.semilogy(ts, mean, marker="o", color=col, ls=ls,
+                    label=f"$m={m}$ {formdisp.get(form, form)} ($n={len(grp)}$)")
+        inc, peak = errs[:, 0], errs.max(1)  # stage 0 is inception
+        summary.append({"m": int(m), "form": form, "n_seeds": len(grp),
+                        "inception_mean": float(inc.mean()), "inception_std": float(inc.std()),
+                        "peak_mean": float(peak.mean()), "peak_std": float(peak.std())})
+
+    ax.set_xlabel("global time $t_k$ (0 = inception, $T$ = maturity)")
+    ax.set_ylabel(r"relative $L^2$ error vs exact (per exercise date)")
+    ax.set_title(r"Error propagation: seed mean $\pm$ min--max band", fontsize=10)
+    ax.grid(True, which="both", alpha=0.3)
+    ax.invert_xaxis()  # induction runs maturity (right) -> inception (left)
+    leg = ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8, frameon=True)
+    fig.tight_layout(rect=[0, 0.1, 0.80, 1])
+    finalize_figure(
+        fig, out / "error_propagation_seeds.png", legends=[leg], axes=[ax],
+        formula=(r"seed mean of $\mathrm{rel}\,L^2(t_k)$ over $n=3$ seeds; band = "
+                 r"min--max (narrower than the markers, so seed spread $<0.5\%$). "
+                 r"Colour by $m$; hard convex solid, soft dashed."),
+        dpi=140, formula_fontsize=8)
+
+    with open(out / "seed_statistics.yaml", "w") as f:
+        yaml.safe_dump(summary, f, sort_keys=False)
+    print(f"\nwrote aggregated figure + seed_statistics.yaml to {out}\n")
+    for s in summary:
+        print(f"m={s['m']:>2} {s['form']:18s} n={s['n_seeds']}  "
+              f"inception={s['inception_mean']:.3e} +/- {s['inception_std']:.1e}  "
+              f"peak={s['peak_mean']:.3e} +/- {s['peak_std']:.1e}")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("run_dirs", nargs="*", help="bermudan_backward_induction run dirs")
+    p.add_argument("--aggregate-seeds", action="store_true",
+                   help="group runs by (m, form); plot per-stage seed mean with a min--max band")
     args = p.parse_args(argv)
 
     if args.run_dirs:
@@ -72,6 +134,9 @@ def main(argv=None) -> int:
 
     out = script_data_dir(__file__) / utc_timestamp()
     out.mkdir(parents=True, exist_ok=True)
+
+    if args.aggregate_seeds:
+        return _aggregate(runs, out)
 
     # colour by run; hard forms solid, soft_pinn dashed (it does not enforce the
     # terminal condition, so it is the odd one out — a reference, not the method).
