@@ -20,6 +20,13 @@
 % Reuse (and locally extend) Remy's constrained-learning notation package.
 \usepackage{notation}
 
+% --- local semantic macros for the error-recursion objects (this report) ----
+\newcommand{\heatSemigroup}{S}       % heat propagation semigroup over one interval
+\newcommand{\stageDatum}{h}          % stage terminal datum (CAL convention h_k)
+\newcommand{\stageError}{e}          % per-date continuation error
+\newcommand{\solveError}{\zeta}      % per-stage solve error
+\newcommand{\smoothMaxBias}{\omega}  % Chen--Mangasarian smoothing bias
+
 % --- claim-strength environments (shared counter, Bourbaki style) ----------
 \theoremstyle{plain}
 \newtheorem{theorem}{Theorem}[section]
@@ -442,15 +449,17 @@ oracle (exact continuation) & --- & $1.2\times10^{-3}$\\
 \end{table}
 
 \begin{figure}[htbp]\centering
-  \includegraphics[width=0.82\textwidth]{figures/2026-07-04_bermudan_error_propagation_seeds.png}
+  \includegraphics[width=0.82\textwidth]{figures/2026-07-06_bermudan_error_propagation_seeds.png}
   \caption{Error at each exercise date, maturity (right) to inception (left); seed
     mean over three seeds, with a min--max band narrower than the markers (seed
     spread below $0.5\%$). Colour by the number of exercise dates
-    $\numExerciseDates$; hard convex solid, soft dashed.}\label{fig:h3-prop}
+    $\numExerciseDates$; hard convex solid, soft dashed. The profile is monotone
+    from maturity to inception at every $\numExerciseDates$.}\label{fig:h3-prop}
 \end{figure}
 \begin{figure}[htbp]\centering
-  \includegraphics[width=0.82\textwidth]{figures/2026-06-13_bermudan_inception.png}
-  \caption{Inception price. Solid: learned. Dashed (same colour): exact for that
+  \includegraphics[width=0.82\textwidth]{figures/2026-07-06_bermudan_inception.png}
+  \caption{Inception price, seed-0 chains at $\numExerciseDates\in\{2,3,5,10\}$.
+    Solid: learned. Dashed (same colour): exact for that
     $\numExerciseDates$. The learned values lie above the European put (a positive
     early-exercise premium) and increase with $\numExerciseDates$.}\label{fig:h3-price}
 \end{figure}
@@ -471,43 +480,47 @@ $1\times10^{-4}$). Hypothesis~H3 holds.
 \section{H4 --- accuracy is not maintained as the exercise count grows}\label{sec:h4}
 
 Table~\ref{tab:mscaling} reports the hard convex induction at
-$\numExerciseDates\in\{2,3,10\}$: the inception error and the peak per-date error.
+$\numExerciseDates\in\{2,3,5,10\}$: the inception error and the error at the
+first solved date (near maturity).
 
 \begin{table}[htbp]\centering
 \caption{Hard convex induction versus number of exercise dates
   $\numExerciseDates$, mean over three seeds (seed standard deviation
-  $<5\times10^{-4}$ throughout). Inception error and peak per-date error.}\label{tab:mscaling}
+  $<3\times10^{-4}$ throughout). The per-date profile is monotone from maturity
+  to inception, so the inception error is also the peak per-date error.}\label{tab:mscaling}
 \begin{tabular}{lcc}
 \toprule
-$\numExerciseDates$ & $\relLtwo$ (inception) & $\relLtwo$ (peak per-date)\\
+$\numExerciseDates$ & $\relLtwo$ (inception) & $\relLtwo$ (first solved date)\\
 \midrule
-2  & $3.17\times10^{-2}$ & $3.17\times10^{-2}$\\
-3  & $3.10\times10^{-2}$ & $5.77\times10^{-2}$ (near maturity)\\
-5  & $5.93\times10^{-2}$ & $1.02\times10^{-1}$ (mid-life)\\
-10 & $1.44\times10^{-1}$ & $1.92\times10^{-1}$ (mid-life)\\
+2  & $3.17\times10^{-2}$ & $2.15\times10^{-2}$ ($\timePoint=0.50$)\\
+3  & $5.72\times10^{-2}$ & $2.24\times10^{-2}$ ($\timePoint=0.67$)\\
+5  & $9.50\times10^{-2}$ & $2.51\times10^{-2}$ ($\timePoint=0.80$)\\
+10 & $1.61\times10^{-1}$ & $2.85\times10^{-2}$ ($\timePoint=0.90$)\\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{observation}[The error grows with the number of exercise dates; H4 is refuted]\label{obs:h4}
-The close agreement at $\numExerciseDates=2,3$ ($3.17\times10^{-2}$ against
-$3.10\times10^{-2}$) does not persist: the inception error then grows monotonically,
-$5.93\times10^{-2}$ at $\numExerciseDates=5$ and $1.44\times10^{-1}$ at
-$\numExerciseDates=10$, where the per-date error peaks near $1.9\times10^{-1}$ in
-mid-life --- roughly a fourfold rise in the inception error, and sixfold in the peak
-per-date error, from $\numExerciseDates=2$ to $10$ (Figure~\ref{fig:h3-prop}). Two
-effects act in the same direction as $\numExerciseDates$ grows: each interval is
-shorter, so its Gaussian propagation smooths the payoff and exercise-boundary
-curvature less --- the smoothing length
-$\sigma\sqrt{\timeHorizon/\numExerciseDates}$ falls from $0.18$ at
-$\numExerciseDates=2$ through $0.11$ at $\numExerciseDates=5$ to $0.08$ at
-$\numExerciseDates=10$, raising the per-stage operator channel by
-Proposition~\ref{prop:floor} --- and there are more stages to accumulate. The
-learned $\numExerciseDates=10$ inception price lies visibly below its exact
-reference for large spot. Measured over three seeds; the seed standard deviation is
-below $5\times10^{-4}$ at every date and every $\numExerciseDates$, so the growth is
-a systematic effect and not seed noise, though its exact rate in $\numExerciseDates$
-is not characterised. Hypothesis~H4 is refuted.
+The inception error grows monotonically with the number of exercise dates:
+$3.17\times10^{-2}$, $5.72\times10^{-2}$, $9.50\times10^{-2}$, $1.61\times10^{-1}$
+at $\numExerciseDates=2,3,5,10$ --- a fivefold rise from two to ten dates, with the
+inception error per exercise date lying between $1.6\times10^{-2}$ and
+$1.9\times10^{-2}$ at every $\numExerciseDates$ (a growth close to proportional to
+$\numExerciseDates$). By contrast the error at the first solved date is essentially
+independent of $\numExerciseDates$ ($2.2$--$2.9\times10^{-2}$ across the sweep,
+Table~\ref{tab:mscaling}): the growth is an accumulation effect down the chain, not
+a degradation of the individual solves, and the per-date profile is monotone from
+maturity to inception at every $\numExerciseDates$ (Figure~\ref{fig:h3-prop}).
+Section~\ref{sec:recursion} decomposes the accumulation exactly: the dominant
+per-date injections are the Chen--Mangasarian smoothing bias introduced at each
+exercise date and the contracted inherited error, while the interior per-stage
+solve errors are one to two orders of magnitude smaller. The learned
+$\numExerciseDates=10$ inception price lies visibly below its exact reference for
+large spot. Measured over three seeds against the corrected exact reference (the
+pre-correction reference understated the $\numExerciseDates\ge3$ errors; see
+Appendix~\ref{app:repro}); the seed standard deviation is below $3\times10^{-4}$ at
+every date and every $\numExerciseDates$, so the growth is a systematic effect and
+not seed noise. Hypothesis~H4 is refuted.
 \end{observation}
 
 \begin{remark}[Computational cost of the learned induction grows quadratically in $\numExerciseDates$]\label{rem:cost}
@@ -528,6 +541,142 @@ continuation on a fixed space--time grid and interpolate, restoring an
 $O(1)$-in-depth per-stage cost and an $O(\numExerciseDates)$ total; it is not needed
 for the $\numExerciseDates\le10$ validation reported here.
 \end{remark}
+
+% ===========================================================================
+\section{Error propagation: the recursion, its contraction, and the measured
+  decomposition}\label{sec:recursion}
+
+The growth measured in Section~\ref{sec:h4} is explained by an exact propagation
+law. For the induction of Section~\ref{sec:h3} with equally spaced dates
+$\timePoint_k=k\timeHorizon/\numExerciseDates$ and interval length
+$\Delta=\timeHorizon/\numExerciseDates$, write $\heatSemigroup$ for the
+backward-heat propagation over one interval (Gaussian convolution of variance
+$\sigma^{2}\Delta$), $\continuationValue_k$ and $\continuationValue^{\star}_k$ for
+the learned and exact continuation values at date $\timePoint_k$ (with
+$\continuationValue_{\numExerciseDates}=\continuationValue^{\star}_{\numExerciseDates}=0$),
+$\stageDatum_k=\smoothMaxCM(\payoff,\continuationValue_{k+1})$ for the learned
+terminal datum of stage $k$, and
+\begin{equation*}
+  \stageError_k=\continuationValue_k-\continuationValue^{\star}_k,
+  \qquad
+  \solveError_k=\continuationValue_k-\heatSemigroup\stageDatum_k,
+  \qquad
+  \smoothMaxBias_{k+1}
+  =\smoothMaxCM(\payoff,\continuationValue^{\star}_{k+1})
+   -\max(\payoff,\continuationValue^{\star}_{k+1})
+\end{equation*}
+for the per-date error, the per-stage solve error, and the smoothing bias.
+
+\begin{proposition}[Error recursion; the induction does not amplify]\label{prop:recursion}
+For every $0\le k\le\numExerciseDates-1$ the pointwise identity
+\begin{equation}\label{eq:recursion}
+  \stageError_k
+  =\solveError_k
+  +\heatSemigroup\Bigl(
+     \underbrace{\smoothMaxCM(\payoff,\continuationValue_{k+1})
+                -\smoothMaxCM(\payoff,\continuationValue^{\star}_{k+1})}_{
+                \text{inherited, }\abs{\,\cdot\,}\le\abs{\stageError_{k+1}}\ \text{pointwise}}
+     +\smoothMaxBias_{k+1}\Bigr)
+\end{equation}
+holds, with $0<\smoothMaxBias_{k+1}\le\varepsilon/2$ pointwise. Moreover
+$\heatSemigroup$ contracts both the supremum norm and the $\mathrm{L}^{2}$ norm,
+and telescoping \eqref{eq:recursion} from $k=\numExerciseDates-1$ downward gives
+\begin{equation}\label{eq:telescope}
+  \norm{\stageError_0}_{\infty}
+  \;\le\;\sum_{k=0}^{\numExerciseDates-1}\norm{\solveError_k}_{\infty}
+   \;+\;\numExerciseDates\,\frac{\varepsilon}{2}.
+\end{equation}
+In particular the inherited error enters with operator norm at most one at every
+stage: the backward induction propagates error without amplification, and growth
+of the total error in $\numExerciseDates$ can arise only from the number and size
+of the per-stage injections.
+\end{proposition}
+\begin{proof}
+Adding and subtracting $\heatSemigroup\stageDatum_k$ and using
+$\continuationValue^{\star}_k=\heatSemigroup\max(\payoff,\continuationValue^{\star}_{k+1})$
+together with the linearity of $\heatSemigroup$ gives \eqref{eq:recursion}. The
+pointwise bound on the inherited term follows from
+$\partial_b\smoothMaxCM(a,b)=\tfrac12\bigl(1-\tfrac{a-b}{\sqrt{(a-b)^{2}+\varepsilon^{2}}}\bigr)\in(0,1)$,
+so $\smoothMaxCM$ is $1$-Lipschitz in its second argument; the bias bound from
+$\smoothMaxCM(a,b)-\max(a,b)=\tfrac12\bigl(\sqrt{(a-b)^{2}+\varepsilon^{2}}-\abs{a-b}\bigr)\in(0,\varepsilon/2]$.
+$\heatSemigroup$ is convolution with the centred Gaussian density
+$\varphi_{\sigma^{2}\Delta}$, and $\norm{\varphi_{\sigma^{2}\Delta}}_{\mathrm{L}^{1}}=1$,
+so Young's inequality gives
+$\norm{\heatSemigroup f}_{q}\le\norm{f}_{q}$ for every $q\in[1,\infty]$.
+Applying the supremum norm to \eqref{eq:recursion}, using
+$\heatSemigroup\smoothMaxBias\le\varepsilon/2$ (positive kernel of mass one applied
+to a function bounded by $\varepsilon/2$), and iterating downward from
+$\stageError_{\numExerciseDates}=0$ yields \eqref{eq:telescope}.
+\end{proof}
+
+The two constituents of Proposition~\ref{prop:recursion} --- the contraction and
+the decomposition --- are each verified numerically.
+
+\begin{finding}[The propagation is a measured contraction]\label{find:damping}
+A known perturbation $\delta$ injected into one continuation of the
+\emph{exact} ten-date induction and read at inception has gain
+$\norm{\Delta\vFunction(\cdot,0)}/\norm{\delta}<1$ in every measured
+configuration. Injecting a smoothly windowed single spatial mode at the first
+intermediate date: the gain at the lowest wavenumber is $0.851$ against the heat
+factor $e^{-\frac{\sigma^{2}}{2}\wavenumber^{2}\timePoint_{1}}=0.842$ (agreement
+within $1.1\%$), tracks the heat prediction to within a factor two up to the
+fourth mode, and floors at the probe's spectral-leakage level
+($\sim10^{-2}$) beyond. Injecting a fixed smooth perturbation at each date in
+turn: the inception gain decreases monotonically with the propagation distance,
+from $0.851$ (injection at $\timePoint=0.1$) to $0.271$ (injection at
+$\timePoint=0.9$). Measured, exact induction, no learning
+(Figure~\ref{fig:damping}).
+\end{finding}
+
+\begin{finding}[The recursion decomposition, measured on the saved chains]\label{find:recursion}
+Every term of \eqref{eq:recursion} was evaluated on the saved seed-0 chains at
+$\numExerciseDates\in\{2,3,5,10\}$ (no training; the identity residual, including
+the one-application kernel-truncation defect carried explicitly, is below
+$3\times10^{-14}$ at every date, and the defect itself below $7\times10^{-6}$).
+On the evaluation window, in root-mean-square value units
+(Figure~\ref{fig:recursion}):
+\begin{itemize}
+  \item the \emph{interior} per-stage solve errors are small ---
+    $\norm{\solveError_k}$ ranges from $3\times10^{-3}$ to $3\times10^{-2}$ for
+    $k\le\numExerciseDates-2$ --- while the top stage, whose datum carries the
+    smoothed payoff, has $\norm{\solveError_{\numExerciseDates-1}}$ between
+    $0.18$ ($\numExerciseDates=10$) and $0.60$ ($\numExerciseDates=2$);
+  \item the smoothing bias injects $\norm{\heatSemigroup\smoothMaxBias_{k+1}}
+    \approx0.59$--$0.86$ at \emph{every} date (at the fixed $\varepsilon=2$), and
+    is the dominant recurring injection --- one to two orders of magnitude larger
+    than the interior solve errors;
+  \item the measured inception error is $0.34$--$0.55$ of the telescoped sum
+    $\sum_k(\norm{\solveError_k}+\norm{\heatSemigroup\smoothMaxBias_{k+1}})$
+    across the sweep: the contraction of Empirical finding~\ref{find:damping} is
+    what keeps the accumulated error at roughly half its worst-case bound.
+\end{itemize}
+The near-linear growth of the inception error in $\numExerciseDates$
+(Observation~\ref{obs:h4}) is therefore measured to be bias-accumulation
+dominated: each additional exercise date injects one further smoothing bias of
+roughly constant size, damped but not removed by the subsequent propagation.
+At fixed smoothing scale this contribution is structural ---
+$\smoothMaxBias$ is the distance between the smoothed dynamic program the chain
+actually solves and the hard-maximum reference program --- which suggests
+tightening $\varepsilon$ as $\numExerciseDates$ grows; that trade-off (against
+Proposition~\ref{prop:floor}, which penalises sharper data) is not measured here.
+\end{finding}
+
+\begin{figure}[htbp]\centering
+  \includegraphics[width=0.98\textwidth]{figures/2026-07-05_bermudan_perturbation_propagation.png}
+  \caption{The damping operator measured on the exact ten-date induction. Left:
+    inception gain of a single injected mode versus its wavenumber (solid),
+    against the heat factor (dashed); the gain floors at the probe's
+    spectral-leakage level. Right: inception gain of a fixed smooth perturbation
+    versus its injection time; monotone, all gains below one.}\label{fig:damping}
+\end{figure}
+\begin{figure}[htbp]\centering
+  \includegraphics[width=0.98\textwidth]{figures/2026-07-06_bermudan_error_recursion_check.png}
+  \caption{The recursion terms measured on the saved chains. Left: per-date
+    decomposition for $\numExerciseDates=10$ --- measured error, per-stage solve
+    error, inherited term, smoothing bias. Right: measured inception error
+    against the telescoped bound across $\numExerciseDates$ (tightness
+    annotated).}\label{fig:recursion}
+\end{figure}
 
 % ===========================================================================
 \section{Mechanism: regularity, spectral decay, and the operator channel}\label{sec:mechanism}
@@ -784,7 +933,9 @@ convolution (one step per interval, no time discretisation), and the maximum is
 taken exactly. This is the machine-precision target of Definition~\ref{def:reference};
 its defining properties (the continuation at the last intermediate date equals the
 European value, the value at maturity is the payoff, the value dominates the
-European value, and it is monotone in $\numExerciseDates$) are verified in the test
+European value, it is monotone in $\numExerciseDates$, and the dynamic-programming
+tower property $\vFunction(\timePoint_1,\cdot)=\max(\payoff,\heatSemigroup\vFunction(\timePoint_2,\cdot))$
+holds on a four-date chain) are verified in the test
 suite.
 \end{definition}
 
@@ -814,12 +965,30 @@ given.
     self-check of the closed-form residual, including an operator-channel probe).
   \item \textbf{H3/H4 induction} (Tables~\ref{tab:induction}--\ref{tab:mscaling},
     Figures~\ref{fig:h3-prop}--\ref{fig:h3-price}): driver
-    \fp{bermudan_backward_induction.py}; cross-run figures
-    \fp{bermudan_induction_comparison.py}; exact reference
-    \fp{learning_option_pricing/pde/heat_references.py}
+    \fp{bermudan_backward_induction.py}; cross-run and seed-aggregated figures
+    \fp{bermudan_induction_comparison.py} (\texttt{--aggregate-seeds}); exact
+    reference \fp{learning_option_pricing/pde/heat_references.py}
     (\texttt{bermudan\_put\_value\_exact}). Runs
-    \fp{data/bermudan_backward_induction/*_m{2,3,10}_*_seed0} and the
-    \texttt{soft\_pinn} twin, trained on Jean~Zay (\texttt{akz@v100}).
+    \fp{data/bermudan_backward_induction/2026-07-04-*_m{2,3,5,10}_*_seed{0,1,2}}
+    and the \texttt{soft\_pinn} twin, trained on Jean~Zay (\texttt{akz@v100}).
+    \emph{Reference correction:} the original reference implementation carried a
+    late-binding closure defect that propagated every intermediate stage to
+    $\timePoint_1$ instead of $\timePoint_k$, understating the exact value's
+    diffusion for three or more dates; it was detected by the truncation-defect
+    self-check of the recursion verification, fixed (commit \texttt{03e8fc1},
+    regression tests \fp{test/pde/test_heat_references.py}), and every run above
+    was revalidated against the corrected reference
+    (\texttt{--revalidate}; the trained models are unaffected --- the training
+    objective is reference-free). The two-date results were unchanged; the
+    $\numExerciseDates\ge3$ errors increased.
+  \item \textbf{Error recursion} (Proposition~\ref{prop:recursion},
+    Empirical findings~\ref{find:damping}--\ref{find:recursion},
+    Figures~\ref{fig:damping}--\ref{fig:recursion}): damping measurement
+    \fp{bermudan_perturbation_propagation.py} (exact induction, gains persisted
+    to \texttt{gains.yaml}); identity decomposition
+    \fp{bermudan_error_recursion_check.py} (rebuilds the saved chains, verifies
+    the identity to $3\times10^{-14}$, writes \texttt{recursion\_check.yaml});
+    post-processing executed on Jean~Zay \texttt{prepost}.
 \end{itemize}
 
 \end{document}
