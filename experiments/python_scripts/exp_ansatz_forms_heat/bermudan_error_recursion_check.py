@@ -223,13 +223,13 @@ def _figure(summaries, out: Path) -> None:
     axL.semilogy(ts, [r["err"] for r in s["per_date"]], "o-", color="#1b6ca8",
                  label=r"measured $\|e_k\|$")
     axL.semilogy(ts, [r["solve"] for r in s["per_date"]], "s-", color="#d1495b",
-                 label=r"solve $\|\varepsilon^{\mathrm{solve}}_k\|$")
+                 label=r"solve $\|\zeta_k\|$")
     axL.semilogy(ts, [r["inherited"] for r in s["per_date"]], "^-", color="#66a182",
-                 label=r"inherited $\|S(\Pi e_{k+1}$-$\Pi e^\star_{k+1})\|$")
+                 label=r"inherited (1-Lipschitz glued, propagated)")
     axL.semilogy(ts, [max(r["bias"], 1e-16) for r in s["per_date"]], "v-",
-                 color="#edae49", label=r"smoothing bias $\|S\,\delta_\varepsilon\|$")
+                 color="#edae49", label=r"smoothing bias $\|S\,\omega_{k+1}\|$")
     axL.set_xlabel("global time $t_k$ (0 = inception)")
-    axL.set_ylabel(r"$L^2$ norm (training domain)")
+    axL.set_ylabel(r"$L^2$ norm (evaluation window)")
     axL.set_title(f"Recursion decomposition, $m={s['m']}$", fontsize=10)
     axL.invert_xaxis()
     axL.grid(True, which="both", alpha=0.3)
@@ -238,7 +238,7 @@ def _figure(summaries, out: Path) -> None:
     # right: measured inception error vs telescoped bound across m
     meas = [s["measured_inception_error"] for s in summaries]
     bnd = [s["telescoped_bound"] for s in summaries]
-    axR.loglog(ms, bnd, "s--", color="black", label=r"bound $\sum_k(\|\varepsilon_k\|+\|\delta_{\varepsilon,k}\|)$")
+    axR.loglog(ms, bnd, "s--", color="black", label=r"bound $\sum_k(\|\zeta_k\|+\|S\,\omega_{k+1}\|)$")
     axR.loglog(ms, meas, "o-", color="#1b6ca8", label=r"measured $\|e_0\|$")
     for m_i, me, bo, c in zip(ms, meas, bnd, cmap):
         axR.annotate(f"{me/bo:.2f}", (m_i, me), textcoords="offset points",
@@ -253,9 +253,9 @@ def _figure(summaries, out: Path) -> None:
     fig.tight_layout(rect=[0, 0.06, 1, 0.94])
     finalize_figure(
         fig, out / "error_recursion_check.png", legends=[legL, legR], axes=[axL, axR],
-        formula=(r"$e_k = \varepsilon^{\mathrm{solve}}_k + S_{\Delta}(g_k - V^\star_{k+1})$, "
+        formula=(r"$e_k = \zeta_k + S_{\Delta}(h_k - V^\star_{k+1})$, "
                  r"identity verified to machine precision; "
-                 r"$\|e_0\| \leq \sum_k(\|\varepsilon^{\mathrm{solve}}_k\| + \|\delta_{\varepsilon,k}\|)$ "
+                 r"$\|e_0\| \leq \sum_k(\|\zeta_k\| + \|S\,\omega_{k+1}\|)$ "
                  r"by $\|S\|\leq 1$ and 1-Lipschitz gluing"),
         formula_fontsize=8)
 
@@ -263,8 +263,20 @@ def _figure(summaries, out: Path) -> None:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("run_dirs", nargs="+", help="bermudan_backward_induction run dirs")
+    p.add_argument("run_dirs", nargs="*", help="bermudan_backward_induction run dirs")
+    p.add_argument("--replot", type=str, default=None,
+                   help="redraw the figure from a saved recursion_check.yaml "
+                        "(in place, no recomputation) and exit")
     args = p.parse_args(argv)
+
+    if args.replot is not None:
+        yaml_path = Path(args.replot)
+        summaries = yaml.safe_load(open(yaml_path))
+        _figure(summaries, yaml_path.parent)
+        print(f"replotted figure into {yaml_path.parent}")
+        return 0
+    if not args.run_dirs:
+        p.error("run_dirs required unless --replot is given")
 
     out = script_data_dir(__file__) / utc_timestamp()
     out.mkdir(parents=True, exist_ok=True)
