@@ -7,6 +7,26 @@ does the per-step error accumulate as the number of exercise dates grows?
 
 ---
 
+> **Correction (2026-07-06).** The exact-reference implementation
+> (`bermudan_put_value_exact`) used for every number and figure in this note
+> carried a late-binding closure defect: each intermediate stage propagated its
+> value to the *first* exercise date instead of its own, so the reference was
+> over-diffused for three or more exercise dates (the two-date case was
+> unaffected). The defect was detected by the error-recursion identity
+> self-check, fixed in commit `03e8fc1` (with regression tests on the
+> dynamic-programming tower property), and all runs were revalidated against the
+> corrected reference. Consequences for this note: the $m=2$ results stand
+> unchanged; the $m=3$ and $m=10$ per-date errors below are **superseded** —
+> corrected three-seed values are inception $5.72\%$ ($m=3$), $9.50\%$ ($m=5$),
+> $16.1\%$ ($m=10$), the per-date profile is **monotone** from maturity to
+> inception (the mid-life "hump" of Figure 1 was an artefact of the defective
+> reference), and the non-monotonicity statements in conclusions 3 and 4 are
+> withdrawn. The authoritative corrected analysis, including the error-recursion
+> decomposition, is in the report
+> `documents/reports/2026-07-03_constrained_learning_spectral_and_induction/`.
+
+---
+
 ## 1. The quantity to be computed
 
 A **Bermudan put** is the right to sell one unit of an asset at a fixed strike
