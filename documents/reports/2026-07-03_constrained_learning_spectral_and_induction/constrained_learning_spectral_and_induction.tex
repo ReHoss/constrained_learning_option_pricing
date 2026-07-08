@@ -50,21 +50,19 @@
 \maketitle
 
 \begin{abstract}
-For the boundary-constrained learning of terminal-value parabolic PDEs, the
-achieved error of a hard-constrained trial solution is governed by the
-uncancellable, high-wavenumber part of the operator channel
-$\generatorUnderlying\terminalExtension$ --- a quantity fixed by the regularity of
-the terminal datum. This is established as a chain of Fourier estimates (regularity
-$\Rightarrow$ spectral decay $\Rightarrow$ elliptic amplification $\Rightarrow$ a
-forcing-floor scaling law) and in a closed-form ideal-filter model, and measured on
-a European call: the terminal extension controls the error by an order of
-magnitude, the additive-versus-convex trial-solution algebra by a factor of two,
-and the achieved residual is measurably the operator channel. Enforcing the
-terminal constraint exactly (feasibility residual zero) propagates less error
-through a Bermudan backward induction than a soft penalty; but accuracy is not
-maintained as the number of exercise dates grows --- a pre-registered hypothesis
-that the ten-date instance refutes. Every number is measured against an exact
-reference and traces to a named script and run directory.
+This report documents an investigation of terminal-condition enforcement in the
+constrained learning of terminal-value parabolic PDEs, in the setting of option
+pricing. Two questions are addressed within a common framework and against exact
+references: which properties of the enforcement --- the trial-solution algebra
+and the regularity of the terminal extension --- govern the achieved error of a
+single learned solve, and whether the accuracy of learned stages is maintained
+when they are chained through a Bermudan backward induction. Four pre-registered
+hypotheses receive verdicts. The governing mechanism is developed as a chain of
+Fourier estimates and an exactly solvable ideal-filter model, kept separate from
+the measurements that corroborate them; the propagation of error through the
+induction is analysed by an exact recursion with proven contraction bounds and a
+term-by-term measured decomposition. Every reported number traces to a named
+script and run directory (Appendix~\ref{app:repro}).
 \end{abstract}
 
 % ===========================================================================
