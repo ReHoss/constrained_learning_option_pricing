@@ -26,6 +26,8 @@
 \newcommand{\stageError}{e}          % per-date continuation error
 \newcommand{\solveError}{\zeta}      % per-stage solve error
 \newcommand{\smoothMaxBias}{\omega}  % Chen--Mangasarian smoothing bias
+\newcommand{\modeDecayRate}[1]{\varrho_{#1}} % modal decay rate sigma^2 n^2 pi^2 / 2
+                                     % (\varrho: the glyph rho is the regularity index)
 
 % --- claim-strength environments (shared counter, Bourbaki style) ----------
 \theoremstyle{plain}
@@ -861,6 +863,221 @@ operator inverse.
     curve, not a line.}\label{fig:toy-rve}
 \end{figure}
 
+\subsection{The companion note's examples, resolved in this framework}\label{sec:mech-note}
+
+The companion note of Charles-Albert Lehalle, \emph{Note on examples of change of
+variables for gluing terminal conditions} (updated 24~May~2026;
+\fp{latex_documents/reports/2026_01_29_constrained_learning_pde_lehalle_hosseinkhan/cal_notes/example_heat.tex}),
+analyses the convex form of Definition~\ref{def:forms} on two data for the
+backward heat equation: the two-mode sine
+$\payoff=\sin(\pi\spacePoint)+c\sin(f\pi\spacePoint)$ and the Jacobi
+$\vartheta_3$ series $\payoff=1+2\sum_{n\ge1}e^{-n^{2}}\cos(\pi n\spacePoint)$
+--- the \texttt{sine} and \texttt{theta3} instances of the single-stage study.
+(The note writes $\Psi_\theta$ for the trial field and $\Phi_\theta$ for the free
+network; the report's macros, with the two glyphs interchanged, are used
+throughout this subsection.) Its blending identity coincides with
+\eqref{eq:residual}--\eqref{eq:channels}; the note however groups the residual as
+$(1-\interpolationCoefficient)\pdeOperator\freeNetwork_{\weights}
++\interpolationCoefficient'(\payoff-\freeNetwork_{\weights})
++\interpolationCoefficient\,\generatorUnderlying\payoff$, whose middle term mixes
+the $\weights$-dependent and $\weights$-independent parts, so the
+$\weights$-independent floor and the channel split measured in
+Table~\ref{tab:decomp} do not follow from that grouping. Likewise, the
+$1/(\timeHorizon-\timePoint)$ stiffness the note reports for the linear
+coefficient concerns the equation obtained after dividing the residual by
+$1-\interpolationCoefficient$; the training objective of
+Definition~\ref{def:learning} is the undivided residual, whose coefficients
+remain bounded ($\interpolationCoefficient'=1/\timeHorizon$), and the
+linear-coefficient runs of Table~\ref{tab:main} converge without difficulty.
+Write $\modeDecayRate{n}=\sigma^{2}n^{2}\pi^{2}/2$ for the decay rate of the
+$n$-th mode.
+
+\begin{proposition}[Matched coefficient and the frequency-contrast leftover]\label{prop:matched}
+Let $\payoff(\spacePoint)=\sin(\pi\spacePoint)+c\sin(f\pi\spacePoint)$ with
+$c\neq0$ and integer $f\ge2$, and let
+$\interpolationCoefficient\in C^{1}$ with
+$\interpolationCoefficient(\timeHorizon)=1$. The mode-$n$ component of the
+extension forcing is
+$(\interpolationCoefficient'-\modeDecayRate{n}\interpolationCoefficient)$ times
+the mode, and:
+\begin{enumerate}
+  \item it vanishes identically if and only if
+    $\interpolationCoefficient(\timePoint)=e^{\modeDecayRate{n}(\timePoint-\timeHorizon)}$;
+  \item no single $\interpolationCoefficient$ annihilates the forcing of both
+    modes;
+  \item with the mode-$1$-matched coefficient
+    $\interpolationCoefficient(\timePoint)=e^{\modeDecayRate{1}(\timePoint-\timeHorizon)}$
+    the total forcing is
+    \begin{equation}\label{eq:leftover}
+      \pdeOperator\terminalExtension
+      =-(f^{2}-1)\,\frac{\sigma^{2}\pi^{2}}{2}\,
+        \interpolationCoefficient(\timePoint)\,c\,\sin(f\pi\spacePoint).
+    \end{equation}
+\end{enumerate}
+\end{proposition}
+\begin{proof}
+$\generatorUnderlying\sin(n\pi\spacePoint)=-\modeDecayRate{n}\sin(n\pi\spacePoint)$,
+so the mode-$n$ forcing factor is
+$\interpolationCoefficient'-\modeDecayRate{n}\interpolationCoefficient$; with the
+terminal value $\interpolationCoefficient(\timeHorizon)=1$ its identical
+vanishing is a linear scalar ODE with the unique solution stated (i). Two modes
+would force
+$e^{\modeDecayRate{1}(\timePoint-\timeHorizon)}=e^{\modeDecayRate{f}(\timePoint-\timeHorizon)}$
+for every $\timePoint$, impossible since $\modeDecayRate{f}=f^{2}\modeDecayRate{1}$
+(ii). Substituting the matched coefficient into the mode-$f$ factor gives
+$(\modeDecayRate{1}-\modeDecayRate{f})\interpolationCoefficient
+=-(f^{2}-1)\tfrac{\sigma^{2}\pi^{2}}{2}\interpolationCoefficient$ (iii).
+\end{proof}
+
+The coefficient $(f^{2}-1)\sigma^{2}\pi^{2}/2$ is precisely the note's
+frequency-contrast factor: it is the exact amplitude of the forcing left for the
+network once the extension carries the low mode, i.e.\ a velocity--operator
+mismatch on the high mode. In the ideal-filter model of
+Proposition~\ref{prop:toy} this leftover is cancelled exactly when
+$f\le\cutoffWavenumber$ and survives otherwise: the ``stiff, high-frequency
+forcing'' of the note is the operator-channel content above the network's
+cutoff --- a property of the enforcement construction, not of the problem's
+posedness (the substitution $\tau=\timeHorizon-\timePoint$ turns \eqref{eq:tvp}
+into a forward heat problem; the ill-posed map is the \emph{inverse} recovery of
+the terminal datum from an earlier slice).
+
+\begin{proposition}[The convex form is bias-free at the exact minimiser]\label{prop:nobias}
+Let $\payoff\in C^{2}$ be bounded with bounded
+$\generatorUnderlying\payoff$, let $\solutionField^{\star}$ be the solution of
+\eqref{eq:tvp} in the bounded uniqueness class, and let
+$\interpolationCoefficient\in C^{1}$ satisfy
+$\interpolationCoefficient(\timeHorizon)=1$,
+$\interpolationCoefficient'(\timeHorizon)\neq0$, and
+$\interpolationCoefficient(\timePoint)\neq1$ for $\timePoint<\timeHorizon$. Then
+\begin{equation*}
+  \freeNetwork^{\star}
+  =\frac{\solutionField^{\star}-\interpolationCoefficient\,\payoff}
+        {1-\interpolationCoefficient}
+\end{equation*}
+extends continuously to $\timePoint=\timeHorizon$ with value
+$\payoff+\generatorUnderlying\payoff/\interpolationCoefficient'(\timeHorizon)$,
+its trial field is $\architectureOutput=\solutionField^{\star}$ exactly, and the
+objective of Definition~\ref{def:learning} vanishes. Among free fields bounded up
+to $\timeHorizon$ --- a class containing every network continuous on the closed
+strip --- it is, for a sampler of full support, the unique zero of the objective.
+Consequently the choice of $\interpolationCoefficient$ introduces no bias at the
+exact minimiser; it determines only the $\weights$-independent forcing
+$\pdeOperator\terminalExtension$ that the network must cancel.
+\end{proposition}
+\begin{proof}
+Recomposing gives
+$\architectureOutput=(1-\interpolationCoefficient)\freeNetwork^{\star}+\interpolationCoefficient\payoff=\solutionField^{\star}$,
+hence a vanishing residual. At $\timeHorizon$ both
+$\solutionField^{\star}-\interpolationCoefficient\payoff$ and
+$1-\interpolationCoefficient$ vanish; since
+$\partial_{\timePoint}\solutionField^{\star}(\cdot,\timeHorizon)=-\generatorUnderlying\payoff$,
+l'H\^{o}pital's rule gives the stated limit, finite because
+$\interpolationCoefficient'(\timeHorizon)\neq0$. For uniqueness: a zero of the
+objective has $\pdeOperator\architectureOutput=0$ on the support of the sampler;
+if the free field is bounded up to $\timeHorizon$ then
+$(1-\interpolationCoefficient)\freeNetwork\to0$ there, so
+$\architectureOutput(\cdot,\timeHorizon)=\payoff$, and uniqueness of the
+terminal-value problem in the bounded class forces
+$\architectureOutput=\solutionField^{\star}$, hence
+$\freeNetwork=\freeNetwork^{\star}$.
+\end{proof}
+
+\begin{lemma}[Hard enforcement excludes constant relaxation]\label{lem:relax}
+No $\interpolationCoefficient\in C^{1}([0,\timeHorizon])$ with
+$\interpolationCoefficient(\timeHorizon)=1$ has
+$\interpolationCoefficient'/(1-\interpolationCoefficient)$ constant on
+$[0,\timeHorizon)$.
+\end{lemma}
+\begin{proof}
+If the quotient equals $\gamma$ then
+$1-\interpolationCoefficient=Ce^{-\gamma\timePoint}$; continuity at
+$\timeHorizon$ and $\interpolationCoefficient(\timeHorizon)=1$ force $C=0$, so
+$\interpolationCoefficient\equiv1$, contradicting the definedness of the
+quotient.
+\end{proof}
+
+The note's preferred exponential blending
+$b(\timePoint)=1-e^{-(\timeHorizon-\timePoint)}$ (chosen for its constant
+relaxation) therefore cannot --- and does not --- satisfy the hard-enforcement
+constraint: it has $b(\timeHorizon)=0$, so the trial field at maturity is the
+bare network and the terminal datum must be learned, as in the soft form; the
+extension weight reaches one only as $\timePoint\to-\infty$, which is the precise
+content of the note's observation that its blended field ``freezes toward
+$\payoff$'' in that limit.
+
+\begin{remark}[Verdicts on the note's claims]\label{rem:note}
+Three of the note's statements hold and are subsumed above: the impossibility of
+matching two decay rates with one scalar coefficient
+(Proposition~\ref{prop:matched}(ii)); the growth of the network's task with the
+frequency contrast $(f^{2}-1)\pi^{2}/2$, which \eqref{eq:leftover} identifies as
+the exact leftover forcing amplitude; and the observation that the network must
+cancel a high-frequency forcing, which is the operator-channel mechanism of
+Sections~\ref{sec:h2} and~\ref{sec:mech-proven}. Three require correction.
+\emph{First}, ``the blended $v$ therefore differs from $u$ for $t<T$'' does not
+hold for the construction itself: under
+$\interpolationCoefficient(\timeHorizon)=1$ the exact minimiser reproduces
+$\solutionField^{\star}$ for \emph{every} admissible coefficient
+(Proposition~\ref{prop:nobias}); the discrepancy appears only through restricted
+network capacity, and is then the uncancellable projection
+$\projReachablePerp\pdeOperator\terminalExtension$ of
+Definition~\ref{def:oracle}. Under the note's own normalisation $V(\timeHorizon,\cdot)=0$
+and its blending family, the residual-zero recomposition is identically zero
+(verified to $10^{-12}$), not a field freezing toward the datum; the tabulated
+freeze reproduces only under the note's modal ODE, whose recomposition misses the
+terminal datum entirely (its value at $\timeHorizon$ is $0$, and its deviation
+from $\solutionField^{\star}$ reaches the full mode amplitude). \emph{Second},
+the attribution to ``the ill-posedness of the original problem'': the
+terminal-value problem \eqref{eq:tvp} is well-posed, and the note's boxed
+$\vartheta_3$ solution, whose mode amplitudes grow as $\timePoint$ decreases,
+satisfies $\pdeOperator\solutionField=-2\modeDecayRate{n}\solutionField\neq0$
+mode-wise --- it solves the anti-diffusive equation
+$\partial_{\timePoint}\solutionField-\generatorUnderlying\solutionField=0$
+instead. With the operator-consistent decaying amplitudes the nome
+$e^{-1-\modeDecayRate{1}(\timeHorizon-\timePoint)}$ remains below one for every
+horizon, so the claimed divergence at
+$\timeHorizon-\timePoint\ge2/(\sigma^{2}\pi^{2})$, and the concluding statement
+that no bounded coefficient recovers the exact solution, do not survive the sign
+correction (the recovery is Proposition~\ref{prop:nobias}). \emph{Third},
+several algebraic defects: the sign of $b'$ and of $b'/(1-b)$ for the
+exponential family differs between the note's two sections; the
+generic-exponential paragraph omits the operator-channel forcing from its modal
+ODE; and the boxed ``Choice~1'' $\vartheta_3$ formula solves none of the four
+sign/normalisation readings of its own modal equation (residuals of order one).
+Every verdict above is verified numerically to the stated precision by the
+reproduction script (Appendix~\ref{app:repro}).
+\end{remark}
+
+\begin{finding}[The note's two data corroborate the mechanism]\label{find:note}
+Measured on the single-stage study (three seeds, the architecture and budget of
+Table~\ref{tab:main}; $\sigma=1$, $\timeHorizon=0.1$): the $\vartheta_3$ datum
+--- analytic, coefficients $2e^{-n^{2}}$, hence super-exponential spectral decay
+by Proposition~\ref{prop:decay} --- reaches
+$\relLtwo=1.47\times10^{-3}\pm1.3\times10^{-4}$ (additive form, linear
+coefficient), while the two-mode sine at $(c,f)=(0.5,4)$ reaches
+$6.8\times10^{-2}$ to $1.1\times10^{-1}$ across the hard forms: a factor
+$\approx50$ between the two data at identical budget, set by the datum's
+frequency content. The mode-$1$-matched exponential coefficient (the note's
+ideal rate $\modeDecayRate{1}$, the study's \texttt{exp} variant) lowers the
+convex-form error against the linear coefficient on both data: from
+$6.7\times10^{-3}\pm2.6\times10^{-4}$ to $1.9\times10^{-3}\pm2.1\times10^{-4}$
+on $\vartheta_3$ (a factor $3.5$, far beyond the seed spread), and from
+$1.06\times10^{-1}\pm7.4\times10^{-3}$ to $7.3\times10^{-2}\pm2.3\times10^{-2}$
+on the sine (consistent within $1.5$ standard deviations) --- the measured trace
+of annihilating the dominant mode's forcing
+(Proposition~\ref{prop:matched}(i)).
+\end{finding}
+
+\begin{figure}[htbp]\centering
+  \includegraphics[width=0.98\textwidth]{figures/2026-07-08_reference_note_analysis.png}
+  \caption{The note's examples verified. Left: $\mathrm{L}^{2}$-in-time norm of
+    the mode-$f$ forcing against $f^{2}-1$ for the linear, matched-exponential,
+    and note-family coefficients; the matched coefficient follows the
+    frequency-contrast growth of \eqref{eq:leftover} exactly. Right: mode-$1$
+    trajectories under the note's family and its own modal ODE --- the
+    recomposition misses the terminal datum ($v(\timeHorizon)=0$) and freezes
+    toward the datum only as $\timePoint\to-\infty$.}\label{fig:note}
+\end{figure}
+
 \subsection{Measured confirmation (kept separate from the proofs)}\label{sec:mech-measured}
 
 \begin{finding}[The operator channel is the achieved residual]\label{find:residual}
@@ -997,6 +1214,16 @@ given.
     \fp{bermudan_error_recursion_check.py} (rebuilds the saved chains, verifies
     the identity to $3\times10^{-14}$, writes \texttt{recursion\_check.yaml});
     post-processing executed on Jean~Zay \texttt{prepost}.
+  \item \textbf{Companion-note examples} (Section~\ref{sec:mech-note},
+    Empirical finding~\ref{find:note}, Figure~\ref{fig:note}):
+    \fp{reference_note_two_mode_theta3_analysis.py} (torch-free; closed forms
+    and independent ODE integration; checks the frequency-contrast leftover to
+    $10^{-14}$, the bias-freeness to $10^{-14}$, the note-family recompositions
+    to $10^{-12}$, the $\vartheta_3$ sign, and the boxed Choice-1 formula
+    against all four readings of its modal equation; writes
+    \texttt{analysis\_summary.yaml}); executed on Jean~Zay \texttt{prepost}.
+    Measured accuracies from the \texttt{sine} / \texttt{theta3} runs
+    \fp{data/ablation_ansatz_forms/*_{sine,theta3}_iters20000_seed{0,1,2}}.
 \end{itemize}
 
 \end{document}
