@@ -105,7 +105,8 @@ def forcing_factor(lam, lam_p, k):
 
 
 def l2_time(f_vals, t):
-    return float(np.sqrt(np.trapz(f_vals**2, t)))
+    trapezoid = getattr(np, "trapezoid", None) or np.trapz  # NumPy 2.x renamed trapz
+    return float(np.sqrt(trapezoid(f_vals**2, t)))
 
 
 # ---------------------------------------------------------------------------
