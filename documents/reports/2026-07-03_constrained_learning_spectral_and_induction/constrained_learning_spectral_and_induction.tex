@@ -313,25 +313,35 @@ separates the two levers of hypothesis~H1. The loss-component decomposition of
 \eqref{eq:residual}--\eqref{eq:channels} is logged during training and reported in
 Table~\ref{tab:decomp}: the objective $\frakL$ splits into the network energy
 $\norm{\pdeResidual_{\weights}}^{2}$, the cross term
-$2\inner{\pdeResidual_{\weights}}{\pdeOperator\terminalExtension}$, and the
+$2\inner{\pdeResidual_{\weights},\,\pdeOperator\terminalExtension}$, and the
 $\weights$-independent floor $\norm{\pdeOperator\terminalExtension}^{2}$, and the
 floor into its velocity and operator channels.
 
 \begin{table}[htbp]\centering
 \caption{Loss-component decomposition, three seeds, averaged over the final
   $10\%$ of iterations (single-minibatch estimates, hence the spread on the
-  floor). The additive form has no velocity channel
-  ($\interpolationCoefficient'\equiv0$).}\label{tab:decomp}
+  floor). Column symbols are those of
+  \eqref{eq:residual}--\eqref{eq:channels} and Definition~\ref{def:learning};
+  the additive form has no velocity channel
+  ($\interpolationCoefficient'\equiv0$). CM denotes the Chen--Mangasarian
+  extension.}\label{tab:decomp}
+{\footnotesize\setlength{\tabcolsep}{4pt}
 \begin{tabular}{llrrrrrr}
 \toprule
-$\terminalExtension$ & form & floor & velocity & operator & net.\ energy & cross & $\frakL$\\
+$\terminalExtension$ & Form &
+$\norm{\pdeOperator\terminalExtension}^{2}$ &
+$\norm{\interpolationCoefficient'\payoff}^{2}$ &
+$\norm{\interpolationCoefficient\,\generatorUnderlying\payoff}^{2}$ &
+$\norm{\pdeResidual_{\weights}}^{2}$ &
+$2\inner{\pdeResidual_{\weights},\,\pdeOperator\terminalExtension}$ &
+$\frakL$\\
 \midrule
 softplus & additive & $7200\!\pm\!1200$ & $0$ & $7200\!\pm\!1200$ & $2330\!\pm\!260$ & $-4390\!\pm\!1100$ & $5160\!\pm\!1500$\\
 softplus & convex   & $3830\!\pm\!1100$ & $841\!\pm\!7$ & $2920\!\pm\!1100$ & $1320\!\pm\!50$ & $-2760\!\pm\!290$ & $2390\!\pm\!1100$\\
-Chen--Mang.\ & additive & $80\!\pm\!26$ & $1.7$ & $91\!\pm\!27$ & $42\!\pm\!22$ & $-82\!\pm\!42$ & $39\!\pm\!45$\\
-Chen--Mang.\ & convex   & $974\!\pm\!30$ & $841\!\pm\!7$ & $65\!\pm\!26$ & $948\!\pm\!3$ & $-1897\!\pm\!6$ & $25\!\pm\!25$\\
+CM & additive & $80\!\pm\!26$ & $1.7$ & $91\!\pm\!27$ & $42\!\pm\!22$ & $-82\!\pm\!42$ & $39\!\pm\!45$\\
+CM & convex   & $974\!\pm\!30$ & $841\!\pm\!7$ & $65\!\pm\!26$ & $948\!\pm\!3$ & $-1897\!\pm\!6$ & $25\!\pm\!25$\\
 \bottomrule
-\end{tabular}
+\end{tabular}}
 \end{table}
 
 \begin{figure}[htbp]\centering
