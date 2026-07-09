@@ -281,7 +281,7 @@ def main(argv=None) -> int:
     axL.loglog(ks**2 - 1, ref, ":", color="black", lw=1.2,
                label=r"$\propto f^2-1$ (frequency contrast)")
     axL.set_xlabel(r"$f^2 - 1$")
-    axL.set_ylabel(r"$\|\varphi_f\|_{L^2(0,T)}$ (mode-$f$ forcing)")
+    axL.set_ylabel(r"$\|\varphi_f\|_{L^2(0,T)}$ (component-$f$ forcing)")
     axL.set_title("Leftover forcing vs frequency contrast", fontsize=10)
     axL.grid(True, which="both", alpha=0.3)
     legL = axL.legend(loc="upper left", fontsize=8, frameon=True)
@@ -292,7 +292,7 @@ def main(argv=None) -> int:
     axR.plot(t_ext, b_ext, ":", color="grey", lw=1.2, label=r"$b(t)=1-e^{-(T-t)}$")
     axR.axhline(1.0, color="grey", lw=0.6, alpha=0.5)
     axR.set_xlabel("$t$ (maturity $T=1$ at right)")
-    axR.set_ylabel("mode-1 amplitude")
+    axR.set_ylabel("component-1 amplitude")
     axR.set_title("Note family: freeze toward $g$, terminal condition unmet", fontsize=10)
     axR.grid(True, alpha=0.3)
     legR = axR.legend(loc="upper left", fontsize=8, frameon=True)
@@ -302,7 +302,7 @@ def main(argv=None) -> int:
     fig.tight_layout(rect=[0, 0.06, 1, 0.94])
     finalize_figure(
         fig, out / "reference_note_analysis.png", legends=[legL, legR], axes=[axL, axR],
-        formula=(r"mode-$f$ forcing under the mode-1-matched coefficient: "
+        formula=(r"component-$f$ forcing under the coefficient matched to component 1: "
                  r"$\varphi_f = -(f^2-1)\frac{\sigma^2\pi^2}{2}\,\lambda(t)\,c$; "
                  r"the note family has $b(T)=0$, so its recomposition misses the terminal datum"),
         formula_fontsize=8)

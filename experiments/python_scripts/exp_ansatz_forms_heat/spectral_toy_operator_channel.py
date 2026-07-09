@@ -275,7 +275,7 @@ def _fig_channel_amplification(ghats, k, out, kstar):
     handles, labels = axes[0].get_legend_handles_labels()
     leg = fig.legend(handles, labels, loc="lower center", ncol=2, fontsize=9,
                      frameon=True, bbox_to_anchor=(0.5, 0.12))
-    fig.suptitle(r"The operator multiplies mode $k$ by $-\frac{\sigma^2}{2}k^2$ "
+    fig.suptitle(r"The operator multiplies component $k$ by $-\frac{\sigma^2}{2}k^2$ "
                  r"(power $\times k^4$)", fontsize=11)
     fig.tight_layout(rect=[0, 0.16, 1, 0.94])
     finalize_figure(
@@ -310,7 +310,7 @@ def _fig_residual_vs_error(ghats, k, out, kstar):
     axL.axvline(T, ls=":", color="grey", lw=1.0)
     axL.set_xlabel("time $t$ (terminal $T=1$ on the right)")
     axL.set_ylabel("normalised magnitude")
-    axL.set_title(f"One high mode $k_0={k0}$: error peaks in the interior, "
+    axL.set_title(f"One high component $k_0={k0}$: error peaks in the interior, "
                   f"$=0$ at $t=T$", fontsize=9)
     axL.grid(True, alpha=0.3)
     legL = axL.legend(loc="upper left", bbox_to_anchor=(0.0, -0.16), fontsize=8, frameon=True)

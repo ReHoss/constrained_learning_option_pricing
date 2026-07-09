@@ -111,7 +111,7 @@ $\solutionField^{\star}$.
 
 \subsection{The constrained trial solution and the hard-constraint projection}\label{sec:ansatz}
 
-The learned solution is a trial field that carries the terminal datum by
+The learned solution is a trial solution that meets the terminal datum by
 construction. Writing $\freeNetwork_{\weights}$ for a free neural network of
 weights $\weights\in\weightSpace$, $\terminalExtension$ for an extension of the
 datum with $\terminalExtension(\cdot,\timeHorizon)=\payoff$, and
@@ -127,7 +127,7 @@ The trial solution is
      \freeNetwork_{\weights}(\spacePoint,\timePoint)
    +\terminalExtension(\spacePoint,\timePoint),
 \end{equation}
-where the extension $\terminalExtension$ carries its own $\timePoint$-dependence and
+where the extension $\terminalExtension$ has its own $\timePoint$-dependence and
 satisfies $\terminalExtension(\cdot,\timeHorizon)=\payoff$ (for the convex form
 $\terminalExtension=\interpolationCoefficient\,\payoff$, for the additive form
 $\terminalExtension=\payoff$).
@@ -481,7 +481,7 @@ Through the two-date induction the hard convex form reaches an inception error o
 $3.17\times10^{-2}$ against $4.98\times10^{-2}$ for the soft form: the soft form's
 per-stage terminal mismatch ($\boundaryResidual\approx7\times10^{-3}$,
 Table~\ref{tab:main}) is inherited by the stage below and accumulates, whereas the
-hard form carries none. The exact-continuation oracle reaches $1.2\times10^{-3}$,
+hard form has none. The exact-continuation oracle reaches $1.2\times10^{-3}$,
 so the representational limit of a single learned stage is small; the learned
 chain's larger error is attributable to learning, rather than being supplied, the
 continuation. Measured as the mean over three seeds (seed standard deviation below
@@ -628,11 +628,11 @@ the decomposition --- are each verified numerically.
 A known perturbation $\delta$ injected into one continuation of the
 \emph{exact} ten-date induction and read at inception has gain
 $\norm{\Delta\vFunction(\cdot,0)}/\norm{\delta}<1$ in every measured
-configuration. Injecting a smoothly windowed single spatial mode at the first
+configuration. Injecting a smoothly windowed single spatial spectral component at the first
 intermediate date: the gain at the lowest wavenumber is $0.851$ against the heat
 factor $e^{-\frac{\sigma^{2}}{2}\wavenumber^{2}\timePoint_{1}}=0.842$ (agreement
 within $1.1\%$), tracks the heat prediction to within a factor two up to the
-fourth mode, and floors at the probe's spectral-leakage level
+fourth spectral component, and floors at the probe's spectral-leakage level
 ($\sim10^{-2}$) beyond. Injecting a fixed smooth perturbation at each date in
 turn: the inception gain decreases monotonically with the propagation distance,
 from $0.851$ (injection at $\timePoint=0.1$) to $0.271$ (injection at
@@ -643,14 +643,14 @@ $\timePoint=0.9$). Measured, exact induction, no learning
 \begin{finding}[The recursion decomposition, measured on the saved chains]\label{find:recursion}
 Every term of \eqref{eq:recursion} was evaluated on the saved seed-0 chains at
 $\numExerciseDates\in\{2,3,5,10\}$ (no training; the identity residual, including
-the one-application kernel-truncation defect carried explicitly, is below
+the one-application kernel-truncation defect retained explicitly, is below
 $3\times10^{-14}$ at every date, and the defect itself below $7\times10^{-6}$).
 On the evaluation window, in root-mean-square value units
 (Figure~\ref{fig:recursion}):
 \begin{itemize}
   \item the \emph{interior} per-stage solve errors are small ---
     $\norm{\solveError_k}$ ranges from $3\times10^{-3}$ to $3\times10^{-2}$ for
-    $k\le\numExerciseDates-2$ --- while the top stage, whose datum carries the
+    $k\le\numExerciseDates-2$ --- while the top stage, whose datum is the
     smoothed payoff, has $\norm{\solveError_{\numExerciseDates-1}}$ between
     $0.18$ ($\numExerciseDates=10$) and $0.60$ ($\numExerciseDates=2$);
   \item the smoothing bias injects $\norm{\heatSemigroup\smoothMaxBias_{k+1}}
@@ -676,7 +676,7 @@ Proposition~\ref{prop:floor}, which penalises sharper data) is not measured here
 \begin{figure}[htbp]\centering
   \includegraphics[width=0.98\textwidth]{figures/2026-07-05_bermudan_perturbation_propagation.png}
   \caption{The damping operator measured on the exact ten-date induction. Left:
-    inception gain of a single injected mode versus its wavenumber (solid),
+    inception gain of a single injected spectral component versus its wavenumber (solid),
     against the heat factor (dashed); the gain floors at the probe's
     spectral-leakage level. Right: inception gain of a fixed smooth perturbation
     versus its injection time; monotone, all gains below one.}\label{fig:damping}
@@ -788,7 +788,7 @@ Parseval and \eqref{eq:amp} give the integrand; the cutoff at $1/\smoothingScale
 dominated by its upper limit, yielding \eqref{eq:floor}. A real-space check for
 $\regularityIndex=1$: $\generatorUnderlying\payoff_{\smoothingScale}$ is a
 regularised delta of height $\sim\smoothingScale^{-1}$ and width $\sim\smoothingScale$
-carrying fixed area, so its squared norm is
+of fixed area, so its squared norm is
 $\text{height}^{2}\times\text{width}\sim\smoothingScale^{-1}$.
 \end{proof}
 
@@ -796,16 +796,16 @@ $\text{height}^{2}\times\text{width}\sim\smoothingScale^{-1}$.
 
 To isolate the mechanism with no network and no optimisation, replace the free
 network by its idealised spectral behaviour --- an ideal low-pass filter that
-represents (hence cancels) every mode of wavenumber $\abs{\wavenumber}\le\cutoffWavenumber$
+represents (hence cancels) every spectral component of wavenumber $\abs{\wavenumber}\le\cutoffWavenumber$
 and nothing above. On the circle, with $\pdeOperator=\partial_{\timePoint}+\generatorUnderlying$
-and $\terminalExtension=\interpolationCoefficient\payoff$, every mode decouples and
+and $\terminalExtension=\interpolationCoefficient\payoff$, every spectral component decouples and
 the residual minimisation is closed form. This is the exact realisation of the
 ideal-filter oracle of Definition~\ref{def:oracle}.
 
 \begin{proposition}[Closed-form residual and error of the ideal-filter model]\label{prop:toy}
-With $\interpolationCoefficient(\timePoint)=\timePoint/\timeHorizon$ the low modes
+With $\interpolationCoefficient(\timePoint)=\timePoint/\timeHorizon$ the low spectral components
 ($\abs{\wavenumber}\le\cutoffWavenumber$) are reproduced exactly, with zero residual;
-for the high modes ($\abs{\wavenumber}>\cutoffWavenumber$) the free-network
+for the high spectral components ($\abs{\wavenumber}>\cutoffWavenumber$) the free-network
 coefficient vanishes, $\architectureOutput_{\wavenumber}(\timePoint)=\interpolationCoefficient(\timePoint)\,\fouriertransform{\payoff}(\wavenumber)$, and
 \begin{equation}\label{eq:toy}
   \bigl(\pdeOperator\architectureOutput\bigr)_{\wavenumber}
@@ -822,11 +822,11 @@ channel.
 \begin{proof}
 For $\abs{\wavenumber}\le\cutoffWavenumber$ the filter can set
 $\architectureOutput_{\wavenumber}=\solutionField^{\star}_{\wavenumber}=\fouriertransform{\payoff}(\wavenumber)\,e^{-\frac{\sigma^{2}}{2}\wavenumber^{2}(\timeHorizon-\timePoint)}$,
-which solves $\pdeOperator\solutionField^{\star}=0$ mode-wise and matches the datum
+which solves $\pdeOperator\solutionField^{\star}=0$ spectral component by spectral component and matches the datum
 at $\timeHorizon$; the residual there is $0$. For $\abs{\wavenumber}>\cutoffWavenumber$
 the network coefficient is $0$, so $\architectureOutput_{\wavenumber}=\interpolationCoefficient\fouriertransform{\payoff}(\wavenumber)$;
 applying $\pdeOperator=\partial_{\timePoint}-\tfrac{\sigma^{2}}{2}\wavenumber^{2}$
-mode-wise and subtracting the exact mode give \eqref{eq:toy}.
+spectral component by spectral component and subtracting the exact spectral component give \eqref{eq:toy}.
 \end{proof}
 The closed form \eqref{eq:toy} is additionally verified numerically to machine
 precision in the reproduction script.
@@ -836,7 +836,7 @@ datum drops exactly to zero (an exact spectral gap gives an exact solution), a
 smooth datum falls exponentially, and a first-derivative discontinuity leaves the
 near-flat white plateau
 of Corollary~\ref{cor:white} in the residual --- yet its solution error still
-decays, because the operator inverse damps the uncancelled high modes.
+decays, because the operator inverse damps the uncancelled high spectral components.
 Figure~\ref{fig:toy-amp} shows the $\wavenumber^{4}$ amplification turning the
 first-derivative discontinuity's $\wavenumber^{-4}$ datum into that plateau. Figure~\ref{fig:toy-rve} shows
 that the residual and the error have different time profiles, so the residual is
@@ -860,7 +860,7 @@ operator inverse.
 \end{figure}
 \begin{figure}[htbp]\centering
   \includegraphics[width=0.98\textwidth]{figures/2026-07-03_toy_residual_vs_error.png}
-  \caption{Residual is not error. Left: one high mode's residual (solid) and error
+  \caption{Residual is not error. Left: one high spectral component's residual (solid) and error
     (dashed) over time. Right: the error-versus-residual trace over time is a
     curve, not a line.}\label{fig:toy-rve}
 \end{figure}
@@ -871,11 +871,11 @@ The companion note of Charles-Albert Lehalle, \emph{Note on examples of change o
 variables for gluing terminal conditions} (updated 24~May~2026;
 \fp{latex_documents/reports/2026_01_29_constrained_learning_pde_lehalle_hosseinkhan/cal_notes/example_heat.tex}),
 analyses the convex form of Definition~\ref{def:forms} on two data for the
-backward heat equation: the two-mode sine
+backward heat equation: the two-component sine
 $\payoff=\sin(\pi\spacePoint)+c\sin(f\pi\spacePoint)$ and the Jacobi
 $\vartheta_3$ series $\payoff=1+2\sum_{n\ge1}e^{-n^{2}}\cos(\pi n\spacePoint)$
 --- the \texttt{sine} and \texttt{theta3} instances of the single-stage study.
-(The note writes $\Psi_\theta$ for the trial field and $\Phi_\theta$ for the free
+(The note writes $\Psi_\theta$ for the trial solution and $\Phi_\theta$ for the free
 network; the report's macros, with the two glyphs interchanged, are used
 throughout this subsection.) Its blending identity coincides with
 \eqref{eq:residual}--\eqref{eq:channels}; the note however groups the residual as
@@ -892,7 +892,7 @@ Definition~\ref{def:learning} is the undivided residual, whose coefficients
 remain bounded ($\interpolationCoefficient'=1/\timeHorizon$), and the
 linear-coefficient runs of Table~\ref{tab:main} converge without difficulty.
 Write $\modeDecayRate{n}=\sigma^{2}n^{2}\pi^{2}/2$ for the decay rate of the
-$n$-th mode.
+$n$-th spectral component.
 
 \begin{proposition}[Matched coefficient and the frequency-contrast leftover]\label{prop:matched}
 Let $\payoff(\spacePoint)=\sin(\pi\spacePoint)+c\sin(f\pi\spacePoint)$ with
@@ -900,16 +900,16 @@ $c\neq0$ and integer $f\ge2$, let
 $\interpolationCoefficient\in C^{1}([0,\timeHorizon])$ with
 $\interpolationCoefficient(\timeHorizon)=1$, and let
 $\terminalExtension=\interpolationCoefficient\,\payoff$ be the convex-form
-extension of Definition~\ref{def:forms}. The mode-$n$ component of the
+extension of Definition~\ref{def:forms}. The $n$-th spectral component of the
 extension forcing $\pdeOperator\terminalExtension$ is
 $(\interpolationCoefficient'-\modeDecayRate{n}\interpolationCoefficient)$ times
-the mode, and:
+the spectral component, and:
 \begin{enumerate}
   \item it vanishes identically if and only if
     $\interpolationCoefficient(\timePoint)=e^{\modeDecayRate{n}(\timePoint-\timeHorizon)}$;
   \item no single $\interpolationCoefficient$ annihilates the forcing of both
-    modes;
-  \item with the mode-$1$-matched coefficient
+    spectral components;
+  \item with the coefficient matched to the first spectral component
     $\interpolationCoefficient(\timePoint)=e^{\modeDecayRate{1}(\timePoint-\timeHorizon)}$
     the total forcing is
     \begin{equation}\label{eq:leftover}
@@ -921,22 +921,22 @@ the mode, and:
 \end{proposition}
 \begin{proof}
 $\generatorUnderlying\sin(n\pi\spacePoint)=-\modeDecayRate{n}\sin(n\pi\spacePoint)$,
-so the mode-$n$ forcing factor is
+so the forcing factor of the $n$-th spectral component is
 $\interpolationCoefficient'-\modeDecayRate{n}\interpolationCoefficient$; with the
 terminal value $\interpolationCoefficient(\timeHorizon)=1$ its identical
-vanishing is a linear scalar ODE with the unique solution stated (i). Two modes
+vanishing is a linear scalar ODE with the unique solution stated (i). Two spectral components
 would force
 $e^{\modeDecayRate{1}(\timePoint-\timeHorizon)}=e^{\modeDecayRate{f}(\timePoint-\timeHorizon)}$
 for every $\timePoint$, impossible since $\modeDecayRate{f}=f^{2}\modeDecayRate{1}$
-(ii). Substituting the matched coefficient into the mode-$f$ factor gives
+(ii). Substituting the matched coefficient into the factor of the $f$-th spectral component gives
 $(\modeDecayRate{1}-\modeDecayRate{f})\interpolationCoefficient
 =-(f^{2}-1)\tfrac{\sigma^{2}\pi^{2}}{2}\interpolationCoefficient$ (iii).
 \end{proof}
 
 The coefficient $(f^{2}-1)\sigma^{2}\pi^{2}/2$ is precisely the note's
 frequency-contrast factor: it is the exact amplitude of the forcing left for the
-network once the extension carries the low mode, i.e.\ a velocity--operator
-mismatch on the high mode. In the ideal-filter model of
+network once the extension reproduces the low spectral component, i.e.\ a velocity--operator
+mismatch on the high spectral component. In the ideal-filter model of
 Proposition~\ref{prop:toy} this leftover is cancelled exactly when
 $f\le\cutoffWavenumber$ and survives otherwise: the ``stiff, high-frequency
 forcing'' of the note is the operator-channel content above the network's
@@ -945,8 +945,8 @@ posedness (the substitution $\tau=\timeHorizon-\timePoint$ turns \eqref{eq:tvp}
 into a forward heat problem; the ill-posed map is the \emph{inverse} recovery of
 the terminal datum from an earlier slice).
 
-Proposition~\ref{prop:matched} is the two-mode case of a general obstruction:
-a scalar coefficient can carry the exact solution precisely when the datum is
+Proposition~\ref{prop:matched} is the two-component case of a general obstruction:
+a scalar coefficient reproduces the exact solution precisely when the datum is
 an eigenfunction, and otherwise the scalar-coefficient family has a strictly
 positive forcing floor.
 
@@ -977,7 +977,7 @@ $\mathrm{L}^{2}((0,\timeHorizon);\mathrm{L}^{2}(\domain))$, so that
     $\interpolationCoefficient(\timePoint)=e^{\modeDecayRate{}(\timePoint-\timeHorizon)}$
     and $\interpolationCoefficient\,\payoff=\solutionField^{\star}$.
   \item If $\Sigma$ contains two values $\modeDecayRate{a}<\modeDecayRate{b}$,
-    carried by coefficients $c_a,c_b\neq0$, then for \emph{every} admissible
+    with non-zero coefficients $c_a,c_b$, then for \emph{every} admissible
     $\interpolationCoefficient$,
     \begin{equation}\label{eq:floor-general}
       \normTimeSpace{\pdeOperator(\interpolationCoefficient\,\payoff)}
@@ -1004,7 +1004,7 @@ problem: an operator-valued coefficient --- the extension
 $\terminalExtension(\cdot,\timePoint)=e^{(\timeHorizon-\timePoint)\generatorUnderlying}\payoff$,
 i.e.\ the exact continuation supplied to each stage by the oracle of
 Definition~\ref{def:oracle} --- annihilates the forcing for every datum, and a
-mode-dependent coefficient is precisely the ideal filter of
+coefficient depending on the spectral component is precisely the ideal filter of
 Proposition~\ref{prop:toy}. Between these extremes, \eqref{eq:floor-general}
 quantifies the price of the scalar restriction by the spectral spread of the
 datum, of which the note's frequency contrast
@@ -1029,7 +1029,7 @@ $\interpolationCoefficient(\timePoint)\neq1$ for $\timePoint<\timeHorizon$. Then
 \end{equation*}
 extends continuously to $\timePoint=\timeHorizon$ with value
 $\payoff+\generatorUnderlying\payoff/\interpolationCoefficient'(\timeHorizon)$,
-its trial field is $\architectureOutput=\solutionField^{\star}$ exactly, and the
+its trial solution is $\architectureOutput=\solutionField^{\star}$ exactly, and the
 objective of Definition~\ref{def:learning} vanishes. Among free fields
 $\freeNetwork\in C^{2,1}(\domain\times[0,\timeHorizon))$ bounded on
 $\domain\times[0,\timeHorizon)$ --- a class containing every network continuous
@@ -1055,7 +1055,7 @@ document.
 The note's preferred exponential blending
 $b(\timePoint)=1-e^{-(\timeHorizon-\timePoint)}$ (chosen for its constant
 relaxation) therefore cannot --- and does not --- satisfy the hard-enforcement
-constraint: it has $b(\timeHorizon)=0$, so the trial field at maturity is the
+constraint: it has $b(\timeHorizon)=0$, so the trial solution at maturity is the
 bare network and the terminal datum must be learned, as in the soft form; the
 extension weight reaches one only as $\timePoint\to-\infty$, which is the precise
 content of the note's observation that its blended field ``freezes toward
@@ -1081,12 +1081,12 @@ and its blending family, the residual-zero recomposition is identically zero
 (verified to $10^{-12}$), not a field freezing toward the datum; the tabulated
 freeze reproduces only under the note's modal ODE, whose recomposition misses the
 terminal datum entirely (its value at $\timeHorizon$ is $0$, and its deviation
-from $\solutionField^{\star}$ reaches the full mode amplitude). \emph{Second},
+from $\solutionField^{\star}$ reaches the full spectral component amplitude). \emph{Second},
 the attribution to ``the ill-posedness of the original problem'': the
 terminal-value problem \eqref{eq:tvp} is well-posed, and the note's boxed
-$\vartheta_3$ solution, whose mode amplitudes grow as $\timePoint$ decreases,
+$\vartheta_3$ solution, whose spectral component amplitudes grow as $\timePoint$ decreases,
 satisfies $\pdeOperator\solutionField=-2\modeDecayRate{n}\solutionField\neq0$
-mode-wise --- it solves the anti-diffusive equation
+spectral component by spectral component --- it solves the anti-diffusive equation
 $\partial_{\timePoint}\solutionField-\generatorUnderlying\solutionField=0$
 instead. With the operator-consistent decaying amplitudes the nome
 $e^{-1-\modeDecayRate{1}(\timeHorizon-\timePoint)}$ remains below one for every
@@ -1109,26 +1109,26 @@ Table~\ref{tab:main}; $\sigma=1$, $\timeHorizon=0.1$): the $\vartheta_3$ datum
 --- analytic, coefficients $2e^{-n^{2}}$, hence super-exponential spectral decay
 by Proposition~\ref{prop:decay} --- reaches
 $\relLtwo=1.47\times10^{-3}\pm1.3\times10^{-4}$ (additive form, linear
-coefficient), while the two-mode sine at $(c,f)=(0.5,4)$ reaches
+coefficient), while the two-component sine at $(c,f)=(0.5,4)$ reaches
 $6.8\times10^{-2}$ to $1.1\times10^{-1}$ across the hard forms: a factor
 $\approx50$ between the two data at identical budget, set by the datum's
-frequency content. The mode-$1$-matched exponential coefficient (the note's
+frequency content. The exponential coefficient matched to the first spectral component (the note's
 ideal rate $\modeDecayRate{1}$, the study's \texttt{exp} variant) lowers the
 convex-form error against the linear coefficient on both data: from
 $6.7\times10^{-3}\pm2.6\times10^{-4}$ to $1.9\times10^{-3}\pm2.1\times10^{-4}$
 on $\vartheta_3$ (a factor $3.5$, far beyond the seed spread), and from
 $1.06\times10^{-1}\pm7.4\times10^{-3}$ to $7.3\times10^{-2}\pm2.3\times10^{-2}$
 on the sine (consistent within $1.5$ standard deviations) --- the measured trace
-of annihilating the dominant mode's forcing
+of annihilating the dominant spectral component's forcing
 (Proposition~\ref{prop:matched}(i)).
 \end{finding}
 
 \begin{figure}[htbp]\centering
   \includegraphics[width=0.98\textwidth]{figures/2026-07-08_reference_note_analysis.png}
   \caption{The note's examples verified. Left: $\mathrm{L}^{2}$-in-time norm of
-    the mode-$f$ forcing against $f^{2}-1$ for the linear, matched-exponential,
+    the forcing of the $f$-th spectral component against $f^{2}-1$ for the linear, matched-exponential,
     and note-family coefficients; the matched coefficient follows the
-    frequency-contrast growth of \eqref{eq:leftover} exactly. Right: mode-$1$
+    frequency-contrast growth of \eqref{eq:leftover} exactly. Right: first-spectral-component
     trajectories under the note's family and its own modal ODE --- the
     recomposition misses the terminal datum ($v(\timeHorizon)=0$) and freezes
     toward the datum only as $\timePoint\to-\infty$.}\label{fig:note}
@@ -1140,9 +1140,9 @@ coefficient, so its minimiser subject to
 $\interpolationCoefficient(\timeHorizon)=1$ is computed \emph{exactly} (one
 banded linear system on a $4001$-point time grid; no training), giving the
 true optimum of the whole scalar family. Measured
-(Figure~\ref{fig:floor-variational}): for a single-mode datum the optimal
+(Figure~\ref{fig:floor-variational}): for a single-component datum the optimal
 floor is $4.6\times10^{-13}$ and the minimiser coincides with the matched
-exponential to $4.7\times10^{-8}$ (part~(i)); across the two-mode sweep
+exponential to $4.7\times10^{-8}$ (part~(i)); across the two-component sweep
 $f=2,\dots,12$ the proven lower bound \eqref{eq:floor-general} lies below the
 optimum, which lies below the matched-coefficient reference, at every gap
 (the bound is conservative --- optimum-to-bound ratio $5.3$ at $f=2$ rising
@@ -1150,12 +1150,12 @@ to $37$ at $f=12$). On the study's instances ($\timeHorizon=0.1$): for the
 $\vartheta_3$ datum the matched exponential is variationally optimal among
 scalar coefficients (optimum $0.1363$ against $0.1367$; the linear coefficient
 lies a factor $13$ above), explaining the measured factor $3.5$ of Empirical
-finding~\ref{find:note}; for the two-mode sine the optimal floor ($4.45$)
+finding~\ref{find:note}; for the two-component sine the optimal floor ($4.45$)
 lies \emph{below} the linear ($6.37$) and matched-exponential ($9.33$)
 floors, yet the measured accuracy of Empirical finding~\ref{find:note}
 orders the two fixed coefficients the other way --- consistent with the
 verdict on H2: the total floor is not the error predictor; the matched
-coefficient concentrates its (larger) floor on the single mode $f=4$, which
+coefficient concentrates its (larger) floor on the single spectral component $f=4$, which
 lies within the network's reach and is cancelled.
 \end{finding}
 
@@ -1163,7 +1163,7 @@ lies within the network's reach and is cancelled.
   \includegraphics[width=0.98\textwidth]{figures/2026-07-09_optimal_coefficient_floor.png}
   \caption{Variational check of the scalar-coefficient floor. Left: proven
     lower bound, exact optimum, and matched-coefficient reference against the
-    spectral gap (two-mode datum, $\timeHorizon=1$). Right: the optimal
+    spectral gap (two-component datum, $\timeHorizon=1$). Right: the optimal
     coefficient against the matched exponential and the linear coefficient on
     the sine instance ($\timeHorizon=0.1$).}\label{fig:floor-variational}
 \end{figure}
@@ -1296,7 +1296,7 @@ given.
     (\texttt{bermudan\_put\_value\_exact}). Runs
     \fp{data/bermudan_backward_induction/2026-07-04-*_m{2,3,5,10}_*_seed{0,1,2}}
     and the \texttt{soft\_pinn} twin, trained on Jean~Zay (\texttt{akz@v100}).
-    \emph{Reference correction:} the original reference implementation carried a
+    \emph{Reference correction:} the original reference implementation contained a
     late-binding closure defect that propagated every intermediate stage to
     $\timePoint_1$ instead of $\timePoint_k$, understating the exact value's
     diffusion for three or more dates; it was detected by the truncation-defect

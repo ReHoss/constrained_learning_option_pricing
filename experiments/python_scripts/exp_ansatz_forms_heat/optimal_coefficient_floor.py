@@ -192,12 +192,12 @@ def main(argv=None) -> int:
     axL.loglog(gaps, [r["optimal"] for r in rows], "o-", color="#1b6ca8",
                label="optimal scalar coefficient (exact minimiser)")
     axL.loglog(gaps, [r["matched"] for r in rows], "s--", color="#66a182",
-               label="mode-1-matched coefficient (upper reference)")
+               label="coefficient matched to component 1 (upper reference)")
     axL.loglog(gaps, [r["lower_bound"] for r in rows], ":", color="black",
                label="proven lower bound")
     axL.set_xlabel(r"spectral gap $\varrho_f - \varrho_1$")
     axL.set_ylabel(r"forcing norm $\|P(\lambda g)\|$")
-    axL.set_title("Two-mode floor vs spectral gap ($T=1$, $c=0.5$)", fontsize=10)
+    axL.set_title("Two-component floor vs spectral gap ($T=1$, $c=0.5$)", fontsize=10)
     axL.grid(True, which="both", alpha=0.3)
     legL = axL.legend(loc="upper left", fontsize=8, frameon=True)
 

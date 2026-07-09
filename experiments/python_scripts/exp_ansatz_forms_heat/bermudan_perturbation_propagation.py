@@ -167,7 +167,7 @@ def main(argv=None) -> int:
 
     axR.plot(inject_times, dist_gains, "-o", color="#d1495b", lw=1.6, ms=4)
     axR.set_xlabel("injection time $t_{\\rm inject}$ (0 = inception, $T$ = maturity)")
-    axR.set_ylabel(r"inception gain (low-mode $\delta$)")
+    axR.set_ylabel(r"inception gain (low-frequency $\delta$)")
     axR.set_title("Distance damping: a fixed smooth perturbation", fontsize=10)
     axR.grid(True, alpha=0.3)
     axR.set_ylim(0, 1.05)
