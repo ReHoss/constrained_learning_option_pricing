@@ -28,6 +28,8 @@
 \newcommand{\smoothMaxBias}{\omega}  % Chen--Mangasarian smoothing bias
 \newcommand{\modeDecayRate}[1]{\varrho_{#1}} % modal decay rate sigma^2 n^2 pi^2 / 2
                                      % (\varrho: the glyph rho is the regularity index)
+\newcommand{\basisFunction}{w}       % eigenfunction of the spatial generator
+\newcommand{\normTimeSpace}[1]{\norm{#1}_{\mathrm{L}^{2}}} % space-time L^2 norm (defined at first use)
 
 % --- claim-strength environments (shared counter, Bourbaki style) ----------
 \theoremstyle{plain}
@@ -894,10 +896,12 @@ $n$-th mode.
 
 \begin{proposition}[Matched coefficient and the frequency-contrast leftover]\label{prop:matched}
 Let $\payoff(\spacePoint)=\sin(\pi\spacePoint)+c\sin(f\pi\spacePoint)$ with
-$c\neq0$ and integer $f\ge2$, and let
-$\interpolationCoefficient\in C^{1}$ with
-$\interpolationCoefficient(\timeHorizon)=1$. The mode-$n$ component of the
-extension forcing is
+$c\neq0$ and integer $f\ge2$, let
+$\interpolationCoefficient\in C^{1}([0,\timeHorizon])$ with
+$\interpolationCoefficient(\timeHorizon)=1$, and let
+$\terminalExtension=\interpolationCoefficient\,\payoff$ be the convex-form
+extension of Definition~\ref{def:forms}. The mode-$n$ component of the
+extension forcing $\pdeOperator\terminalExtension$ is
 $(\interpolationCoefficient'-\modeDecayRate{n}\interpolationCoefficient)$ times
 the mode, and:
 \begin{enumerate}
@@ -941,11 +945,108 @@ posedness (the substitution $\tau=\timeHorizon-\timePoint$ turns \eqref{eq:tvp}
 into a forward heat problem; the ill-posed map is the \emph{inverse} recovery of
 the terminal datum from an earlier slice).
 
+Proposition~\ref{prop:matched} is the two-mode case of a general obstruction:
+a scalar coefficient can carry the exact solution precisely when the datum is
+an eigenfunction, and otherwise the scalar-coefficient family has a strictly
+positive forcing floor.
+
+\begin{proposition}[Eigenfunction characterisation and positive floor]\label{prop:eigen}
+Let $(\basisFunction_j)_{j\in J}$ be an orthonormal family in
+$\mathrm{L}^{2}(\domain)$ with
+$\generatorUnderlying\basisFunction_j=-\modeDecayRate{j}\basisFunction_j$ and
+$\modeDecayRate{j}\ge0$, and let
+$\payoff=\sum_{j\in J}c_j\basisFunction_j$ with
+$\sum_j(1+\modeDecayRate{j}^{2})c_j^{2}<\infty$. Write
+$\Sigma=\{\modeDecayRate{j}: c_j\neq0\}$ for the spectral support of the datum,
+and, for $\interpolationCoefficient\in C^{1}([0,\timeHorizon])$ with
+$\interpolationCoefficient(\timeHorizon)=1$, write
+$\normTimeSpace{\cdot}$ for the norm of
+$\mathrm{L}^{2}((0,\timeHorizon);\mathrm{L}^{2}(\domain))$, so that
+\begin{equation*}
+  \normTimeSpace{\pdeOperator(\interpolationCoefficient\,\payoff)}^{2}
+  =\sum_{j}c_j^{2}
+   \int_{0}^{\timeHorizon}
+   \bigl(\interpolationCoefficient'(\timePoint)
+        -\modeDecayRate{j}\interpolationCoefficient(\timePoint)\bigr)^{2}
+   \,d\timePoint .
+\end{equation*}
+\begin{enumerate}
+  \item $\pdeOperator(\interpolationCoefficient\,\payoff)=0$ for some admissible
+    $\interpolationCoefficient$ if and only if $\Sigma$ is a singleton
+    $\{\modeDecayRate{}\}$; in that case
+    $\interpolationCoefficient(\timePoint)=e^{\modeDecayRate{}(\timePoint-\timeHorizon)}$
+    and $\interpolationCoefficient\,\payoff=\solutionField^{\star}$.
+  \item If $\Sigma$ contains two values $\modeDecayRate{a}<\modeDecayRate{b}$,
+    carried by coefficients $c_a,c_b\neq0$, then for \emph{every} admissible
+    $\interpolationCoefficient$,
+    \begin{equation}\label{eq:floor-general}
+      \normTimeSpace{\pdeOperator(\interpolationCoefficient\,\payoff)}
+      \;\ge\;
+      \min(\abs{c_a},\abs{c_b})\,
+      \frac{(\modeDecayRate{b}-\modeDecayRate{a})\,\kappa_2}
+           {2\bigl(1+(\modeDecayRate{b}-\modeDecayRate{a})\,\kappa_1\bigr)}
+      \;>\;0,
+    \end{equation}
+    with $\kappa_2=\bigl(\int_0^{\timeHorizon}e^{2\modeDecayRate{a}(\timePoint-\timeHorizon)}\,d\timePoint\bigr)^{1/2}$
+    and $\kappa_1=\int_0^{\timeHorizon}e^{-\modeDecayRate{a}s}\,ds$.
+\end{enumerate}
+\end{proposition}
+\begin{proof}
+The displayed norm identity follows from orthonormality and
+$\pdeOperator(\interpolationCoefficient\payoff)
+=\sum_j c_j(\interpolationCoefficient'-\modeDecayRate{j}\interpolationCoefficient)\basisFunction_j$.
+(i) Vanishing requires
+$\interpolationCoefficient'-\modeDecayRate{j}\interpolationCoefficient\equiv0$
+for every $j$ with $c_j\neq0$; each such equation with
+$\interpolationCoefficient(\timeHorizon)=1$ has the unique solution
+$e^{\modeDecayRate{j}(\timePoint-\timeHorizon)}$, and two distinct rates give
+distinct solutions, so $\Sigma$ must be a singleton; conversely the matched
+exponential annihilates the forcing, and
+$\interpolationCoefficient\payoff$ coincides mode by mode with the semigroup
+solution $e^{(\timeHorizon-\timePoint)\generatorUnderlying}\payoff=\solutionField^{\star}$.
+(ii) Set
+$F_a=\interpolationCoefficient'-\modeDecayRate{a}\interpolationCoefficient$ and
+$F_b=\interpolationCoefficient'-\modeDecayRate{b}\interpolationCoefficient$,
+with time norms $A=\norm{F_a}$, $B=\norm{F_b}$. Subtracting,
+$(\modeDecayRate{b}-\modeDecayRate{a})\norm{\interpolationCoefficient}
+=\norm{F_a-F_b}\le A+B$. Solving
+$\interpolationCoefficient'=\modeDecayRate{a}\interpolationCoefficient+F_a$
+backward from $\interpolationCoefficient(\timeHorizon)=1$ gives
+$\interpolationCoefficient(\timePoint)
+=e^{\modeDecayRate{a}(\timePoint-\timeHorizon)}
+-\int_{\timePoint}^{\timeHorizon}e^{\modeDecayRate{a}(\timePoint-s)}F_a(s)\,ds$,
+and Young's convolution inequality bounds the integral term in
+$\mathrm{L}^{2}(0,\timeHorizon)$ by $\kappa_1\norm{F_a}$, so
+$\norm{\interpolationCoefficient}\ge\kappa_2-\kappa_1 A$. Combining,
+$A+B\ge(\modeDecayRate{b}-\modeDecayRate{a})(\kappa_2-\kappa_1 A)$, hence
+$\max(A,B)\ge(\modeDecayRate{b}-\modeDecayRate{a})\kappa_2
+/\bigl(2(1+(\modeDecayRate{b}-\modeDecayRate{a})\kappa_1)\bigr)$, and
+$\normTimeSpace{\pdeOperator(\interpolationCoefficient\payoff)}
+\ge\min(\abs{c_a},\abs{c_b})\max(A,B)$ from the two retained terms of the norm
+identity.
+\end{proof}
+
+The obstruction is thus attached to the \emph{rank-one form} of the extension
+family $\{\interpolationCoefficient(\timePoint)\,\payoff\}$, not to the
+problem: an operator-valued coefficient --- the extension
+$\terminalExtension(\cdot,\timePoint)=e^{(\timeHorizon-\timePoint)\generatorUnderlying}\payoff$,
+i.e.\ the exact continuation supplied to each stage by the oracle of
+Definition~\ref{def:oracle} --- annihilates the forcing for every datum, and a
+mode-dependent coefficient is precisely the ideal filter of
+Proposition~\ref{prop:toy}. Between these extremes, \eqref{eq:floor-general}
+quantifies the price of the scalar restriction by the spectral spread of the
+datum, of which the note's frequency contrast
+$(f^{2}-1)\sigma^{2}\pi^{2}/2=\modeDecayRate{f}-\modeDecayRate{1}$ is the
+two-point case; summing the leftover over a power-law spectrum recovers the
+forcing-floor scaling of Proposition~\ref{prop:floor}.
+
 \begin{proposition}[The convex form is bias-free at the exact minimiser]\label{prop:nobias}
-Let $\payoff\in C^{2}$ be bounded with bounded
-$\generatorUnderlying\payoff$, let $\solutionField^{\star}$ be the solution of
-\eqref{eq:tvp} in the bounded uniqueness class, and let
-$\interpolationCoefficient\in C^{1}$ satisfy
+Let $\payoff\in C^{2}(\domain)$ be bounded with bounded
+$\generatorUnderlying\payoff$ (with $\domain=\R$ or $\domain$ periodic), and let
+$\solutionField^{\star}$ be the solution of \eqref{eq:tvp} in the class of
+solutions bounded on $\domain\times[0,\timeHorizon]$, in which the
+terminal-value problem has exactly one solution. Let
+$\interpolationCoefficient\in C^{1}([0,\timeHorizon])$ satisfy
 $\interpolationCoefficient(\timeHorizon)=1$,
 $\interpolationCoefficient'(\timeHorizon)\neq0$, and
 $\interpolationCoefficient(\timePoint)\neq1$ for $\timePoint<\timeHorizon$. Then
@@ -957,9 +1058,11 @@ $\interpolationCoefficient(\timePoint)\neq1$ for $\timePoint<\timeHorizon$. Then
 extends continuously to $\timePoint=\timeHorizon$ with value
 $\payoff+\generatorUnderlying\payoff/\interpolationCoefficient'(\timeHorizon)$,
 its trial field is $\architectureOutput=\solutionField^{\star}$ exactly, and the
-objective of Definition~\ref{def:learning} vanishes. Among free fields bounded up
-to $\timeHorizon$ --- a class containing every network continuous on the closed
-strip --- it is, for a sampler of full support, the unique zero of the objective.
+objective of Definition~\ref{def:learning} vanishes. Among free fields
+$\freeNetwork\in C^{2,1}(\domain\times[0,\timeHorizon))$ bounded on
+$\domain\times[0,\timeHorizon)$ --- a class containing every network continuous
+on the closed strip --- it is, for a sampler of full support, the unique zero of
+the objective.
 Consequently the choice of $\interpolationCoefficient$ introduces no bias at the
 exact minimiser; it determines only the $\weights$-independent forcing
 $\pdeOperator\terminalExtension$ that the network must cancel.
