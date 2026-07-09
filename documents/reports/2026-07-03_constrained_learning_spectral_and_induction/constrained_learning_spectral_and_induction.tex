@@ -991,40 +991,12 @@ $\mathrm{L}^{2}((0,\timeHorizon);\mathrm{L}^{2}(\domain))$, so that
     and $\kappa_1=\int_0^{\timeHorizon}e^{-\modeDecayRate{a}s}\,ds$.
 \end{enumerate}
 \end{proposition}
-\begin{proof}
-The displayed norm identity follows from orthonormality and
-$\pdeOperator(\interpolationCoefficient\payoff)
-=\sum_j c_j(\interpolationCoefficient'-\modeDecayRate{j}\interpolationCoefficient)\basisFunction_j$.
-(i) Vanishing requires
-$\interpolationCoefficient'-\modeDecayRate{j}\interpolationCoefficient\equiv0$
-for every $j$ with $c_j\neq0$; each such equation with
-$\interpolationCoefficient(\timeHorizon)=1$ has the unique solution
-$e^{\modeDecayRate{j}(\timePoint-\timeHorizon)}$, and two distinct rates give
-distinct solutions, so $\Sigma$ must be a singleton; conversely the matched
-exponential annihilates the forcing, and
-$\interpolationCoefficient\payoff$ coincides mode by mode with the semigroup
-solution $e^{(\timeHorizon-\timePoint)\generatorUnderlying}\payoff=\solutionField^{\star}$.
-(ii) Set
-$F_a=\interpolationCoefficient'-\modeDecayRate{a}\interpolationCoefficient$ and
-$F_b=\interpolationCoefficient'-\modeDecayRate{b}\interpolationCoefficient$,
-with time norms $A=\norm{F_a}$, $B=\norm{F_b}$. Subtracting,
-$(\modeDecayRate{b}-\modeDecayRate{a})\norm{\interpolationCoefficient}
-=\norm{F_a-F_b}\le A+B$. Solving
-$\interpolationCoefficient'=\modeDecayRate{a}\interpolationCoefficient+F_a$
-backward from $\interpolationCoefficient(\timeHorizon)=1$ gives
-$\interpolationCoefficient(\timePoint)
-=e^{\modeDecayRate{a}(\timePoint-\timeHorizon)}
--\int_{\timePoint}^{\timeHorizon}e^{\modeDecayRate{a}(\timePoint-s)}F_a(s)\,ds$,
-and Young's convolution inequality bounds the integral term in
-$\mathrm{L}^{2}(0,\timeHorizon)$ by $\kappa_1\norm{F_a}$, so
-$\norm{\interpolationCoefficient}\ge\kappa_2-\kappa_1 A$. Combining,
-$A+B\ge(\modeDecayRate{b}-\modeDecayRate{a})(\kappa_2-\kappa_1 A)$, hence
-$\max(A,B)\ge(\modeDecayRate{b}-\modeDecayRate{a})\kappa_2
-/\bigl(2(1+(\modeDecayRate{b}-\modeDecayRate{a})\kappa_1)\bigr)$, and
-$\normTimeSpace{\pdeOperator(\interpolationCoefficient\payoff)}
-\ge\min(\abs{c_a},\abs{c_b})\max(A,B)$ from the two retained terms of the norm
-identity.
-\end{proof}
+The complete proof (orthonormal expansion; linear-ODE uniqueness for (i);
+Duhamel representation and Young's convolution inequality for (ii)) is given
+in the companion methodology document
+(\fp{latex_documents/reports/2026_01_29_constrained_learning_pde_lehalle_hosseinkhan/boundary_constrained_learning_problem.tex},
+Section ``Theory: the interpolation coefficient and the extension forcing''),
+which aggregates the proven statements of this subsection.
 
 The obstruction is thus attached to the \emph{rank-one form} of the extension
 family $\{\interpolationCoefficient(\timePoint)\,\payoff\}$, not to the
@@ -1067,23 +1039,9 @@ Consequently the choice of $\interpolationCoefficient$ introduces no bias at the
 exact minimiser; it determines only the $\weights$-independent forcing
 $\pdeOperator\terminalExtension$ that the network must cancel.
 \end{proposition}
-\begin{proof}
-Recomposing gives
-$\architectureOutput=(1-\interpolationCoefficient)\freeNetwork^{\star}+\interpolationCoefficient\payoff=\solutionField^{\star}$,
-hence a vanishing residual. At $\timeHorizon$ both
-$\solutionField^{\star}-\interpolationCoefficient\payoff$ and
-$1-\interpolationCoefficient$ vanish; since
-$\partial_{\timePoint}\solutionField^{\star}(\cdot,\timeHorizon)=-\generatorUnderlying\payoff$,
-l'H\^{o}pital's rule gives the stated limit, finite because
-$\interpolationCoefficient'(\timeHorizon)\neq0$. For uniqueness: a zero of the
-objective has $\pdeOperator\architectureOutput=0$ on the support of the sampler;
-if the free field is bounded up to $\timeHorizon$ then
-$(1-\interpolationCoefficient)\freeNetwork\to0$ there, so
-$\architectureOutput(\cdot,\timeHorizon)=\payoff$, and uniqueness of the
-terminal-value problem in the bounded class forces
-$\architectureOutput=\solutionField^{\star}$, hence
-$\freeNetwork=\freeNetwork^{\star}$.
-\end{proof}
+The proof (recomposition; l'H\^{o}pital at the terminal slice; terminal-value
+uniqueness in the bounded class) is given in the companion methodology
+document (same section as above).
 
 \begin{lemma}[Hard enforcement excludes constant relaxation]\label{lem:relax}
 No $\interpolationCoefficient\in C^{1}([0,\timeHorizon])$ with
@@ -1091,13 +1049,8 @@ $\interpolationCoefficient(\timeHorizon)=1$ has
 $\interpolationCoefficient'/(1-\interpolationCoefficient)$ constant on
 $[0,\timeHorizon)$.
 \end{lemma}
-\begin{proof}
-If the quotient equals $\gamma$ then
-$1-\interpolationCoefficient=Ce^{-\gamma\timePoint}$; continuity at
-$\timeHorizon$ and $\interpolationCoefficient(\timeHorizon)=1$ force $C=0$, so
-$\interpolationCoefficient\equiv1$, contradicting the definedness of the
-quotient.
-\end{proof}
+The two-line integration proving this is likewise given in the methodology
+document.
 
 The note's preferred exponential blending
 $b(\timePoint)=1-e^{-(\timeHorizon-\timePoint)}$ (chosen for its constant
@@ -1179,6 +1132,40 @@ of annihilating the dominant mode's forcing
     trajectories under the note's family and its own modal ODE --- the
     recomposition misses the terminal datum ($v(\timeHorizon)=0$) and freezes
     toward the datum only as $\timePoint\to-\infty$.}\label{fig:note}
+\end{figure}
+
+\begin{finding}[Variational check of the scalar-coefficient floor]\label{find:floor-variational}
+The forcing functional of Proposition~\ref{prop:eigen} is quadratic in the
+coefficient, so its minimiser subject to
+$\interpolationCoefficient(\timeHorizon)=1$ is computed \emph{exactly} (one
+banded linear system on a $4001$-point time grid; no training), giving the
+true optimum of the whole scalar family. Measured
+(Figure~\ref{fig:floor-variational}): for a single-mode datum the optimal
+floor is $4.6\times10^{-13}$ and the minimiser coincides with the matched
+exponential to $4.7\times10^{-8}$ (part~(i)); across the two-mode sweep
+$f=2,\dots,12$ the proven lower bound \eqref{eq:floor-general} lies below the
+optimum, which lies below the matched-coefficient reference, at every gap
+(the bound is conservative --- optimum-to-bound ratio $5.3$ at $f=2$ rising
+to $37$ at $f=12$). On the study's instances ($\timeHorizon=0.1$): for the
+$\vartheta_3$ datum the matched exponential is variationally optimal among
+scalar coefficients (optimum $0.1363$ against $0.1367$; the linear coefficient
+lies a factor $13$ above), explaining the measured factor $3.5$ of Empirical
+finding~\ref{find:note}; for the two-mode sine the optimal floor ($4.45$)
+lies \emph{below} the linear ($6.37$) and matched-exponential ($9.33$)
+floors, yet the measured accuracy of Empirical finding~\ref{find:note}
+orders the two fixed coefficients the other way --- consistent with the
+verdict on H2: the total floor is not the error predictor; the matched
+coefficient concentrates its (larger) floor on the single mode $f=4$, which
+lies within the network's reach and is cancelled.
+\end{finding}
+
+\begin{figure}[htbp]\centering
+  \includegraphics[width=0.98\textwidth]{figures/2026-07-09_optimal_coefficient_floor.png}
+  \caption{Variational check of the scalar-coefficient floor. Left: proven
+    lower bound, exact optimum, and matched-coefficient reference against the
+    spectral gap (two-mode datum, $\timeHorizon=1$). Right: the optimal
+    coefficient against the matched exponential and the linear coefficient on
+    the sine instance ($\timeHorizon=0.1$).}\label{fig:floor-variational}
 \end{figure}
 
 \subsection{Measured confirmation (kept separate from the proofs)}\label{sec:mech-measured}
@@ -1318,15 +1305,23 @@ given.
     the identity to $3\times10^{-14}$, writes \texttt{recursion\_check.yaml});
     post-processing executed on Jean~Zay \texttt{prepost}.
   \item \textbf{Companion-note examples} (Section~\ref{sec:mech-note},
-    Empirical finding~\ref{find:note}, Figure~\ref{fig:note}):
+    Empirical findings~\ref{find:note} and~\ref{find:floor-variational},
+    Figures~\ref{fig:note} and~\ref{fig:floor-variational}):
     \fp{reference_note_two_mode_theta3_analysis.py} (torch-free; closed forms
     and independent ODE integration; checks the frequency-contrast leftover to
     $10^{-14}$, the bias-freeness to $10^{-14}$, the note-family recompositions
     to $10^{-12}$, the $\vartheta_3$ sign, and the boxed Choice-1 formula
     against all four readings of its modal equation; writes
-    \texttt{analysis\_summary.yaml}); executed on Jean~Zay \texttt{prepost}.
-    Measured accuracies from the \texttt{sine} / \texttt{theta3} runs
+    \texttt{analysis\_summary.yaml}); variational floor check
+    \fp{optimal_coefficient_floor.py} (exact quadratic minimisation over the
+    scalar family, banded linear system; writes \texttt{optimal\_floor.yaml});
+    both executed on Jean~Zay \texttt{prepost}. Measured accuracies from the
+    \texttt{sine} / \texttt{theta3} runs
     \fp{data/ablation_ansatz_forms/*_{sine,theta3}_iters20000_seed{0,1,2}}.
+    Proofs of the propositions of Section~\ref{sec:mech-note} are aggregated
+    in the companion methodology document
+    \fp{boundary_constrained_learning_problem.tex} (same repository as the
+    companion note).
 \end{itemize}
 
 \end{document}
