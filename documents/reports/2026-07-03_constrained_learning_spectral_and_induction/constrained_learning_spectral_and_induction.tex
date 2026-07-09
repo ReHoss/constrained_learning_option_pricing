@@ -47,7 +47,7 @@
 \title{Constrained learning of terminal-value PDEs:\\
   the operator-channel mechanism and its propagation\\
   through a Bermudan backward induction}
-\author{}
+\author{R\'emy Hosseinkhan-Boucher \and Nicolas Baradel}
 \date{3 July 2026}
 
 \begin{document}
@@ -1210,17 +1210,27 @@ sharpest (hard-cutoff) form.
 Four hypotheses received verdicts. The regularity of the terminal extension
 controls the achieved error by an order of magnitude, the trial-solution algebra
 by a factor of two (H1, held); the achieved error is the uncancellable
-high-wavenumber operator channel, not the total floor (H2, held); exact terminal
-enforcement propagates less error through a Bermudan backward induction than a soft
-penalty (H3, held); but accuracy is not maintained as the number of exercise dates
-grows (H4, refuted at ten dates). The mechanism is proven as a chain of Fourier
-estimates and in a closed-form model, kept separate from the measured evidence; the
-one step from spectral content to network trainability remains conjectural
-(Remark~\ref{rem:ntk}). The measured results rest on three seeds for the induction
-(the error growth is systematic, seed standard deviation below $5\times10^{-4}$) and
-a single architecture and payoff throughout; the precise growth rate of the
-induction error with the number of exercise dates, and the neural-tangent-kernel
-identification of the reachable subspace, are the open directions.
+high-wavenumber operator channel, not the total floor (H2, held --- reinforced by
+the variational floor check of Empirical finding~\ref{find:floor-variational});
+exact terminal enforcement propagates less error through a Bermudan backward
+induction than a soft penalty (H3, held); but accuracy is not maintained as the
+number of exercise dates grows (H4, refuted at ten dates). The propagation itself
+is governed by a proven recursion: the induction contracts inherited error
+(Proposition~\ref{prop:recursion}, measured in Empirical
+findings~\ref{find:damping}--\ref{find:recursion}), and the near-linear growth in
+the number of exercise dates is measured to be dominated by the smoothing bias
+injected at each date, not by amplification. The single-solve mechanism is proven
+as a chain of Fourier estimates, a closed-form filter model, and an eigenfunction
+characterisation of the scalar-coefficient family (Proposition~\ref{prop:eigen})
+that resolves and generalises the companion note's two examples
+(Section~\ref{sec:mech-note}); the one step from spectral content to network
+trainability remains conjectural (Remark~\ref{rem:ntk}). The measured results
+rest on three seeds for the induction (the error growth is systematic, seed
+standard deviation below $3\times10^{-4}$), a single architecture, and four data
+(the smoothed call, the Bermudan chain, and the note's sine and $\vartheta_3$
+instances); the scaling of the smoothing parameter with the number of exercise
+dates, and the neural-tangent-kernel identification of the reachable subspace,
+are the open directions.
 
 % ===========================================================================
 \appendix
