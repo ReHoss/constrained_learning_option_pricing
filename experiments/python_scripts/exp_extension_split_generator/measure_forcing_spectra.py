@@ -1,8 +1,12 @@
 r"""Measured forcing spectra and strip norms of terminal-data extensions (P3, P4).
 
 Propositions under test.  This script measures two predictions of the
-extension-comparison analysis (Proposition 6(iii) of the report draft and the
-accompanying extension comparison) for the periodised Bernoulli datum of
+extension-comparison analysis (Proposition 7(iii), "Split-generator extension
+removes the floor", of the methodology report "On boundary-constrained
+learning of partial differential equations" — repository
+2026_01_29_constrained_learning_pde_lehalle_hosseinkhan, file
+``boundary_constrained_learning_problem.tex`` — and the accompanying
+extension comparison) for the periodised Bernoulli datum of
 regularity index :math:`\rho = 1` (exact coefficients
 :math:`|c_k| = 2/(2\pi k)^2`, single break point at :math:`x^\star = 0`) under
 the two second-order generators
@@ -38,25 +42,35 @@ near-terminal envelopes for :math:`\rho = 1`, :math:`p = 1` are
 
 At :math:`t < T` the split / graded moduli equal the near-terminal envelope
 multiplied by the semigroup factor :math:`e^{-(T-t)\nu k^2}` (respectively
-:math:`e^{-(T-t)\nu_c k^2}`); the departure of the measured curve below the
-dashed envelope beyond :math:`k \sim ((T-t)\nu)^{-1/2}` is this factor, not a
-violation of the envelope law.
+:math:`e^{-(T-t)\nu_c k^2}`); with the crossover wavenumber
+:math:`k_c = ((T-t)\nu)^{-1/2}`, the departure of the measured curve below
+the dashed envelope for :math:`k \ge k_c` is this factor, not a violation of
+the envelope prediction.
 
 Prediction P4 (total strip forcing versus the band edge).  The squared strip
 norm :math:`2\pi \sum_{0<|k|\le K_{\max}} \int_0^T |\widehat{Lh}(k,t)|^2 dt`
 (closed-form time integrals, no time quadrature) is tabulated for
-:math:`K_{\max} \in \{2^{12}, 2^{16}, 2^{20}\}`.  The specification predicts
-unbounded (linear) growth for constant-in-time, convex raw and the mismatched
-graded extension, and convergence for the splits with :math:`m \le \rho` and
-the matched graded extension.  The measured classification is reported next
-to the predicted one; a disagreement is recorded with its analytic account
-rather than suppressed (for the mismatched graded extension the closed-form
-per-wavenumber time integral has the tail
-:math:`((\nu-\nu_c)^2/(2\nu_c))\,|c_k|^2 k^2 = O(k^{-2})` as
-:math:`|k| \to \infty`, because the flat spectral component of the forcing at
-:math:`t = T` is confined to a temporal boundary layer of width
-:math:`(2\nu_c k^2)^{-1}`; the wavenumber sum therefore converges even though
-the fixed-time norm at :math:`t = T` grows without bound).
+:math:`K_{\max} \in \{2^{12}, 2^{16}, 2^{20}\}`.  The prediction is unbounded
+(linear) growth for constant-in-time and convex raw, and convergence for the
+splits with :math:`m \le \rho`, the matched graded extension, and the
+mismatched graded extension.  For the mismatched graded extension the
+closed-form per-wavenumber time integral
+:math:`|a(k) + \nu_c k^2|^2 |c_k|^2 \varphi(-2\nu_c k^2)` (with
+:math:`\varphi(z) = (e^{zT} - 1)/z`) satisfies
+:math:`\int_0^T |\widehat{Lh}(k,t)|^2 dt =
+((\nu-\nu_c)^2/(2\nu_c))\,|c_k|^2 k^2\,(1 + o(1)) = O(k^{-2})` as
+:math:`|k| \to \infty` for :math:`\rho = 1`
+(:math:`|c_k|^2 \propto k^{-4}`), because the flat spectral component of the
+forcing at :math:`t = T` is confined to a temporal boundary layer of width
+:math:`(2\nu_c k^2)^{-1}`.  The wavenumber sum therefore converges: the flat
+forcing spectrum holds only on the exact terminal slice :math:`t = T` — a
+null set in time, which is the P3 statement — and the slice must not be
+conflated with the strip.  An earlier draft predicted linear divergence for
+this extension by arguing from the flat terminal-slice spectrum; that
+prediction was refuted by the closed form above and by the measurement, and
+the corrected classification (convergent) is encoded here.  The measured
+classification is reported next to the predicted one; any disagreement is
+flagged in the log with a ``[DISAGREEMENT]`` tag rather than suppressed.
 
 Measurement policy.  Every quantity is evaluated from the exact analytic
 Fourier coefficients over integer wavenumber arrays (vectorised
@@ -120,7 +134,7 @@ MEASUREMENTS_FILENAME = "forcing_spectra_measurements.npz"
 SUMMARY_FILENAME = "summary.yaml"
 
 # Smoke-test guard thresholds: values below these require --debug, so an
-# exploratory run cannot land in the real-run namespace (mechanical
+# exploratory run cannot be written into the real-run namespace (mechanical
 # enforcement, per the repository convention).
 SMOKE_TEST_SPECTRUM_MAX_WAVENUMBER_THRESHOLD = 512
 SMOKE_TEST_MINIMUM_STRIP_BAND_EDGE_THRESHOLD = 2**12
@@ -168,31 +182,105 @@ EXTENSION_COLOURS = {
 
 TIME_TAGS = ("t_initial", "t_near_terminal", "t_terminal")
 
-# Predicted strip-norm behaviour per extension, as stated in the
-# specification of prediction P4 (recorded verbatim; the measured
-# classification is reported next to it and disagreements are flagged).
+# Compact extension names used in the strip-forcing formula box, where the
+# full display labels would not fit on one line.
+EXTENSION_FORMULA_BOX_LABELS = {
+    "convex_raw": "convex raw",
+    "constant_in_time": "constant-in-time",
+    "split_diffusion": r"split $\{\partial_{xx}\}$",
+    "split_diffusion_advection": r"split $\{\partial_{xx},\partial_x\}$",
+    "graded_gaussian_matched": r"matched graded ($\nu_c=\nu$)",
+    "graded_gaussian_mismatched": r"mismatched graded ($\nu_c=\nu/2$)",
+    "exact_solution": "exact solution",
+}
+
+# Rendering of the measured strip-norm classification values in the
+# formula-box sentence composed at plot time.
+STRIP_CLASSIFICATION_PHRASES = {
+    "divergent_linear_in_band_edge": r"linear growth in $K_{\max}$",
+    "convergent": "convergent",
+    "identically_zero": "identically zero",
+    "intermediate": "intermediate growth",
+}
+
+
+def compose_measured_strip_sentence(summary: dict) -> str:
+    """Compose the 'Measured: ...' formula-box sentence from the summary.
+
+    The sentence is built at plot time from the saved
+    ``measured_classification`` fields of ``summary.yaml`` (never from a
+    hard-coded expectation), so the caption restates the artefact.  When the
+    two generators disagree on an extension's measured classification, the
+    per-generator classifications are spelled out for that extension.
+
+    Args:
+        summary: The loaded ``summary.yaml`` mapping of a completed run.
+
+    Returns:
+        One sentence of the form ``"Measured: <phrase> for <extensions>;
+        ..."``, grouping the extensions by their measured classification.
+    """
+    phrase_by_extension: dict[str, str] = {}
+    for extension_key in summary["extension_order"]:
+        classifications = {
+            generator_key: summary["generators"][generator_key]["strip_forcing"][
+                "per_extension"
+            ][extension_key]["measured_classification"]
+            for generator_key in summary["generator_order"]
+        }
+        distinct_classifications = set(classifications.values())
+        if len(distinct_classifications) == 1:
+            classification = next(iter(distinct_classifications))
+            phrase_by_extension[extension_key] = STRIP_CLASSIFICATION_PHRASES.get(
+                classification, classification
+            )
+        else:
+            phrase_by_extension[extension_key] = ", ".join(
+                f"{generator_key}: "
+                f"{STRIP_CLASSIFICATION_PHRASES.get(value, value)}"
+                for generator_key, value in classifications.items()
+            )
+    extension_labels_by_phrase: dict[str, list[str]] = {}
+    for extension_key in summary["extension_order"]:
+        extension_labels_by_phrase.setdefault(
+            phrase_by_extension[extension_key], []
+        ).append(EXTENSION_FORMULA_BOX_LABELS[extension_key])
+    clauses = [
+        f"{phrase} for {', '.join(labels)}"
+        for phrase, labels in extension_labels_by_phrase.items()
+    ]
+    return "Measured (from summary.yaml): " + "; ".join(clauses) + "."
+
+# Predicted strip-norm behaviour per extension (prediction P4).  The
+# measured classification is reported next to the predicted one and any
+# disagreement is flagged in the log with a [DISAGREEMENT] tag — the
+# mechanism is kept in place for future use.
+#
+# Mismatched graded extension (nu_c = nu/2): CONVERGENT.  The closed-form
+# per-wavenumber time integral
+#     |a(k) + nu_c k^2|^2 |c_k|^2 phi(-2 nu_c k^2),
+#     phi(z) = (e^{zT} - 1)/z,
+# has, as |k| -> infinity, phi(-2 nu_c k^2) = (2 nu_c k^2)^{-1} (1 + o(1))
+# and |a(k) + nu_c k^2|^2 = (nu - nu_c)^2 k^4 (1 + o(1)), hence the tail
+#     ((nu - nu_c)^2 / (2 nu_c)) |c_k|^2 k^2 = O(k^{-2})
+# for rho = 1 (|c_k|^2 proportional to k^{-4}); the wavenumber sum is
+# therefore SUMMABLE and the strip forcing converges.  The flat forcing
+# spectrum holds only on the exact terminal slice t = T (a null set in
+# time — the P3 statement): the flat spectral component is confined to a
+# temporal boundary layer of width (2 nu_c k^2)^{-1}, so the slice must
+# not be conflated with the strip.  An earlier draft predicted
+# 'divergent_linear_in_band_edge' for this extension by arguing from the
+# flat terminal-slice spectrum; that prediction was refuted by the closed
+# form above and by the measurement, and is corrected here.
 PREDICTED_STRIP_CLASSIFICATION = {
     "convex_raw": "divergent_linear_in_band_edge",
     "constant_in_time": "divergent_linear_in_band_edge",
     "split_diffusion": "convergent",
     "split_diffusion_advection": "convergent",
     "graded_gaussian_matched": "convergent",
-    "graded_gaussian_mismatched": "divergent_linear_in_band_edge",
+    "graded_gaussian_mismatched": "convergent",
     "exact_solution": "identically_zero",
 }
-
-MISMATCHED_GRADED_DISAGREEMENT_NOTE = (
-    "The specification of P4 predicts unbounded linear growth for the "
-    "mismatched graded extension; the measurement shows convergence. "
-    "Analytic account: the closed-form per-wavenumber time integral "
-    "|a(k) + nu_c k^2|^2 |c_k|^2 phi(-2 nu_c k^2) has the tail "
-    "((nu - nu_c)^2 / (2 nu_c)) |c_k|^2 k^2 = O(k^-2) as |k| -> infinity "
-    "(rho = 1), because the flat spectral component of the forcing at t = T "
-    "is confined to a temporal boundary layer of width (2 nu_c k^2)^-1; the "
-    "wavenumber sum therefore converges, even though the fixed-time "
-    "L^2(0, 2*pi) norm of the forcing at t = T grows without bound "
-    "(flat spectrum, prediction P3)."
-)
 
 
 # ---------------------------------------------------------------------------
@@ -617,11 +705,18 @@ def run_measurements(arguments: argparse.Namespace, run_directory: Path) -> None
                 "predicted_classification": predicted_classification,
                 "agreement": classification == predicted_classification,
             }
-            if (
-                extension_key == "graded_gaussian_mismatched"
-                and classification != predicted_classification
-            ):
-                entry["note"] = MISMATCHED_GRADED_DISAGREEMENT_NOTE
+            if not entry["agreement"]:
+                # Disagreement mechanism (kept for future use): the summary
+                # records the conflict explicitly and the log line below
+                # appends a [DISAGREEMENT] tag; a disagreement is never
+                # suppressed — its analytic account must be recorded before
+                # the result is cited.
+                entry["note"] = (
+                    "the measured classification disagrees with the "
+                    "prediction P4; see the [DISAGREEMENT] line in run.log "
+                    "and record the analytic account before citing this "
+                    "result"
+                )
             strip_table[extension_key] = entry
         generator_summary["strip_forcing"] = {
             "band_edges": [int(edge) for edge in strip_band_edges],
@@ -800,8 +895,9 @@ def build_all_figures(run_directory: Path) -> None:
                 r" moduli equal the envelope multiplied by $e^{-(T-t)\nu k^2}$"
                 r" (resp. $e^{-(T-t)\nu_c k^2}$):"
                 "\n"
-                r"the departure beyond $k\sim((T-t)\nu)^{-1/2}$ is this factor,"
-                r" not a violation. Exact solution: $\widehat{Lh}\equiv 0$,"
+                r"the departure for $k \geq k_c$ with the crossover"
+                r" $k_c=((T-t)\nu)^{-1/2}$ is this factor, not a violation."
+                r" Exact solution: $\widehat{Lh}\equiv 0$,"
                 r" omitted from the logarithmic axes."
             ),
             formula_fontsize=7,
@@ -896,12 +992,14 @@ def build_all_figures(run_directory: Path) -> None:
             r"\int_0^T|\widehat{Lh}(k,t)|^2\,dt$ (closed-form time integrals,"
             r" no quadrature)."
             "\n"
-            r"Measured: linear growth for constant-in-time and convex raw;"
-            r" convergent for the splits ($m\leq\rho$), the matched graded"
-            r" ($\nu_c=\nu$) and the mismatched graded extension"
-            "\n"
-            r"($\int_0^T|\widehat{Lh}(k,t)|^2\,dt=O(k^{-2})$ as"
-            r" $|k|\to\infty$; see summary.yaml). Exact solution: identically"
+            # The 'Measured: ...' sentence is composed at plot time from the
+            # saved measured_classification fields, so the caption restates
+            # the artefact rather than a hard-coded expectation.
+            + compose_measured_strip_sentence(summary)
+            + "\n"
+            r"Mismatched graded ($\rho=1$):"
+            r" $\int_0^T|\widehat{Lh}(k,t)|^2\,dt=O(k^{-2})$ as"
+            r" $|k|\to\infty$. The exact solution is identically"
             r" zero, not representable on the logarithmic axes."
         ),
         formula_fontsize=7,
@@ -980,6 +1078,25 @@ def parse_arguments(argv=None) -> argparse.Namespace:
         ):
             parser.error(
                 "--strip-band-edges must be strictly increasing, received "
+                f"{arguments.strip_band_edges}"
+            )
+        if any(
+            10 * later <= 21 * earlier
+            for earlier, later in zip(
+                arguments.strip_band_edges, arguments.strip_band_edges[1:]
+            )
+        ):
+            # The growth classifier separates divergent-linear from convergent
+            # by comparing the last growth factor against 0.5 * band_edge_factor
+            # (divergent branch) and 1.05 (convergent branch); the branches are
+            # disjoint only when 0.5 * band_edge_factor > 1.05, i.e. when every
+            # consecutive band-edge factor exceeds 2.1. At a factor of 2 the
+            # divergence threshold equals 1.0 and every constant curve is
+            # misclassified as divergent.
+            parser.error(
+                "consecutive --strip-band-edges must differ by a factor "
+                "strictly greater than 2.1 (the growth classifier's divergent "
+                "and convergent branches overlap otherwise), received "
                 f"{arguments.strip_band_edges}"
             )
         if not 0.0 < arguments.near_terminal_fraction < 1.0:

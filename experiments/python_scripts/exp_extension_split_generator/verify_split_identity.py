@@ -1,6 +1,10 @@
 r"""Verification of the split-generator forcing identity (predictions P1 and P1b).
 
-Proposition under test.  Proposition 6(i) of the methodology document: for a
+Proposition under test.  Proposition 7(i) ("Split-generator extension removes
+the floor") of the methodology report "On boundary-constrained learning of
+partial differential equations" (repository
+2026_01_29_constrained_learning_pde_lehalle_hosseinkhan, file
+``boundary_constrained_learning_problem.tex``): for a
 constant-coefficient generator with Fourier symbol :math:`a(k)` split as
 :math:`a(k) = a_A(k) + b(k)` (subset symbol :math:`a_A`, defect symbol
 :math:`b`), the split-semigroup extension
@@ -58,7 +62,11 @@ Checks performed (each with a PASS/FAIL line against the stated tolerance):
    :math:`\max(\max |\partial_t h|, \max |\tfrac{\sigma^2}{2}
    \partial_{xx} h|)`, because the two terms vanish simultaneously along the
    zero-crossing curve of :math:`\partial_{xx} h`, where a pointwise quotient
-   is an ill-conditioned :math:`0/0` form.
+   is an ill-conditioned :math:`0/0` form.  A complementary pointwise
+   relative residual, restricted to the grid points where the local scale
+   :math:`\max(|\partial_t h|, |\tfrac{\sigma^2}{2} \partial_{xx} h|)`
+   exceeds :math:`10^{-3}` times its grid maximum, is recorded in the summary
+   and logged; the grid-normalised quantity remains the pass/fail criterion.
 
 4. Exact-solution extension.  For
    :math:`\hat h(k, t) = e^{(T-t) a(k)} c_k` the forcing
@@ -121,7 +129,7 @@ from learning_option_pricing.utils.run_context import (  # noqa: E402
 
 import logging  # noqa: E402
 
-logger = logging.getLogger("verify_split_identity")
+logger = logging.getLogger(Path(__file__).stem)
 
 # ---------------------------------------------------------------------------
 # Constants of the study (single source of truth: the mathematical
@@ -470,7 +478,10 @@ def measure_gaussian_smoothed_put_cancellation(
         .numpy()
     )
     residual_field = time_derivative + second_order_term
-    full_operator_field = residual_field + first_order_part
+    # The quantity "full operator versus first-order part" was removed as
+    # circular: the full-operator field was constructed as residual_field +
+    # first_order_part, so the difference equals the residual up to
+    # re-association rounding and measures nothing new.
 
     normalisation_scale = max(
         float(np.max(np.abs(time_derivative))),
@@ -478,11 +489,25 @@ def measure_gaussian_smoothed_put_cancellation(
     )
     max_absolute_residual = float(np.max(np.abs(residual_field)))
     relative_residual = max_absolute_residual / normalisation_scale
-    # Equivalent statement of P1b: the full Black–Scholes operator applied to
-    # h equals its first-order (transport–reaction) part.
-    full_operator_versus_first_order = float(
-        np.max(np.abs(full_operator_field - first_order_part)) / normalisation_scale
+    # Complementary diagnostic: pointwise relative residual restricted to the
+    # grid points where the local scale max(|dt h|, |(sigma^2/2) dxx h|)
+    # exceeds 1e-3 times its grid maximum (the well-scaled points).
+    local_scale_field = np.maximum(
+        np.abs(time_derivative), np.abs(second_order_term)
     )
+    well_scaled_relative_threshold = 1.0e-3
+    well_scaled_mask = local_scale_field > (
+        well_scaled_relative_threshold * float(np.max(local_scale_field))
+    )
+    max_pointwise_relative_residual_on_well_scaled_points = float(
+        np.max(
+            np.abs(residual_field[well_scaled_mask])
+            / local_scale_field[well_scaled_mask]
+        )
+    )
+    # The grid-normalised residual stays the primary pass/fail criterion: the
+    # local scale crosses zero (along the zero-crossing curve of dxx h), where
+    # a pointwise quotient is an ill-conditioned 0/0 form.
     passed = relative_residual <= GAUSSIAN_SMOOTHED_PUT_RELATIVE_TOLERANCE
 
     summary_row = {
@@ -499,7 +524,11 @@ def measure_gaussian_smoothed_put_cancellation(
         "max_absolute_residual": max_absolute_residual,
         "normalisation_scale": normalisation_scale,
         "relative_residual": relative_residual,
-        "full_operator_versus_first_order_relative": full_operator_versus_first_order,
+        "well_scaled_relative_threshold": well_scaled_relative_threshold,
+        "number_of_well_scaled_grid_points": int(np.sum(well_scaled_mask)),
+        "max_pointwise_relative_residual_on_well_scaled_points": (
+            max_pointwise_relative_residual_on_well_scaled_points
+        ),
         "tolerance": GAUSSIAN_SMOOTHED_PUT_RELATIVE_TOLERANCE,
         "passed": bool(passed),
     }
@@ -512,13 +541,17 @@ def measure_gaussian_smoothed_put_cancellation(
         "first_order_part_field": first_order_part,
     }
     logger.info(
-        "%s | Gaussian-smoothed put (P1b) | relative residual %.3e <= %.0e "
-        "(scale %.3e; full operator vs first-order part %.3e)",
+        "%s | Gaussian-smoothed put (P1b) | grid-normalised relative residual "
+        "%.3e <= %.0e (scale %.3e; primary criterion) | pointwise relative "
+        "residual on the %d well-scaled grid points (local scale > %.0e of "
+        "its grid maximum): %.3e",
         "PASS" if passed else "FAIL",
         relative_residual,
         GAUSSIAN_SMOOTHED_PUT_RELATIVE_TOLERANCE,
         normalisation_scale,
-        full_operator_versus_first_order,
+        int(np.sum(well_scaled_mask)),
+        well_scaled_relative_threshold,
+        max_pointwise_relative_residual_on_well_scaled_points,
     )
     return summary_row, field_arrays
 
@@ -726,9 +759,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--seed",
         type=int,
         default=0,
-        help="Master seed; every computation in this script is deterministic, "
-        "the seed is logged (and applied to the numpy/torch generators) for "
-        "uniformity with the other experiment scripts.",
+        help="Master seed, logged for the run-log contract; every computation "
+        "in this script is deterministic, and only torch.manual_seed is "
+        "applied (no numpy random number generator is consumed).",
     )
     parser.add_argument(
         "--debug",
@@ -805,10 +838,10 @@ def main(argv: list[str] | None = None) -> int:
     log_parsed_args(logger, args)
     logger.info(
         "Master seed: %d (every computation here is deterministic; the seed "
-        "is applied to the numpy and torch generators for uniformity)",
+        "is recorded for the run-log contract, and only torch.manual_seed is "
+        "applied)",
         args.seed,
     )
-    np.random.default_rng(args.seed)
     torch.manual_seed(args.seed)
 
     repo_root = find_repo_root(Path(__file__))

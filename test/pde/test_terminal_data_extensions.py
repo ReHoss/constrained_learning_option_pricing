@@ -34,6 +34,10 @@ from learning_option_pricing.pde import (
 TWO_PI = 2.0 * math.pi
 TERMINAL_TIME = 1.0
 
+# numpy >= 2 renames ``np.trapz`` to ``np.trapezoid``; resolve whichever is
+# available at import time so numpy 1.x environments also pass.
+trapezoid_integrate = getattr(np, "trapezoid", None) or np.trapz
+
 
 def _extension_catalogue():
     """Extensions exercised by the quadrature test, keyed by description."""
@@ -213,7 +217,7 @@ def test_closed_form_time_integral_matches_trapezoid(extension_name):
     forcing_on_grid = extension.forcing_coefficient(
         wavenumbers, time_grid[:, None]
     )
-    quadrature_integral = np.trapezoid(
+    quadrature_integral = trapezoid_integrate(
         np.abs(forcing_on_grid) ** 2, time_grid, axis=0
     )
     closed_form_integral = extension.squared_forcing_time_integral(wavenumbers)

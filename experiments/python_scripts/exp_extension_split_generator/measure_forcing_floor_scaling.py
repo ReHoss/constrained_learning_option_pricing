@@ -1,6 +1,10 @@
-r"""Measured operator-channel floor law on the circle (prediction P2, Propositions 3--5).
+r"""Measured operator-channel floor scaling on the circle (prediction P2).
 
-Proposition under test.  On the circle :math:`[0, 2\pi)` with the Fourier
+Propositions under test.  Propositions 3--5 of the methodology report
+"On boundary-constrained learning of partial differential equations"
+(repository 2026_01_29_constrained_learning_pde_lehalle_hosseinkhan, file
+``boundary_constrained_learning_problem.tex``), instantiated on the circle.
+On the circle :math:`[0, 2\pi)` with the Fourier
 convention :math:`c_k = \frac{1}{2\pi}\int_0^{2\pi} g(x) e^{-ikx}\,dx`, the
 band-truncated operator-channel floor of a generator with symbol
 :math:`a(k)` acting on a terminal datum :math:`g` is
@@ -12,7 +16,7 @@ band-truncated operator-channel floor of a generator with symbol
 For a periodised Bernoulli datum (single break point, regularity index
 :math:`\rho \in \{0, 1, 2\}`, jump :math:`J` of the :math:`\rho`-th
 derivative) and a generator of maximal order :math:`2p` with principal
-constant :math:`a_0`, the predicted law is: with growth exponent
+constant :math:`a_0`, the floor prediction is: with growth exponent
 :math:`e = 4p - 2\rho - 1`,
 
 * if :math:`e > 0`:
@@ -29,8 +33,8 @@ log-price, :math:`\rho = 1`); expected exponents: G1 gives
 :math:`e = 3, 1, -1`, G3 gives :math:`e = 7, 5, 3`, G2 at :math:`\rho = 1`
 gives :math:`e = 1`.  The square-wave datum on G1 is included as the
 multi-singularity extension case (two break points): the single-break-point
-law does not apply verbatim, so that curve is measured only, with no
-prediction line.
+floor prediction does not apply verbatim, so that curve is measured only,
+with no prediction line.
 
 Measurement policy.  Every floor value is computed from the exact analytic
 Fourier coefficients evaluated over integer wavenumber arrays (never from
@@ -99,7 +103,7 @@ from learning_option_pricing.utils.run_context import (  # noqa: E402
     write_json,
 )
 
-LOGGER = logging.getLogger("measure_forcing_floor_scaling")
+LOGGER = logging.getLogger(Path(__file__).stem)
 
 # Smoke-test guard: a real run sums the band up to 2^22; any band edge below
 # 2^16 without --debug is mechanically rejected (see the repository
@@ -335,8 +339,8 @@ def analyse_measurement_cell(
 
     if isinstance(datum, SquareWaveDatum):
         # Multi-singularity extension case: two break points, so the
-        # single-break-point law is not applied; the curve and its slope
-        # are measured only.
+        # single-break-point floor prediction is not applied; the curve and
+        # its slope are measured only.
         cell_summary.update(
             {
                 "datum": "square_wave",
@@ -350,8 +354,9 @@ def analyse_measurement_cell(
                 "fitted_log_log_slope": fitted_slope,
                 "ratio_measured_over_predicted_at_largest_band_edge": None,
                 "note": (
-                    "two break points: the single-break-point floor law is "
-                    "not applied verbatim; the curve is measured only"
+                    "two break points: the single-break-point floor "
+                    "prediction is not applied verbatim; the curve is "
+                    "measured only"
                 ),
             }
         )
@@ -535,7 +540,7 @@ def render_main_figure(run_directory: Path) -> Path:
         axes=[ax],
         formula=(
             r"$\mathrm{floor}(K)=2\pi\sum_{0<|k|\leq K}|a(k)|^2|c_k|^2$;"
-            r"  predicted law: $\mathrm{floor}(K)=\frac{a_0^2 J^2}{\pi e}"
+            r"  floor prediction: $\mathrm{floor}(K)=\frac{a_0^2 J^2}{\pi e}"
             r"K^{e}\,(1+o(1))$ as $K\to\infty$, with $e=4p-2\rho-1$"
             "\n"
             r"$a_0$ = principal constant of the generator, $J$ = jump of the "
@@ -543,7 +548,7 @@ def render_main_figure(run_directory: Path) -> Path:
             r" $e<0$: saturation to the finite total sum (dotted plateau);"
             "\n"
             r"square wave: two break points, measured only "
-            r"(single-break-point law not applied)"
+            r"(single-break-point prediction not applied)"
         ),
         formula_fontsize=7.5,
     )
