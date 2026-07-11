@@ -324,7 +324,40 @@ intended behaviour of the measurement policy: a predicted classification is
 recorded next to the measured one, and a disagreement is flagged, never
 suppressed.
 
-## 6. Scripts, command-line synopses, artefact contracts
+## 6. The pure-heat split extension versus the implemented convex form
+
+Both constructions enforce the terminal condition by construction; they
+differ entirely in the $\theta$-independent forcing $\mathcal{L}h$ that the
+network must cancel. The convex form is the ansatz already implemented in the
+`exp_ansatz_forms_heat` experiment family (the report's construction); the
+pure-heat split extension is `SplitSemigroupExtension` with the subset equal
+to the principal diffusive part, $A=\nu\,\partial_{xx}$ — for the
+Black–Scholes generator in logarithmic coordinates, $\nu=\sigma^{2}/2$, and
+$h(\cdot,t)=e^{(T-t)A}g$ is the Gaussian smoothing of the payoff at standard
+deviation $\sigma\sqrt{T-t}$, available in closed form for the put.
+
+| Property | Convex form (implemented) | Pure-heat split extension |
+|---|---|---|
+| Extension $h(\cdot,t)$ | $(1-d_T(t))\,g$ — the raw datum rescaled in time | $e^{(T-t)A}g$ — the datum smoothed at the parabolic scale |
+| Terminal datum | exact ($d_T(T)=0$) | exact ($h(\cdot,T)=g$) |
+| Interior spatial profile | the datum $g$ at every $t<T$, singularity included | $A$-smoothed, infinitely differentiable for $t<T$ |
+| Velocity channel | $-d_T'(t)\,g$ | none: $\partial_t h=-Ah$ cancels the principal part exactly |
+| Operator channel | $(1-d_T)\,\mathcal{L}^X g$ — flat (white) spectrum at $\rho=1$ | $B\,h$ — defect of order $m_B\le\rho$, spectrum decaying as $k^{m_B-\rho-1}$ |
+| Strip forcing $\lVert\mathcal{L}h\rVert^2$ | divergent in the band edge (measured growth $15.96$–$16.00$ per $16$-fold band increase) | finite (measured: constant in the band edge) |
+| Measured value at $K=2^{20}$ (G2, $\rho=1$) | $1.761639\times10^{2}$ | $3.520249\times10^{-4}$ — a factor $\approx 5.0\times10^{5}$ below the convex form |
+| Exact minimiser's terminal profile | $g-\mathcal{L}^X g/d_T'(T)$ — inherits the datum's singularity | $-Bg/d_T'(T)$ — one derivative order smoother |
+| Closed form for the put | immediate | $K\,\Phi(d)-e^{x+\sigma^2\tau/2}\,\Phi(d-\sigma\sqrt{\tau})$, $d=(\ln K-x)/(\sigma\sqrt{\tau})$; the second-order cancellation verified by automatic differentiation to $1.8\times10^{-15}$ relative |
+
+Provenance of the measured values: production run
+`data/measure_forcing_spectra/2026-07-10-18-51-41-123149Z_rho1_specK4096_stripK1048576/summary.yaml`
+and `data/verify_split_identity/2026-07-10-18-51-12-766014Z_K512_fdK64/summary.yaml`
+(Jean Zay prepost job 1715125). The theoretical account is
+Proposition 7 of the methodology report; the measured contrast above is its
+empirical content: replacing the raw-datum profile by the principal-part
+semigroup removes the forcing floor with no mollification and no change of
+the enforced terminal datum.
+
+## 7. Scripts, command-line synopses, artefact contracts
 
 All three scripts follow the repository conventions: `--seed` (master seed,
 recorded for the run-log contract; every computation is deterministic),
@@ -394,7 +427,7 @@ strip-forcing formula box is composed at plot time from the saved
 `measured_classification` fields, so the caption restates the artefact
 rather than a hard-coded expectation.
 
-## 7. Library modules and tests
+## 8. Library modules and tests
 
 * `learning_option_pricing/pde/periodic_spectral_toolbox.py` — datum
   classes, `ConstantCoefficientGenerator` (symbol, splits, dissipativity
