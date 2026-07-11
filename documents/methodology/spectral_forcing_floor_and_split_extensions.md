@@ -324,6 +324,55 @@ intended behaviour of the measurement policy: a predicted classification is
 recorded next to the measured one, and a disagreement is flagged, never
 suppressed.
 
+### 5.5 P5 — unreachable fraction and bandwidth demand (the spectral-gap hypothesis)
+
+Hypothesis under test (review directive): an extension is favourable when the
+spectral mass of its forcing lies below the network-reachable cutoff. The
+quantity is the unreachable fraction
+
+$$
+\mathrm{unreachable}(K_\star)
+= \Bigl(\sum_{|k| > K_\star} I_k\Bigr) \Big/ \Bigl(\sum_{0<|k|\le K_{\mathrm{band}}} I_k\Bigr),
+\qquad I_k = \int_0^T |\widehat{Lh}(k,t)|^2\,dt
+$$
+
+(closed-form time integrals of Section 4), together with the bandwidth demand
+$K_\star(\gamma)$, the smallest dyadic cutoff with unreachable fraction at
+most $\gamma$. Predicted tails at $\rho = 1$: $K_\star^{-3}$ for the split
+$\{\partial_{xx}\}$ and the matched graded extension ($I_k \propto k^{-4}$),
+$K_\star^{-5}$ for the split $\{\partial_{xx}, \partial_x\}$
+($I_k \propto k^{-6}$), $K_\star^{-1}$ for the mismatched graded extension
+($I_k \propto k^{-2}$); for the two flat divergent forms the fraction is
+band-limited ($1 - K_\star/K_{\mathrm{band}}$, dependent on the working band
+by construction).
+
+Measured (production run, $K_{\mathrm{band}} = 2^{20}$, fitted over the dyadic
+cutoffs in $[K_{\mathrm{band}}/80, K_{\mathrm{band}}/8]$, both generators,
+14/14 agreements within 0.1): fitted exponents $-3.0008$, $-5.0000$,
+$-1.0557$ against $-3$, $-5$, $-1$; flat forms at $-0.0557$, matching the
+band-limited reference curve slope exactly. Bandwidth demand on G2
+(Black–Scholes):
+
+| Extension | $\gamma=10^{-1}$ | $\gamma=10^{-2}$ | $\gamma=10^{-3}$ | $\gamma=10^{-6}$ |
+|---|---|---|---|---|
+| Convex raw | not reached within the band | not reached | not reached | not reached |
+| Constant-in-time | not reached within the band | not reached | not reached | not reached |
+| Split $\{\partial_{xx}\}$ | 8 | 8 | 16 | 128 |
+| Split $\{\partial_{xx},\partial_x\}$ | 8 | 8 | 8 | 16 |
+| Graded matched | 8 | 8 | 16 | 128 |
+| Graded mismatched | 16 | 128 | 1024 | 524288 |
+| Exact solution | identically zero (no forcing) | — | — | — |
+
+Reading: a reachable band of $|k| \le 16$ suffices to place all but $10^{-6}$
+of the split $\{\partial_{xx}, \partial_x\}$ forcing below the cutoff,
+whereas for the raw convex form even $\gamma = 10^{-1}$ is not reached within
+a band of $2^{20}$ wavenumbers. This is the quantitative content of the
+spectral-gap hypothesis, and the stage-2 trained prediction: at equal network
+capacity, the split extensions leave a residual floor smaller by the measured
+unreachable-mass ratio. Provenance:
+`data/measure_spectral_gap/2026-07-11-02-04-03-743828Z_rho1_log2K20/`
+(Jean Zay prepost job 1721863).
+
 ## 6. The pure-heat split extension versus the implemented convex form
 
 Both constructions enforce the terminal condition by construction; they
@@ -426,6 +475,17 @@ figures `forcing_spectra__<generator>.png`, and
 strip-forcing formula box is composed at plot time from the saved
 `measured_classification` fields, so the caption restates the artefact
 rather than a hard-coded expectation.
+
+### 7.4 `measure_spectral_gap.py` (P5)
+
+CLI: `[--log2-band-edge N] [--log2-minimum-cutoff N] [--chunk-length N]
+[--seed N] [--debug] [--replot RUN_DIR]`; smoke guard below
+$K_{\mathrm{band}} = 2^{14}$. Artefacts: `spectral_gap_measurements.npz`
+(per-wavenumber integrals, fraction and predicted curves),
+`summary.yaml` (totals, fractions at every dyadic cutoff, bandwidth demands,
+fitted-versus-predicted exponents with agreement booleans),
+`bandwidth_demand_table.txt`, one figure per generator; `--replot` rebuilds
+the figures from the artefacts alone.
 
 ## 8. Library modules and tests
 
