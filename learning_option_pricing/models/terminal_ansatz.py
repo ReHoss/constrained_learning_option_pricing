@@ -42,13 +42,20 @@ from typing import Callable
 import torch
 import torch.nn as nn
 
-from learning_option_pricing.pde.operators import heat_operator, heat_operator_parts
+from learning_option_pricing.pde.operators import (
+    constant_coefficient_operator,
+    constant_coefficient_operator_parts,
+)
 
 FORMS = ("hard_constant", "hard_convex", "soft_pinn", "pure_nn")
 HARD_FORMS = ("hard_constant", "hard_convex")
 SOFT_FORMS = ("soft_pinn", "pure_nn")
 
 INTERPOLATION_KINDS = ("linear", "exponential")
+
+# Exact key set of the analytic-derivative bypass mapping accepted by
+# TerminalAnsatz(extension_derivative_fns=...).
+EXTENSION_DERIVATIVE_KEYS = ("dt", "dx", "dxx")
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +139,30 @@ class TerminalAnsatz(nn.Module):
                         exact at ``t = T``).  When supplied it replaces the
                         default ``g(x)`` extension for the hard forms; the
                         ``hard_convex`` form then uses ``lambda(t) * Psi_base``.
+        extension_derivative_fns:
+                        Optional analytic-derivative bypass for the extension:
+                        a mapping with the exact keys ``"dt"``, ``"dx"``,
+                        ``"dxx"`` to callables ``(x, t) -> Tensor`` returning
+                        the closed-form derivatives of :math:`\Psi`
+                        (:math:`\partial_t \Psi`, :math:`\partial_x \Psi`,
+                        :math:`\partial_{xx} \Psi`), called with the same
+                        ``(N, 1)``-shaped tensors as ``extension_fn``.  When
+                        supplied, :func:`residual_decomposition` assembles the
+                        extension forcing :math:`P\Psi` analytically and
+                        outside the autograd graph (``torch.no_grad()``):
+                        :math:`P\Psi` is :math:`\theta`-independent, so the
+                        loss gradient needs its values, never its graph.
+                        Restricted to ``form="hard_constant"`` — the
+                        ``hard_convex`` product rule with :math:`\lambda` is
+                        not implemented (not needed by any stage-2 variant)
+                        and any other form raises :class:`ValueError`.
+
+    Raises:
+        ValueError: On an unknown form, a hard form without interpolation
+            coefficient or datum/extension, or an
+            ``extension_derivative_fns`` mapping supplied with a form other
+            than ``"hard_constant"`` or with a key set different from
+            ``("dt", "dx", "dxx")``.
     """
 
     def __init__(
@@ -143,6 +174,9 @@ class TerminalAnsatz(nn.Module):
         form: str,
         normalizer: Callable[[torch.Tensor], torch.Tensor] | None = None,
         extension_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = None,
+        extension_derivative_fns: dict[
+            str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+        ] | None = None,
     ) -> None:
         if form not in FORMS:
             raise ValueError(f"Unknown form: {form!r}. Choose from {FORMS}.")
@@ -152,6 +186,20 @@ class TerminalAnsatz(nn.Module):
             raise ValueError(
                 f"form={form!r} requires terminal_datum or extension_fn."
             )
+        if extension_derivative_fns is not None:
+            if form != "hard_constant":
+                raise ValueError(
+                    "extension_derivative_fns is implemented for "
+                    "form='hard_constant' only (the hard_convex product rule "
+                    "with the interpolation coefficient is not implemented); "
+                    f"received form={form!r}."
+                )
+            if set(extension_derivative_fns) != set(EXTENSION_DERIVATIVE_KEYS):
+                raise ValueError(
+                    "extension_derivative_fns must have the exact keys "
+                    f"{EXTENSION_DERIVATIVE_KEYS}, received "
+                    f"{sorted(extension_derivative_fns)}."
+                )
         super().__init__()
         self.network = network
         self._terminal_datum = terminal_datum
@@ -159,6 +207,7 @@ class TerminalAnsatz(nn.Module):
         self.form = form
         self.normalizer = normalizer
         self._extension_fn = extension_fn
+        self._extension_derivative_fns = extension_derivative_fns
 
     # -- components -------------------------------------------------------
 
@@ -209,11 +258,36 @@ class TerminalAnsatz(nn.Module):
 # Residual decomposition (rem:residual-decomposition notation)
 # ---------------------------------------------------------------------------
 
+def _resolve_generator_coefficients(
+    sigma: float | None,
+    generator_coefficients: dict[int, float] | None,
+) -> dict[int, float]:
+    """Resolve the mutually exclusive ``sigma`` / ``generator_coefficients``.
+
+    Exactly one of the two must be supplied; ``sigma`` alone reproduces the
+    historical heat behaviour through ``{2: 0.5 * sigma**2, 1: 0.0, 0: 0.0}``.
+
+    Raises:
+        ValueError: If both or neither are supplied.
+    """
+    if (sigma is None) == (generator_coefficients is None):
+        raise ValueError(
+            "exactly one of 'sigma' and 'generator_coefficients' must be "
+            f"supplied; received sigma={sigma!r} and "
+            f"generator_coefficients={generator_coefficients!r}."
+        )
+    if generator_coefficients is not None:
+        return {int(order): float(value) for order, value in generator_coefficients.items()}
+    return {2: 0.5 * sigma**2, 1: 0.0, 0: 0.0}
+
+
 def residual_decomposition(
     ansatz: TerminalAnsatz,
     coord: torch.Tensor,
     t: torch.Tensor,
-    sigma: float,
+    sigma: float | None = None,
+    *,
+    generator_coefficients: dict[int, float] | None = None,
 ) -> dict[str, torch.Tensor]:
     r"""Split the stage residual into the channels of ``rem:residual-decomposition``.
 
@@ -236,13 +310,30 @@ def residual_decomposition(
     For the soft forms there is no extension; the network *is* the trial
     solution, so ``R = P u`` and the forcing/cross channels are zero.
 
+    Analytic-derivative bypass.  When the ansatz was built with
+    ``extension_derivative_fns`` (``hard_constant`` only), the extension
+    forcing is assembled **analytically and outside the autograd graph**
+    (``torch.no_grad()``) as :math:`P\Psi = \partial_t \Psi +
+    c_2\,\partial_{xx}\Psi + c_1\,\partial_x\Psi + c_0\,\Psi` from the
+    supplied closed-form derivatives — :math:`P\Psi` is
+    :math:`\theta`-independent, so the loss gradient needs its values, never
+    its graph.  When absent, the existing autograd route through
+    :func:`learning_option_pricing.pde.operators.constant_coefficient_operator_parts`
+    is used.
+
     Args:
         ansatz: The trial solution.
         coord:  Spatial collocation points, shape ``(N,)`` with
                 ``requires_grad=True``.
         t:      Time collocation points, shape ``(N,)`` with
                 ``requires_grad=True``.
-        sigma:  Diffusion scale passed to :func:`heat_operator`.
+        sigma:  Diffusion scale of the backward heat operator; mutually
+                exclusive with ``generator_coefficients`` and equivalent to
+                ``generator_coefficients={2: 0.5 * sigma**2, 1: 0.0, 0: 0.0}``
+                (the historical behaviour; existing call sites unchanged).
+        generator_coefficients: Mapping from differential order to real
+                coefficient of the spatial generator, ``{2: nu, 1: mu, 0: r0}``;
+                mutually exclusive with ``sigma``.
 
     Returns:
         A dict of per-point fields and scalar channel energies:
@@ -253,19 +344,30 @@ def residual_decomposition(
         (:math:`2\,\mathbb E[R_\theta\,\mathcal P\Psi]`), and
         ``forcing_floor`` (:math:`\mathbb E[(\mathcal P\Psi)^2]`).
 
-        The floor is further split by mechanism (the two operator parts of
-        :math:`\mathcal P\Psi = \partial_t\Psi + \tfrac{\sigma^2}{2}\partial_{xx}\Psi`):
-        ``forcing_velocity`` (:math:`\mathbb E[(\partial_t\Psi)^2]`, the
-        interpolation-velocity :math:`\lambda' g` for :math:`\Psi=\lambda g`) and
-        ``forcing_diffusion`` (:math:`\mathbb E[(\tfrac{\sigma^2}{2}\partial_{xx}\Psi)^2]`,
-        the damped diffusion :math:`\lambda\tfrac{\sigma^2}{2} g''`).
+        The floor is further split by mechanism (the four operator channels
+        of :math:`\mathcal P\Psi = \partial_t\Psi + c_2\,\partial_{xx}\Psi
+        + c_1\,\partial_x\Psi + c_0\,\Psi`):
+        ``forcing_velocity`` (:math:`\mathbb E[(\partial_t\Psi)^2]`),
+        ``forcing_diffusion`` (:math:`\mathbb E[(c_2\,\partial_{xx}\Psi)^2]`),
+        ``forcing_advection`` (:math:`\mathbb E[(c_1\,\partial_x\Psi)^2]`) and
+        ``forcing_reaction`` (:math:`\mathbb E[(c_0\,\Psi)^2]`).  Under the
+        ``sigma`` route the advection and reaction channels are identically
+        zero.
+
+    Raises:
+        ValueError: If both or neither of ``sigma`` and
+            ``generator_coefficients`` are supplied.
     """
+    resolved_coefficients = _resolve_generator_coefficients(
+        sigma, generator_coefficients
+    )
+
     coord_col = coord.unsqueeze(-1)
     t_col = t.unsqueeze(-1)
     xt = torch.cat([coord_col, t_col], dim=1)
 
     phi = ansatz.free_network(xt).squeeze(-1)
-    p_phi = heat_operator(phi, coord, t, sigma)
+    p_phi = constant_coefficient_operator(phi, coord, t, resolved_coefficients)
 
     if ansatz.form in SOFT_FORMS:
         residual = p_phi
@@ -273,6 +375,8 @@ def residual_decomposition(
         extension_forcing = torch.zeros_like(p_phi)
         forcing_velocity = torch.zeros_like(p_phi)
         forcing_diffusion = torch.zeros_like(p_phi)
+        forcing_advection = torch.zeros_like(p_phi)
+        forcing_reaction = torch.zeros_like(p_phi)
     else:
         lam = ansatz._interp_coeff(t)
         (lam_prime,) = torch.autograd.grad(
@@ -280,9 +384,44 @@ def residual_decomposition(
         )
         network_contribution = (1.0 - lam) * p_phi - lam_prime * phi
 
-        psi = ansatz.extension(coord_col, t_col).squeeze(-1)
-        forcing_velocity, forcing_diffusion = heat_operator_parts(psi, coord, t, sigma)
-        extension_forcing = forcing_velocity + forcing_diffusion
+        if ansatz._extension_derivative_fns is not None:
+            # Analytic-derivative bypass (hard_constant only, enforced at
+            # construction): the theta-independent forcing is assembled from
+            # the closed-form derivatives outside the autograd graph.
+            derivative_fns = ansatz._extension_derivative_fns
+            with torch.no_grad():
+                psi_values = ansatz.extension(coord_col, t_col).reshape(coord.shape)
+                forcing_velocity = derivative_fns["dt"](coord_col, t_col).reshape(
+                    coord.shape
+                )
+                forcing_diffusion = resolved_coefficients.get(
+                    2, 0.0
+                ) * derivative_fns["dxx"](coord_col, t_col).reshape(coord.shape)
+                forcing_advection = resolved_coefficients.get(
+                    1, 0.0
+                ) * derivative_fns["dx"](coord_col, t_col).reshape(coord.shape)
+                forcing_reaction = resolved_coefficients.get(0, 0.0) * psi_values
+                extension_forcing = (
+                    forcing_velocity
+                    + forcing_diffusion
+                    + forcing_advection
+                    + forcing_reaction
+                )
+        else:
+            psi = ansatz.extension(coord_col, t_col).squeeze(-1)
+            forcing_parts = constant_coefficient_operator_parts(
+                psi, coord, t, resolved_coefficients
+            )
+            forcing_velocity = forcing_parts["velocity"]
+            forcing_diffusion = forcing_parts["diffusion"]
+            forcing_advection = forcing_parts["advection"]
+            forcing_reaction = forcing_parts["reaction"]
+            extension_forcing = (
+                forcing_velocity
+                + forcing_diffusion
+                + forcing_advection
+                + forcing_reaction
+            )
         residual = network_contribution + extension_forcing
 
     return {
@@ -295,4 +434,128 @@ def residual_decomposition(
         "forcing_floor": (extension_forcing**2).mean(),
         "forcing_velocity": (forcing_velocity**2).mean(),
         "forcing_diffusion": (forcing_diffusion**2).mean(),
+        "forcing_advection": (forcing_advection**2).mean(),
+        "forcing_reaction": (forcing_reaction**2).mean(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Startup cross-check of the analytic-derivative bypass
+# ---------------------------------------------------------------------------
+
+def cross_check_extension_forcing_analytic_versus_autograd(
+    ansatz: TerminalAnsatz,
+    coord: torch.Tensor,
+    t: torch.Tensor,
+    sigma: float | None = None,
+    *,
+    generator_coefficients: dict[int, float] | None = None,
+    relative_tolerance: float = 1.0e-3,
+) -> float:
+    r"""Startup guard: the analytic and the autograd :math:`P\Psi` must agree.
+
+    Both assemblies of the extension forcing are evaluated on the supplied
+    batch — the analytic one from ``extension_derivative_fns`` (the training
+    route under the bypass) and the autograd one through
+    :func:`learning_option_pricing.pde.operators.constant_coefficient_operator`
+    on the extension values — and their :math:`L^2` deviation is measured.
+    A deviation above ``relative_tolerance`` (default :math:`10^{-3}`, the
+    float32 double-backward noise allowance of the stage-2 specification,
+    Section 1.4 item 5) raises :class:`RuntimeError`: the guard aborts, it
+    never passes silently.
+
+    Normalisation.  The deviation is normalised by
+    :math:`\max\bigl(\lVert P\Psi_{\mathrm{autograd}}\rVert_2,
+    \lVert\, |\partial_t\Psi| + |c_2\,\partial_{xx}\Psi| +
+    |c_1\,\partial_x\Psi| + |c_0\,\Psi|\, \rVert_2\bigr)` — the second term
+    is the magnitude of the arithmetic actually performed in the assembly.
+    For a non-cancelling forcing this coincides with the plain relative
+    :math:`L^2` deviation up to a factor at most the number of channels; for
+    a zero-forcing extension (e.g. the exact-solution variant, where the
+    channels cancel identically) the plain relative deviation is a ratio of
+    round-off terms and is undefined, whereas this normalisation measures the
+    agreement against the assembly scale.  When both norms vanish the
+    extension is identically zero and the deviation is ``0.0``.
+
+    Args:
+        ansatz: A trial solution built with ``extension_derivative_fns``.
+        coord:  Spatial batch, shape ``(N,)`` (gradients not required; fresh
+                leaf tensors are created internally for the autograd side).
+        t:      Time batch, shape ``(N,)``.
+        sigma / generator_coefficients: Exactly one must be supplied, as in
+                :func:`residual_decomposition`.
+        relative_tolerance: Abort threshold on the measured deviation.
+
+    Returns:
+        The measured deviation as a float (to be logged by the caller).
+
+    Raises:
+        ValueError: If the ansatz has no ``extension_derivative_fns``, or on
+            an invalid ``sigma`` / ``generator_coefficients`` combination.
+        RuntimeError: If the measured deviation exceeds
+            ``relative_tolerance``.
+    """
+    if ansatz._extension_derivative_fns is None:
+        raise ValueError(
+            "the cross-check requires an ansatz built with "
+            "extension_derivative_fns (the analytic-derivative bypass)."
+        )
+    resolved_coefficients = _resolve_generator_coefficients(
+        sigma, generator_coefficients
+    )
+    derivative_fns = ansatz._extension_derivative_fns
+
+    # Analytic side (the training route under the bypass).
+    with torch.no_grad():
+        coord_col = coord.detach().unsqueeze(-1)
+        t_col = t.detach().unsqueeze(-1)
+        psi_values = ansatz.extension(coord_col, t_col).reshape(coord.shape)
+        velocity_channel = derivative_fns["dt"](coord_col, t_col).reshape(coord.shape)
+        diffusion_channel = resolved_coefficients.get(2, 0.0) * derivative_fns[
+            "dxx"
+        ](coord_col, t_col).reshape(coord.shape)
+        advection_channel = resolved_coefficients.get(1, 0.0) * derivative_fns[
+            "dx"
+        ](coord_col, t_col).reshape(coord.shape)
+        reaction_channel = resolved_coefficients.get(0, 0.0) * psi_values
+        analytic_forcing = (
+            velocity_channel
+            + diffusion_channel
+            + advection_channel
+            + reaction_channel
+        )
+        assembly_scale_norm = torch.linalg.vector_norm(
+            velocity_channel.abs()
+            + diffusion_channel.abs()
+            + advection_channel.abs()
+            + reaction_channel.abs()
+        )
+
+    # Autograd side, on fresh leaf tensors.
+    coord_autograd = coord.detach().clone().requires_grad_(True)
+    t_autograd = t.detach().clone().requires_grad_(True)
+    psi_autograd = ansatz.extension(
+        coord_autograd.unsqueeze(-1), t_autograd.unsqueeze(-1)
+    ).reshape(coord_autograd.shape)
+    autograd_forcing = constant_coefficient_operator(
+        psi_autograd, coord_autograd, t_autograd, resolved_coefficients
+    ).detach()
+
+    deviation_norm = torch.linalg.vector_norm(analytic_forcing - autograd_forcing)
+    denominator = torch.maximum(
+        torch.linalg.vector_norm(autograd_forcing), assembly_scale_norm
+    )
+    if denominator.item() == 0.0:
+        measured_deviation = 0.0
+    else:
+        measured_deviation = float(deviation_norm / denominator)
+
+    if measured_deviation > relative_tolerance:
+        raise RuntimeError(
+            "analytic-versus-autograd extension-forcing cross-check failed: "
+            f"measured relative L2 deviation {measured_deviation:.6e} exceeds "
+            f"the tolerance {relative_tolerance:.1e}; the closed-form "
+            "extension derivatives disagree with autograd on this device/"
+            "dtype, so the run must not proceed."
+        )
+    return measured_deviation

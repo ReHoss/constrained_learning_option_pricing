@@ -9,6 +9,7 @@ from learning_option_pricing.models.etcnn import (
 )
 from learning_option_pricing.models.terminal_ansatz import (
     TerminalAnsatz,
+    cross_check_extension_forcing_analytic_versus_autograd,
     make_interpolation_coefficient,
     residual_decomposition,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "PINN",
     "ResidualBlock",
     "ResNet",
+    "cross_check_extension_forcing_analytic_versus_autograd",
     "make_interpolation_coefficient",
     "residual_decomposition",
 ]

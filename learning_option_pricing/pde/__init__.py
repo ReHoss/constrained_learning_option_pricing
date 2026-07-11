@@ -8,7 +8,25 @@ Black--Scholes machinery, so that the heat-equation study can be imported and
 unit-tested in isolation.
 """
 
-from learning_option_pricing.pde.operators import heat_operator, heat_operator_parts
+from learning_option_pricing.pde.operators import (
+    constant_coefficient_operator,
+    constant_coefficient_operator_parts,
+    heat_operator,
+    heat_operator_parts,
+)
+from learning_option_pricing.pde.periodic_extension_fields import (
+    EXTENSION_FIELD_KINDS,
+    EXTENSION_FIELD_REGISTRY,
+    PeriodicExtensionField,
+    SingleComponentSineCell,
+    bandlimited_bernoulli_cosine_coefficients,
+    build_graded_gaussian_extension_field,
+    build_split_diffusion_advection_extension_field,
+    build_split_diffusion_extension_field,
+    exact_solution_field,
+    make_single_component_sine_cell,
+    sine_cell_matched_exponential_rate,
+)
 from learning_option_pricing.pde.periodic_spectral_toolbox import (
     ConstantCoefficientGenerator,
     GeneratorSplit,
@@ -50,8 +68,21 @@ from learning_option_pricing.pde.heat_references import (
 )
 
 __all__ = [
+    "constant_coefficient_operator",
+    "constant_coefficient_operator_parts",
     "heat_operator",
     "heat_operator_parts",
+    "EXTENSION_FIELD_KINDS",
+    "EXTENSION_FIELD_REGISTRY",
+    "PeriodicExtensionField",
+    "SingleComponentSineCell",
+    "bandlimited_bernoulli_cosine_coefficients",
+    "build_graded_gaussian_extension_field",
+    "build_split_diffusion_advection_extension_field",
+    "build_split_diffusion_extension_field",
+    "exact_solution_field",
+    "make_single_component_sine_cell",
+    "sine_cell_matched_exponential_rate",
     "ConstantCoefficientGenerator",
     "GeneratorSplit",
     "PeriodisedBernoulliDatum",
