@@ -79,6 +79,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import logging
 import math
 import os
 import re
@@ -93,6 +94,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import yaml  # noqa: E402
+
+_numpy_version = np.__version__
+_matplotlib_version = matplotlib.__version__
+_yaml_version = yaml.__version__
 
 # Make the sibling catalogue importable whether run as a module or a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -115,6 +120,9 @@ from learning_option_pricing.pde.terminal_data_extensions import (  # noqa: E402
 )
 from learning_option_pricing.utils.figure_layout import finalize_figure  # noqa: E402
 from learning_option_pricing.utils.run_context import (  # noqa: E402
+    configure_cli_script_logging,
+    log_parsed_args,
+    log_runtime_versions,
     script_data_dir,
     utc_timestamp,
 )
@@ -1453,7 +1461,7 @@ def plot_cutoff_by_variant(summarised: dict, statistics: dict, out_dir: Path) ->
         pad=28,
     )
     ax.grid(True, axis="y", which="both", alpha=0.3)
-    # No separate legend: each colour-coded point group sits directly above
+    # No separate legend: each colour-coded point group is positioned directly above
     # its own variant tick label, which already names the variant.
     fig.tight_layout(rect=[0.04, 0.20, 1, 1])
     finalize_figure(
@@ -1685,6 +1693,12 @@ def build_yaml_payload(
 ) -> dict:
     payload: dict = {
         "generated_by": Path(__file__).name,
+        "command": " ".join([Path(__file__).name, *sys.argv[1:]]),
+        "library_versions": {
+            "numpy": _numpy_version,
+            "matplotlib": _matplotlib_version,
+            "pyyaml": _yaml_version,
+        },
         "timestamp_utc": utc_timestamp(),
         "data_root": str(data_root),
         "band_edge_note": (
@@ -1786,6 +1800,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+
+    configure_cli_script_logging(verbose=getattr(args, "verbose", False))
+    logger = logging.getLogger(Path(__file__).stem)
+    logger.info("Command line: %s", " ".join([Path(__file__).name, *(argv if argv is not None else sys.argv[1:])]))
+    log_runtime_versions(logger)
+    log_parsed_args(logger, args)
 
     if _catalogue is None:
         print(

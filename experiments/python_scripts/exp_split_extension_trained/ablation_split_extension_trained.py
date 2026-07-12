@@ -97,7 +97,7 @@ def derive_seed(master_seed: int, role: str) -> int:
 
 
 # ===========================================================================
-# Transient-CUDA retry (gpu_p13 array tasks occasionally land on a busy GPU)
+# Transient-CUDA retry (gpu_p13 array tasks are occasionally scheduled onto a busy GPU)
 # ===========================================================================
 
 def cuda_retry(fn, *, attempts: int = 6, base_delay: float = 10.0):
@@ -565,6 +565,13 @@ def train_variant(
         model_seed, sampler_seed,
     )
 
+    # Periodic checkpointing is deliberately omitted: a single run trains
+    # 20000 iterations in about 400 s (well within the array task's 1 h wall
+    # limit, on the non-preemptible gpu_p13 QoS), the best-objective state is
+    # tracked and restored at the end, and a task that fails is re-run in full
+    # by the array. Full state persistence (model, optimiser, scheduler, RNG)
+    # would cost more than the run it protects; this matches the reference
+    # ansatz-forms runner.
     for it in range(1, num_iterations + 1):
         optimizer.zero_grad()
 
