@@ -505,3 +505,66 @@ the figures from the artefacts alone.
   used by every figure of the study through thin `_figure_layout.py`
   compatibility shims in the experiment directories.  Tested by
   `test/utils/test_figure_layout.py`.
+
+## 9. Trained confirmation (stage 2)
+
+The exact stage-1 measurements predict the residual an idealised
+infinite-capacity network would reach; stage 2 trains finite networks (circle,
+band-limited $\rho=1$ datum, $\sum_{k=1}^{128}\cos(kx)/(\pi^2 k^2)$; ResNet
+4\times4$, periodic embedding; 20000 Adam iterations; seeds $\{0,1,2\}$
+shared across variants) under each extension and measures what is achieved.
+Every number below is the median over the three seeds, read off the saved run
+artefacts; provenance `data/split_extension_cross_seed_summary/2026-07-12-01-49-14-321865Z_3cell_3seed/`
+(Jean Zay `gpu_p13` array 1742620, 48 runs).
+
+**The forcing-floor identity holds in a trained run.** The measured
+forcing-floor training channel $\mathbb{E}[(P\Psi)^2]$ equals the closed-form
+floor $\lVert Lh\rVert^2/(2\pi T)$ at the datum band edge =128$ to better
+than \%$ for every variant and cell — for example on G2: convex raw
+.762\times10^{-3}$ measured against .808\times10^{-3}$ closed form; split
+$\{\partial_{xx}\}$ .603\times10^{-5}$ against .603\times10^{-5}$. The
+objective-expansion identity of the report is thereby confirmed in training,
+not only in the exact analysis.
+
+**The residual is ordered by the floor, across four orders of magnitude.**
+Best training loss (median), G2 (Black–Scholes) cell:
+
+| Variant | Closed-form floor | Best training loss (measured) | Relative ^2$ error (measured) |
+|---|---|---|---|
+| Convex raw | .808\times10^{-3}$ | .344\times10^{-5}$ | .229\times10^{-4}$ |
+| Constant-in-time | .041\times10^{-2}$ | .853\times10^{-4}$ | .181\times10^{-3}$ |
+| Split $\{\partial_{xx}\}$ | .603\times10^{-5}$ | .135\times10^{-7}$ | .489\times10^{-4}$ |
+| Split $\{\partial_{xx},\partial_x\}$ | .299\times10^{-6}$ | .389\times10^{-9}$ | .071\times10^{-4}$ |
+| Graded mismatched $\nu_c=\nu/2$ | .764\times10^{-4}$ | .653\times10^{-7}$ | .276\times10^{-4}$ |
+| Exact solution (control) | /bin/bash$ | .574\times10^{-9}$ | .956\times10^{-5}$ |
+
+The best-loss ratio convex-raw / split $\{\partial_{xx}\}$ is
+.35\times10^{2}$ (G2) and .82\times10^{3}$ (G1); against split
+$\{\partial_{xx},\partial_x\}$ it exceeds \times10^{4}$ (G2). The measured
+cancellation cutoff \star$ (the wavenumber at which the running cancellation
+ratio reaches one half) is $–$ for the split extensions, with unreachable
+mass $\mathcal{F}(k_\star)$ between \times10^{-8}$ and \times10^{-10}$ —
+consistent with the stage-1 bandwidth-demand table.
+
+**Controls pass.** The graded matched extension reproduces the split
+$\{\partial_{xx}\}$ numbers exactly (the analytic twin coincidence, in
+training); the exact-solution extension has a floor of \times10^{-19}$ and a
+best loss of .6\times10^{-9}$ (the network learns essentially nothing,
+$\Psi^\star\approx 0$); the single-spectral-component sine cell (Proposition 1,
+matched exponential rate $\nu k_0^2$) reaches a relative ^2$ error of
+.3\times10^{-6}$ with a floor of \times10^{-18}$.
+
+**Honest reading of the accuracy.** The residual (training loss) separates by
+three to four orders of magnitude, but the relative ^2$ error separates more
+modestly — a factor $\approx 9$ on G2 between convex raw
+(.2\times10^{-4}$) and split $\{\partial_{xx},\partial_x\}$
+(.1\times10^{-4}$). The reason is legible in the exact-solution control: with
+the forcing floor removed entirely, the achievable relative ^2$ error is
+.0\times10^{-5}$, the accuracy floor of this network on this datum. The
+split $\{\partial_{xx},\partial_x\}$ nearly reaches it. Removing the forcing
+floor therefore removes it as the dominant error source; the residual accuracy
+is then limited by the network's representation of the smooth field, not by the
+extension. This is the additive-versus-convex conclusion: the additive split
+family reaches a residual three to four orders of magnitude below the convex
+baseline, and an accuracy that nearly saturates the architecture's own floor,
+where the convex baseline remains an order of magnitude short of it.
