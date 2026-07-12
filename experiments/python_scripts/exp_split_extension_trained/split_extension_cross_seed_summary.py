@@ -211,6 +211,24 @@ FALLBACK_VARIANT_DISPLAY = {
     },
 }
 
+# Report-consistent legend labels. The methodology report writes the parabolic
+# operator as L, the terminal-data extension as h, the trial solution as
+# Phi_theta and the free field as Psi; the study catalogue uses P / Psi / u-hat,
+# which clashes with the report (its Psi is the free field, not the extension).
+# The figures embedded in the report therefore take their legend labels here,
+# in the report's notation, rather than from the catalogue.
+REPORT_NOTATION_LABEL = {
+    "convex_raw": r"Convex raw ($h=(1-d_T)\,g$)",
+    "constant_in_time": r"Constant-in-time ($h=g$)",
+    "split_diffusion": r"Split $A=\{\partial_{xx}\}$",
+    "split_diffusion_advection": r"Split $A=\{\partial_{xx},\partial_x\}$",
+    "graded_gaussian_matched":
+        r"Graded Gaussian, $\nu_c=\nu$ (matched split $\{\partial_{xx}\}$)",
+    "graded_gaussian_mismatched": r"Graded Gaussian, $\nu_c=\nu/2$ (mismatched)",
+    "exact_solution": r"Exact solution ($\mathcal{L}h=0$)",
+    "matched_exponential_factor": "Matched exponential factor",
+}
+
 CELL_MARKERS = {
     "g1_bernoulli_bandlimited": "o",
     "g2_bernoulli_bandlimited": "s",
@@ -841,7 +859,15 @@ def compute_unreachable_masses(
 
 
 def variant_display_properties(variant_name: str) -> dict:
-    """Colour and label of a variant (catalogue first, fallback second)."""
+    """Colour (catalogue first) and report-notation label of a variant.
+
+    The colour is taken from the study catalogue (fallback second); the label
+    is taken from :data:`REPORT_NOTATION_LABEL` so that the figures embedded in
+    the methodology report carry its notation (operator ``L``, extension ``h``,
+    trial solution ``Phi_theta``), not the catalogue's clashing ``P`` / ``Psi``
+    / ``u-hat`` convention.
+    """
+    report_label = REPORT_NOTATION_LABEL.get(variant_name, variant_name)
     if _catalogue is not None:
         try:
             for entry in _catalogue.METHOD_VARIANTS:
@@ -853,13 +879,14 @@ def variant_display_properties(variant_name: str) -> dict:
                                 "color", "#444444"
                             ),
                         ),
-                        "label": entry.get("label", variant_name),
+                        "label": report_label,
                     }
         except (AttributeError, TypeError):
             pass
-    return FALLBACK_VARIANT_DISPLAY.get(
+    fallback = FALLBACK_VARIANT_DISPLAY.get(
         variant_name, {"color": "#444444", "label": variant_name}
     )
+    return {"color": fallback["color"], "label": report_label}
 
 
 def format_quantity(value, value_format: str = "{:.6e}") -> str:
@@ -1225,7 +1252,7 @@ def plot_rel_l2_by_cell(summarised: dict, out_dir: Path) -> bool:
         legends=[legend],
         axes=[ax],
         formula=(
-            r"$\mathrm{rel}\,L^2 = \|\hat u - u^\star\|_{L^2(G_{\mathrm{eval}})}"
+            r"$\mathrm{rel}\,L^2 = \|\Phi_\theta - u^\star\|_{L^2(G_{\mathrm{eval}})}"
             r"\,/\,\|u^\star\|_{L^2(G_{\mathrm{eval}})}$; "
             r"$u^\star$ the exact spectral-component sum; median with "
             r"interquartile range over seeds"
@@ -1282,7 +1309,7 @@ def plot_floor_vs_accuracy(
         (
             ax_floor,
             points_floor,
-            r"Closed-form floor $\mathbb{E}[(P\Psi)^2]$ at the band edge",
+            r"Closed-form floor $\mathbb{E}[(\mathcal{L}h)^2]$ at the band edge",
             "Best loss against the closed-form floor",
             "No variant with a strictly positive closed-form\nfloor has a "
             "saved best loss yet (slot explicitly empty)",
@@ -1291,7 +1318,7 @@ def plot_floor_vs_accuracy(
             ax_mass,
             points_unreachable,
             r"Unreachable mass $\mathcal{F}(k_\star)$ at the measured cutoff",
-            "Best loss against the unreachable mass (H1)",
+            "Best loss against the unreachable mass",
             "No measured cutoff $k_\\star$ saved yet\n(slot explicitly "
             "empty, decision D9)",
         ),
@@ -1329,7 +1356,9 @@ def plot_floor_vs_accuracy(
                 fontsize=9,
             )
         ax.set_xlabel(x_label)
-        ax.set_ylabel(r"Best training loss $\mathbb{E}[(P\hat u)^2]$ (median)")
+        ax.set_ylabel(
+            r"Best training loss $\mathbb{E}[(\mathcal{L}\Phi_\theta)^2]$ (median)"
+        )
         ax.set_title(title, fontsize=10)
         ax.grid(True, which="both", alpha=0.3)
 
@@ -1372,7 +1401,7 @@ def plot_floor_vs_accuracy(
         legends=[legend],
         axes=[ax_floor, ax_mass],
         formula=(
-            r"$\mathbb{E}[(P\Psi)^2]=\frac{1}{T}\sum_{0<|k|\leq K_g}I_k$;  "
+            r"$\mathbb{E}[(\mathcal{L}h)^2]=\frac{1}{T}\sum_{0<|k|\leq K_g}I_k$;  "
             r"$\mathcal{F}(k_\star)=\frac{1}{T}\sum_{k_\star<|k|\leq K_g}I_k$;  "
             r"$I_k=\int_0^T|\widehat{Lh}(k,t)|^2\,dt$ (closed forms)"
         ),
@@ -1505,14 +1534,14 @@ def plot_terminal_target(summarised: dict, out_dir: Path) -> bool:
         (
             ax_rel,
             relative_entries,
-            r"$\|\Phi_\theta(\cdot,T) - \Phi^\star(\cdot,T)\|_2 \,/\, "
-            r"\|\Phi^\star(\cdot,T)\|_2$",
-            "Distance to the exact minimiser's terminal profile (H3)",
+            r"$\|\Psi_\theta(\cdot,T) - \Psi^\star(\cdot,T)\|_2 \,/\, "
+            r"\|\Psi^\star(\cdot,T)\|_2$",
+            "Distance to the exact minimiser's terminal profile",
         ),
         (
             ax_abs,
             absolute_entries,
-            r"$\|\Phi_\theta(\cdot,T)\|_2$",
+            r"$\|\Psi_\theta(\cdot,T)\|_2$",
             "Zero-target variants: absolute terminal norm",
         ),
     ):
@@ -1563,8 +1592,8 @@ def plot_terminal_target(summarised: dict, out_dir: Path) -> bool:
         legends=[],
         axes=[ax_rel, ax_abs],
         formula=(
-            r"$\Phi^\star(\cdot,T) = -\,(P\Psi)(\cdot,T)\,/\,d_T'(T) = "
-            r"T\,(P\Psi)(\cdot,T)$ for the linear factor; median with "
+            r"$\Psi^\star(\cdot,T) = -\,(\mathcal{L}h)(\cdot,T)\,/\,d_T'(T) = "
+            r"T\,(\mathcal{L}h)(\cdot,T)$ for the linear factor; median with "
             r"interquartile range over seeds"
         ),
     )
