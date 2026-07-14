@@ -362,12 +362,16 @@ def build_figure(arrays: dict, figure_path: Path) -> None:
         handles + band_handle,
         labels + band_label,
         loc="upper center",
-        bbox_to_anchor=(0.5, 0.055),
+        # Anchored ABOVE the formula box, which sits at the very bottom of the
+        # canvas (figure_layout.formula_box places it at y = 0.012, growing
+        # upwards). The layout checker warns when the two collide; the anchor and
+        # the reserved strip below are set so that they do not.
+        bbox_to_anchor=(0.5, 0.20),
         ncol=4,
         fontsize=8,
         frameon=True,
     )
-    fig.tight_layout(rect=[0, 0.10, 1, 1])
+    fig.tight_layout(rect=[0, 0.24, 1, 1])
     finalize_figure(fig, figure_path, legends=[legend], formula=FORMULA_BOX,
                     axes=list(axes.ravel()))
 
