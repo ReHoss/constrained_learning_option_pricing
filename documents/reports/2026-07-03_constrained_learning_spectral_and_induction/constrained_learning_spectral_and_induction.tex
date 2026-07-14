@@ -591,11 +591,13 @@ For every $0\le k\le\numExerciseDates-1$ the pointwise identity
      +\smoothMaxBias_{k+1}\Bigr)
 \end{equation}
 holds, with $0<\smoothMaxBias_{k+1}\le\varepsilon/2$ pointwise. Moreover
-$\heatSemigroup$ contracts both the supremum norm and the $\mathrm{L}^{2}$ norm,
-and telescoping \eqref{eq:recursion} from $k=\numExerciseDates-1$ downward gives
+$\heatSemigroup$ contracts both the supremum norm and the $\mathrm{L}^{2}$ norm
+\emph{on the whole line}, and telescoping \eqref{eq:recursion} from
+$k=\numExerciseDates-1$ downward gives
 \begin{equation}\label{eq:telescope}
-  \norm{\stageError_0}_{\infty}
-  \;\le\;\sum_{k=0}^{\numExerciseDates-1}\norm{\solveError_k}_{\infty}
+  \norm{\stageError_0}_{\mathrm{L}^{\infty}(\R)}
+  \;\le\;\sum_{k=0}^{\numExerciseDates-1}
+    \norm{\solveError_k}_{\mathrm{L}^{\infty}(\R)}
    \;+\;\numExerciseDates\,\frac{\varepsilon}{2}.
 \end{equation}
 In particular the inherited error enters with operator norm at most one at every
@@ -612,14 +614,41 @@ $\partial_b\smoothMaxCM(a,b)=\tfrac12\bigl(1-\tfrac{a-b}{\sqrt{(a-b)^{2}+\vareps
 so $\smoothMaxCM$ is $1$-Lipschitz in its second argument; the bias bound from
 $\smoothMaxCM(a,b)-\max(a,b)=\tfrac12\bigl(\sqrt{(a-b)^{2}+\varepsilon^{2}}-\abs{a-b}\bigr)\in(0,\varepsilon/2]$.
 $\heatSemigroup$ is convolution with the centred Gaussian density
-$\varphi_{\sigma^{2}\Delta}$, and $\norm{\varphi_{\sigma^{2}\Delta}}_{\mathrm{L}^{1}}=1$,
+$\varphi_{\sigma^{2}\Delta}$, and $\norm{\varphi_{\sigma^{2}\Delta}}_{\mathrm{L}^{1}(\R)}=1$,
 so Young's inequality gives
-$\norm{\heatSemigroup f}_{q}\le\norm{f}_{q}$ for every $q\in[1,\infty]$.
+$\norm{\heatSemigroup f}_{\mathrm{L}^{q}(\R)}\le\norm{f}_{\mathrm{L}^{q}(\R)}$ for
+every $q\in[1,\infty]$.
 Applying the supremum norm to \eqref{eq:recursion}, using
 $\heatSemigroup\smoothMaxBias\le\varepsilon/2$ (positive kernel of mass one applied
 to a function bounded by $\varepsilon/2$), and iterating downward from
 $\stageError_{\numExerciseDates}=0$ yields \eqref{eq:telescope}.
 \end{proof}
+
+\begin{remark}[The function space is the whole line; the measured norms are not]\label{rem:whole-line}
+The norms in Proposition~\ref{prop:recursion} are taken over $\R$, and the
+qualification is not cosmetic. The kernel of $\heatSemigroup$ is supported on all of
+$\R$, so $\heatSemigroup$ is a contraction of $\mathrm{L}^{\infty}(\R)$ but is
+\emph{not} an operator on $\mathrm{L}^{\infty}$ of a bounded window $\stateSpace$:
+one has only
+$\norm{\heatSemigroup f}_{\mathrm{L}^{\infty}(\stateSpace)}
+\le\norm{f}_{\mathrm{L}^{\infty}(\R)}$, and the telescoping cannot be closed on
+$\stateSpace$ alone. (An earlier statement of this proposition restricted the
+contraction to $\mathrm{L}^{\infty}(\stateSpace)$; the correction is recorded here and
+changes neither the identity \eqref{eq:recursion} nor the proof.)
+
+The measured quantities of Empirical finding~\ref{find:recursion} are, by contrast,
+root-mean-square norms over the \emph{evaluation window} --- a different and weaker
+functional than the supremum norm over $\R$ that \eqref{eq:telescope} bounds. The
+term-by-term decomposition \eqref{eq:recursion} is a pointwise identity and is
+therefore verified on the window without qualification; the \emph{bound}
+\eqref{eq:telescope}, and with it the reported bound tightness, is a
+window-restricted evaluation of a whole-line inequality. Closing that gap requires
+either supplying the trial solution with the known far-field asymptotics of the price
+outside the window, or replacing $\heatSemigroup$ by the Dirichlet semigroup on
+$\stateSpace$ at the cost of a domain-truncation term Gaussian-small in the ratio of
+the window margin to the diffusion length $\sigma\sqrt{\Delta}$. Neither route is
+taken here, and the reported tightness is to be read with that reservation.
+\end{remark}
 
 The two constituents of Proposition~\ref{prop:recursion} --- the contraction and
 the decomposition --- are each verified numerically.
