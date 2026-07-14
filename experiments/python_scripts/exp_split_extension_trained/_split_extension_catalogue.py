@@ -91,7 +91,7 @@ GENERATOR_CELL_VARIANTS: list[dict] = [
         "comparison_diffusivity_ratio": None,
         "exponential_rate_gamma": None,
         "color": "#d62728",  # red
-        "label": r"split $\{\partial_{xx}\}$: $P\Psi=\mu\,\partial_x\Psi+r_0\Psi$",
+        "label": r"diffusion split $\{\partial_{xx}\}$: $P\Psi=\mu\,\partial_x\Psi+r_0\Psi$",
     },
     {
         # V4 — split semigroup extension, subset {d_xx, d_x}; the forcing
@@ -103,7 +103,7 @@ GENERATOR_CELL_VARIANTS: list[dict] = [
         "comparison_diffusivity_ratio": None,
         "exponential_rate_gamma": None,
         "color": "#ff7f0e",  # orange
-        "label": r"split $\{\partial_{xx},\partial_x\}$: $P\Psi=r_0\Psi$",
+        "label": "diffusion–advection split " + r"$\{\partial_{xx},\partial_x\}$: $P\Psi=r_0\Psi$",
     },
     {
         # V5 — graded Gaussian extension with comparison diffusivity
@@ -203,6 +203,10 @@ CELL_CONFIGS: dict[str, dict] = {
         # metrics are centred there.
         "corner_point": 0.0,
         "variant_set": "generator",
+        # Short display name for figure tick labels. It must be the name the
+        # report uses in its prose -- a reader who reads "on the Black-Scholes
+        # generator" has to find that string on the axis, not "g2".
+        "short_label": r"$G_1$",
         "label": (
             r"$g(x)=\sum_{k=1}^{128}\frac{\cos(kx)}{\pi^2k^2}$,  "
             r"$A=0.7\,\partial_{xx}+1.3\,\partial_x-0.4$ (G1),  "
@@ -218,6 +222,7 @@ CELL_CONFIGS: dict[str, dict] = {
         "terminal_time": 1.0,
         "corner_point": 0.0,
         "variant_set": "generator",
+        "short_label": r"$G_2$, Black–Scholes",
         "label": (
             r"$g(x)=\sum_{k=1}^{128}\frac{\cos(kx)}{\pi^2k^2}$,  "
             r"$A=0.125\,\partial_{xx}-0.095\,\partial_x-0.03$ "
@@ -238,6 +243,7 @@ CELL_CONFIGS: dict[str, dict] = {
         "terminal_time": 1.0,
         "corner_point": 0.0,
         "variant_set": "control",
+        "short_label": r"$G_0$, heat (control)",
         "label": (
             r"$g(x)=\sin x$,  $A=0.125\,\partial_{xx}$,  "
             r"$u^\star(x,t)=e^{-0.125(T-t)}\sin x$,  $T=1$"
@@ -279,6 +285,16 @@ DEFAULT_HPARAMS: dict = {
 def cell_names() -> list[str]:
     """Return the available cell identifiers."""
     return list(CELL_CONFIGS.keys())
+
+
+def cell_short_label(name: str) -> str:
+    """The configuration's short display name, for a figure tick label.
+
+    The report names its configurations in prose ("on the Black-Scholes
+    generator"); a figure axis that says "g2" instead leaves the reader unable to
+    locate the value the prose quotes. This is the single source of that name.
+    """
+    return cell_by_name(name)["short_label"]
 
 
 def cell_by_name(name: str) -> dict:

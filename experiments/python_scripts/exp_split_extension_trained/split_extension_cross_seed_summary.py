@@ -223,8 +223,12 @@ FALLBACK_VARIANT_DISPLAY = {
 REPORT_NOTATION_LABEL = {
     "convex_raw": r"Convex raw ($h=(1-d_T)\,g$)",
     "constant_in_time": r"Constant-in-time ($h=g$)",
-    "split_diffusion": r"Split $A=\{\partial_{xx}\}$",
-    "split_diffusion_advection": r"Split $A=\{\partial_{xx},\partial_x\}$",
+    # The prose name comes first: the report says "the diffusion--advection
+    # split on the Black-Scholes generator", and a reader must be able to find
+    # that phrase on the axis.
+    "split_diffusion": "Diffusion split " + r"$A=\{\partial_{xx}\}$",
+    "split_diffusion_advection":
+        "Diffusion\u2013advection split " + r"$A=\{\partial_{xx},\partial_x\}$",
     "graded_gaussian_matched":
         r"Graded Gaussian, $\nu_c=\nu$ (matched split $\{\partial_{xx}\}$)",
     "graded_gaussian_mismatched": r"Graded Gaussian, $\nu_c=\nu/2$ (mismatched)",
@@ -1596,16 +1600,66 @@ def plot_terminal_target(summarised: dict, out_dir: Path) -> bool:
             )
             ax.set_xticks(positions)
             ax.set_xticklabels(
-                [
-                    f"{variant_display_properties(v)['label']}"
-                    f" ({c.split('_')[0]})"
-                    for c, v, _ in entries
-                ],
+                [variant_display_properties(v)["label"] for c, v, _ in entries],
                 fontsize=6,
                 rotation=30,
                 ha="right",
             )
             ax.set_yscale("log")
+            # Each bar is annotated with its measured value: the report quotes
+            # two of these numbers in prose, and a log axis does not let them be
+            # read off by eye.
+            for position, median in zip(positions, medians):
+                if median is not None and median > 0.0:
+                    ax.annotate(
+                        f"{median:.2g}",
+                        (position, median),
+                        textcoords="offset points",
+                        xytext=(0, 3),
+                        ha="center",
+                        fontsize=5.5,
+                    )
+            # The configuration is named ONCE per group, as the REPORT names it
+            # (from the catalogue), instead of by splitting the run-directory
+            # name -- which produced "g2" where the prose says "the
+            # Black-Scholes generator", leaving the reader unable to locate the
+            # value being quoted.
+            finite = [m for m in medians if m is not None and m > 0.0]
+            if finite:
+                # Headroom for the group names, measured in DECADES of the data
+                # actually present. A fixed multiplier would flatten a panel
+                # whose bars span a fifth of a decade (the zero-target panel)
+                # while barely clearing a panel that spans three (the relative
+                # one).
+                low, high = math.log10(min(finite)), math.log10(max(finite))
+                span = max(high - low, 0.4)
+                ax.set_ylim(
+                    bottom=10.0 ** (low - 0.18 * span),
+                    top=10.0 ** (high + 0.50 * span),
+                )
+                header_height = 10.0 ** (high + 0.32 * span)
+                group_start = 0
+                for index in range(1, len(entries) + 1):
+                    ends_group = (
+                        index == len(entries)
+                        or entries[index][0] != entries[group_start][0]
+                    )
+                    if not ends_group:
+                        continue
+                    ax.text(
+                        (group_start + index - 1) / 2.0,
+                        header_height,
+                        _catalogue.cell_short_label(entries[group_start][0]),
+                        ha="center",
+                        va="center",
+                        fontsize=7.5,
+                        fontweight="bold",
+                    )
+                    if index < len(entries):
+                        ax.axvline(
+                            index - 0.5, color="0.75", lw=0.8, ls="--"
+                        )
+                    group_start = index
         else:
             ax.text(
                 0.5, 0.5, "No saved measurement yet\n(slot explicitly empty)",
