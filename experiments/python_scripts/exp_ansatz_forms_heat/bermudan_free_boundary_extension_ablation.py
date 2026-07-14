@@ -552,19 +552,35 @@ def evaluate(model, variant, problem, hparams) -> dict:
                 }
             )
     results["forcing_supremum_profile"] = forcing_suprema
-    # The measured growth exponent: sup|L h| ~ s^{-p}. Predicted p = 0 (matched),
+    # The measured growth exponent p of sup|L h| ~ s^{-p}: predicted 0 (matched),
     # 1/2 (mis-specified), 1 (graded).
-    measured = [
-        entry for entry in forcing_suprema if entry["sup_forcing"] is not None
-    ]
-    if len(measured) >= 2:
-        first, last = measured[0], measured[-1]
-        results["forcing_divergence_exponent"] = float(
+    #
+    # TWO estimates are reported, and both are needed. The forcing is the sum of a
+    # singular channel and a BOUNDED one, which near the corner have opposite sign and
+    # partially cancel; the cancellation is proportionally stronger at the larger s,
+    # where the singular channel is smaller. A fit over the whole probe range is
+    # therefore contaminated by the bounded channel and understates the exponent, while
+    # a fit over the two smallest s -- the asymptotic regime the proposition is about
+    # -- does not. Neither estimate replaces the raw profile, which is saved in full.
+    def _exponent(entries) -> float | None:
+        if len(entries) < 2:
+            return None
+        first, last = entries[0], entries[-1]
+        return float(
             math.log(last["sup_forcing"] / first["sup_forcing"])
             / math.log(first["time_to_terminal"] / last["time_to_terminal"])
         )
-    else:
-        results["forcing_divergence_exponent"] = None
+
+    measured = [
+        entry for entry in forcing_suprema if entry["sup_forcing"] is not None
+    ]
+    results["forcing_divergence_exponent_full_range"] = _exponent(measured)
+    results["forcing_divergence_exponent_asymptotic"] = _exponent(measured[-2:])
+    # Kept under the plain name for the plot and the log line; the asymptotic estimate
+    # is the one the proposition predicts.
+    results["forcing_divergence_exponent"] = results[
+        "forcing_divergence_exponent_asymptotic"
+    ]
 
     # --- 3. the achieved stage objective and its estimator dispersion ------
     # The seed-to-seed and draw-to-draw dispersion of the Monte-Carlo objective is
@@ -975,9 +991,12 @@ def main(argv=None) -> int:
     logger.info("best loss %.6e at iteration %d", history["best_loss"], history["best_iter"])
     logger.info("slice bias (sup)            %.6e", results["slice_bias_sup"])
     logger.info(
-        "forcing divergence exponent %s (predicted: 0 matched, 1/2 mis-specified, 1 graded)",
-        results["forcing_divergence_exponent"],
+        "forcing divergence exponent: asymptotic %s, full-range %s "
+        "(predicted: 0 matched, 1/2 mis-specified, 1 graded)",
+        results["forcing_divergence_exponent_asymptotic"],
+        results["forcing_divergence_exponent_full_range"],
     )
+    logger.info("forcing supremum profile: %s", results["forcing_supremum_profile"])
     logger.info(
         "objective relative dispersion over draws %.4f",
         results["objective_relative_dispersion"],
