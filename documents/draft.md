@@ -1,25 +1,24 @@
 
 TODO:
-- Download references from Lapeyre paper.
+- Download references from Lapeyre paper. - which paper?
 - Try the ANALYTICAL Green function approach (maybe something can be done through neural operators ?!).
 
 
 ---
 
+
+
+- Develop the maths on the ntk + orthogonality.
+
+
+
 Some remarks:
-- Gamma is not defined at s^* actually: on the importance of knowing the properties of a solution.
 - Idea: use the analytical integral formula ?!
 - https://openaccess.city.ac.uk/id/eprint/5993/  [Methodology]
 
 
-- g2 is badly called !!!! in the bermudean case ! g_2 should be activated only at t_k !
 
-
-
-- Black&Scholes theorem
-- Framework for bermudean options
-
-
+---
 
 
 
