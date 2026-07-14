@@ -195,7 +195,9 @@ def truncated_datum_and_derivative(
     return truncated_values, truncated_derivative
 
 
-def compute_arrays(datum_band_edge: int, number_of_points: int) -> dict:
+def compute_arrays(
+    datum_band_edge: int, comparison_band_edge: int, number_of_points: int
+) -> dict:
     """Every array the figure needs, and the verification of the jump.
 
     Args:
@@ -217,6 +219,9 @@ def compute_arrays(datum_band_edge: int, number_of_points: int) -> dict:
     exact_derivative = exact_datum_derivative(spatial_points)
     truncated_values, truncated_derivative = truncated_datum_and_derivative(
         spatial_points, datum_band_edge
+    )
+    coarse_values, coarse_derivative = truncated_datum_and_derivative(
+        spatial_points, comparison_band_edge
     )
 
     # The jump of g' at the break point, from the one-sided limits of the closed
@@ -250,6 +255,10 @@ def compute_arrays(datum_band_edge: int, number_of_points: int) -> dict:
     supremum_derivative_distance = float(
         np.abs(exact_derivative - truncated_derivative).max()
     )
+    coarse_supremum_distance = float(np.abs(exact_values - coarse_values).max())
+    coarse_supremum_derivative_distance = float(
+        np.abs(exact_derivative - coarse_derivative).max()
+    )
 
     return {
         "spatial_points": spatial_points,
@@ -257,6 +266,9 @@ def compute_arrays(datum_band_edge: int, number_of_points: int) -> dict:
         "truncated_values": truncated_values,
         "exact_derivative": exact_derivative,
         "truncated_derivative": truncated_derivative,
+        "coarse_values": coarse_values,
+        "coarse_derivative": coarse_derivative,
+        "comparison_band_edge": np.asarray([comparison_band_edge]),
         "coefficient_wavenumbers": coefficient_wavenumbers,
         "exact_coefficients": exact_coefficients,
         "truncated_coefficients": truncated_coefficients,
@@ -266,11 +278,21 @@ def compute_arrays(datum_band_edge: int, number_of_points: int) -> dict:
         "jump_deviation": np.asarray([jump_deviation]),
         "supremum_distance": np.asarray([supremum_distance]),
         "supremum_derivative_distance": np.asarray([supremum_derivative_distance]),
+        "coarse_supremum_distance": np.asarray([coarse_supremum_distance]),
+        "coarse_supremum_derivative_distance": np.asarray(
+            [coarse_supremum_derivative_distance]
+        ),
     }
 
 
 def build_figure(arrays: dict, figure_path: Path) -> None:
     """Build and save the four-panel figure from the saved arrays.
+
+    Stroke and colour convention.  Dashed black is the analytical reference (the
+    exact datum).  The truncations are the objects the trained runs use, so they
+    are solid; the truncation wavenumber is a hyperparameter axis, so it is
+    encoded in COLOUR (a sequential palette) rather than in stroke.  Dotted grey
+    is auxiliary annotation (the break point, the band edges).
 
     Args:
         arrays: The dictionary returned by :func:`compute_arrays`, or the
@@ -280,39 +302,60 @@ def build_figure(arrays: dict, figure_path: Path) -> None:
     spatial_points = np.asarray(arrays["spatial_points"])
     exact_values = np.asarray(arrays["exact_values"])
     truncated_values = np.asarray(arrays["truncated_values"])
+    coarse_values = np.asarray(arrays["coarse_values"])
     exact_derivative = np.asarray(arrays["exact_derivative"])
     truncated_derivative = np.asarray(arrays["truncated_derivative"])
+    coarse_derivative = np.asarray(arrays["coarse_derivative"])
     coefficient_wavenumbers = np.asarray(arrays["coefficient_wavenumbers"])
     exact_coefficients = np.asarray(arrays["exact_coefficients"])
     datum_band_edge = int(np.asarray(arrays["datum_band_edge"]).reshape(-1)[0])
-    exact_jump = float(np.asarray(arrays["exact_jump"]).reshape(-1)[0])
+    comparison_band_edge = int(
+        np.asarray(arrays["comparison_band_edge"]).reshape(-1)[0]
+    )
+
+    # Sequential palette over the truncation axis: the coarser the truncation,
+    # the lighter the colour.
+    fine_colour = plt.cm.viridis(0.15)
+    coarse_colour = plt.cm.viridis(0.62)
 
     exact_label = r"Exact datum $g$ (stage one)"
-    truncated_label = rf"Truncation $g_{{K_g}}$, $K_g={datum_band_edge}$ (stage two)"
+    fine_label = rf"Truncation $g_{{K_g}}$, $K_g={datum_band_edge}$ (stage two)"
+    coarse_label = rf"Truncation $g_{{K_g}}$, $K_g={comparison_band_edge}$ (comparison)"
+
+    def draw(axis, mask=None):
+        """The three curves, in the order back-to-front."""
+        sel = slice(None) if mask is None else mask
+        axis.plot(spatial_points[sel], coarse_values[sel], "-",
+                  color=coarse_colour, lw=1.3)
+        axis.plot(spatial_points[sel], truncated_values[sel], "-",
+                  color=fine_colour, lw=1.3)
+        axis.plot(spatial_points[sel], exact_values[sel], "--",
+                  color="black", lw=1.5)
 
     fig, axes = plt.subplots(2, 2, figsize=(11.0, 7.4))
 
-    # (0, 0) the two data on the circle: they coincide to plotting accuracy.
+    # (0, 0) the whole circle.
     axis = axes[0, 0]
-    axis.plot(spatial_points, exact_values, "--", color="black", lw=1.6,
+    axis.plot(spatial_points, coarse_values, "-", color=coarse_colour, lw=1.3,
+              label=coarse_label)
+    axis.plot(spatial_points, truncated_values, "-", color=fine_colour, lw=1.3,
+              label=fine_label)
+    axis.plot(spatial_points, exact_values, "--", color="black", lw=1.5,
               label=exact_label)
-    axis.plot(spatial_points, truncated_values, "-", color="tab:blue", lw=1.2,
-              label=truncated_label)
     axis.axvline(BREAK_POINT, ls=":", color="grey", lw=1.0,
-                 label=r"Break point $x^\star=0$")
+                 label=r"Break point $x^\star$")
     axis.set_xlabel(r"Spatial point $x$")
     axis.set_ylabel(r"Datum")
-    axis.set_title("On the circle: the two coincide to plotting accuracy",
-                   fontsize=9)
+    axis.set_title(
+        r"On the circle: at $K_g=%d$ the truncation is invisible" % datum_band_edge,
+        fontsize=9,
+    )
     axis.grid(True, alpha=0.3)
 
-    # (0, 1) the corner window: the window on which the stage-two error is read.
+    # (0, 1) the corner window: where the coarse truncation shows what it does.
     axis = axes[0, 1]
     window = np.abs(spatial_points - BREAK_POINT) <= CORNER_WINDOW_HALF_WIDTH
-    axis.plot(spatial_points[window], exact_values[window], "--", color="black",
-              lw=1.6)
-    axis.plot(spatial_points[window], truncated_values[window], "-",
-              color="tab:blue", lw=1.2)
+    draw(axis, window)
     axis.axvline(BREAK_POINT, ls=":", color="grey", lw=1.0)
     axis.set_xlabel(r"Spatial point $x$")
     axis.set_ylabel(r"Datum")
@@ -324,54 +367,57 @@ def build_figure(arrays: dict, figure_path: Path) -> None:
 
     # (1, 0) the first derivative: the jump, and its absence.
     axis = axes[1, 0]
-    axis.plot(spatial_points, exact_derivative, "--", color="black", lw=1.6)
-    axis.plot(spatial_points, truncated_derivative, "-", color="tab:blue", lw=1.2)
+    axis.plot(spatial_points, coarse_derivative, "-", color=coarse_colour, lw=1.3)
+    axis.plot(spatial_points, truncated_derivative, "-", color=fine_colour, lw=1.3)
+    axis.plot(spatial_points, exact_derivative, "--", color="black", lw=1.5)
     axis.axvline(BREAK_POINT, ls=":", color="grey", lw=1.0)
     axis.annotate(
-        rf"$[g']_{{x^\star}}={exact_jump:.4f}=-1/\pi$",
+        r"$[g']_{x^\star}=-1/\pi$",
         xy=(0.04, 0.08), xycoords="axes fraction", fontsize=8,
     )
     axis.set_xlabel(r"Spatial point $x$")
     axis.set_ylabel(r"First derivative")
     axis.set_title(
-        r"$g'$ jumps at $x^\star$; $g_{K_g}'$ is continuous and rings",
+        r"$g'$ jumps at $x^\star$; every truncation is continuous, and rings",
         fontsize=9,
     )
     axis.grid(True, alpha=0.3)
 
-    # (1, 1) the coefficients: the exact decay, and where the truncation cuts.
+    # (1, 1) the coefficients, and where each truncation cuts them.
     axis = axes[1, 1]
     axis.loglog(coefficient_wavenumbers, exact_coefficients, "--", color="black",
-                lw=1.6)
-    inside = coefficient_wavenumbers <= datum_band_edge
-    axis.loglog(coefficient_wavenumbers[inside], exact_coefficients[inside], "-",
-                color="tab:blue", lw=1.2)
+                lw=1.5)
+    inside_fine = coefficient_wavenumbers <= datum_band_edge
+    inside_coarse = coefficient_wavenumbers <= comparison_band_edge
+    axis.loglog(coefficient_wavenumbers[inside_fine],
+                exact_coefficients[inside_fine], "-", color=fine_colour, lw=1.3)
+    axis.loglog(coefficient_wavenumbers[inside_coarse],
+                exact_coefficients[inside_coarse], "-", color=coarse_colour,
+                lw=3.0, alpha=0.55)
     axis.axvline(datum_band_edge, ls=":", color="grey", lw=1.0,
-                 label=rf"Datum-band edge $K_g={datum_band_edge}$")
+                 label=r"Datum-band edges $K_g$")
+    axis.axvline(comparison_band_edge, ls=":", color="grey", lw=1.0)
     axis.set_xlabel(r"Wavenumber $k$")
     axis.set_ylabel(r"$|c_k|$")
     axis.set_title(
-        r"$|c_k|=1/(2\pi^2k^2)$; the truncation is zero beyond $K_g$",
+        r"$|c_k|=1/(2\pi^2k^2)$; each truncation is zero beyond its $K_g$",
         fontsize=9,
     )
     axis.grid(True, which="both", alpha=0.3)
 
     handles, labels = axes[0, 0].get_legend_handles_labels()
-    band_handle, band_label = axes[1, 1].get_legend_handles_labels()
+    edge_handle, edge_label = axes[1, 1].get_legend_handles_labels()
     legend = fig.legend(
-        handles + band_handle,
-        labels + band_label,
+        handles + edge_handle,
+        labels + edge_label,
         loc="upper center",
-        # Anchored ABOVE the formula box, which sits at the very bottom of the
-        # canvas (figure_layout.formula_box places it at y = 0.012, growing
-        # upwards). The layout checker warns when the two collide; the anchor and
-        # the reserved strip below are set so that they do not.
-        bbox_to_anchor=(0.5, 0.20),
-        ncol=4,
+        # Anchored ABOVE the formula box, which grows upwards from y = 0.012.
+        bbox_to_anchor=(0.5, 0.22),
+        ncol=3,
         fontsize=8,
         frameon=True,
     )
-    fig.tight_layout(rect=[0, 0.24, 1, 1])
+    fig.tight_layout(rect=[0, 0.26, 1, 1])
     finalize_figure(fig, figure_path, legends=[legend], formula=FORMULA_BOX,
                     axes=list(axes.ravel()))
 
@@ -402,6 +448,15 @@ def write_artefacts(run_directory: Path, arrays: dict) -> None:
         ),
         "supremum_distance_between_their_derivatives": float(
             np.asarray(arrays["supremum_derivative_distance"]).reshape(-1)[0]
+        ),
+        "comparison_band_edge": int(
+            np.asarray(arrays["comparison_band_edge"]).reshape(-1)[0]
+        ),
+        "coarse_supremum_distance_to_the_datum": float(
+            np.asarray(arrays["coarse_supremum_distance"]).reshape(-1)[0]
+        ),
+        "coarse_supremum_distance_to_the_derivative": float(
+            np.asarray(arrays["coarse_supremum_derivative_distance"]).reshape(-1)[0]
         ),
     }
     with open(run_directory / SUMMARY_NAME, "w") as handle:
@@ -434,6 +489,16 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=128,
         help="The truncation wavenumber K_g of the stage-two datum (default 128, "
         "the value used by the trained ablation).",
+    )
+    parser.add_argument(
+        "--comparison-band-edge",
+        type=int,
+        default=8,
+        help="A second, deliberately COARSE truncation superimposed on every "
+        "panel (default 8). At K_g = 128 the truncation is invisible to the eye; "
+        "a coarse one makes visible what truncating a datum with a "
+        "first-derivative discontinuity actually does -- it rounds the corner and "
+        "rings.",
     )
     parser.add_argument(
         "--number-of-points",
@@ -530,7 +595,9 @@ def main(argv: list[str] | None = None) -> int:
     write_json(run_directory / "run_metadata.json", metadata)
     write_command_txt(run_directory / "command.txt", sys.argv)
 
-    arrays = compute_arrays(args.datum_band_edge, args.number_of_points)
+    arrays = compute_arrays(
+        args.datum_band_edge, args.comparison_band_edge, args.number_of_points
+    )
 
     logger.info(
         "Jump of g' at the break point: measured %.12f, exact %.12f "
@@ -542,11 +609,20 @@ def main(argv: list[str] | None = None) -> int:
         JUMP_AGREEMENT_TOLERANCE,
     )
     logger.info(
-        "Supremum distance between the two data: %.3e; between their "
-        "derivatives: %.3e. The data are indistinguishable to the eye; the "
+        "Truncation at K_g = %d: supremum distance to the datum %.3e, to its "
+        "derivative %.3e. The data are indistinguishable to the eye; the "
         "derivatives are not.",
+        args.datum_band_edge,
         float(arrays["supremum_distance"][0]),
         float(arrays["supremum_derivative_distance"][0]),
+    )
+    logger.info(
+        "Comparison truncation at K_g = %d: supremum distance to the datum "
+        "%.3e, to its derivative %.3e. A coarse truncation makes visible what a "
+        "fine one hides.",
+        args.comparison_band_edge,
+        float(arrays["coarse_supremum_distance"][0]),
+        float(arrays["coarse_supremum_derivative_distance"][0]),
     )
 
     write_artefacts(run_directory, arrays)
