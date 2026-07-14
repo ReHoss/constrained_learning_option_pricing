@@ -67,7 +67,35 @@ from learning_option_pricing.pde.heat_references import (
     smooth_call_payoff_cm_time,
 )
 
+from learning_option_pricing.pde.black_scholes_references import (
+    bermudan_exercise_boundary,
+    bermudan_put_value_exact_black_scholes,
+    black_scholes_defect_coefficients,
+    black_scholes_generator_coefficients,
+    black_scholes_propagate,
+    black_scholes_put_exact,
+)
+from learning_option_pricing.pde.real_line_extension_fields import (
+    EXTENSION_FIELD_KINDS,
+    GaussianSemigroupExtensionField,
+    GradedChenMangasarianExtensionField,
+    constant_chen_mangasarian_datum,
+    exact_maximum_datum,
+)
+
 __all__ = [
+    "bermudan_exercise_boundary",
+    "bermudan_put_value_exact_black_scholes",
+    "black_scholes_defect_coefficients",
+    "black_scholes_generator_coefficients",
+    "black_scholes_propagate",
+    "black_scholes_put_exact",
+    "EXTENSION_FIELD_KINDS",
+    "GaussianSemigroupExtensionField",
+    "GradedChenMangasarianExtensionField",
+    "constant_chen_mangasarian_datum",
+    "exact_maximum_datum",
+
     "constant_coefficient_operator",
     "constant_coefficient_operator_parts",
     "heat_operator",
