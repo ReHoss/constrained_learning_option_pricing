@@ -39,7 +39,7 @@ Outputs (written to a timestamped folder under
   minimiser's profile :math:`\Phi^\star(\cdot, T) = T\,(P\Psi)(\cdot, T)`;
 * ``residual_spectra_by_cell.png`` — the residual frequency decomposition of
   specification Section 3.4, aggregated across seeds: per-spectral-component
-  cancellation ratio :math:`|\hat r_k|^2 / |\widehat{Lh}(k)|^2` (7-point
+  cancellation ratio :math:`|\widehat{L \Phi_\theta}(k)|^2 / |\widehat{Lh}(k)|^2`
   running mean) with the measured cutoff :math:`k_\star` marked.
 
 Expected run-summary schema (the contract shared with the runner; the runner
@@ -1529,7 +1529,7 @@ def plot_cutoff_by_variant(summarised: dict, statistics: dict, out_dir: Path) ->
         axes=[ax],
         formula=(
             r"$k_\star$ = first in-band wavenumber at which the 7-point "
-            r"running mean of $|\hat r_k|^2 / |\widehat{Lh}(k)|^2$ reaches "
+            r"running mean of $|\widehat{L\Phi_\theta}(k)|^2 / |\widehat{Lh}(k)|^2$ reaches "
             r"$1/2$ (specification Section 3.4); absent for the zero-forcing "
             r"variants"
         ),
@@ -1747,7 +1747,7 @@ def plot_residual_spectra_by_cell(
         legends=all_legends,
         axes=list(axes[0]),
         formula=(
-            r"$|\hat r_k|^2/|\widehat{Lh}(k)|^2$: slice-averaged residual "
+            r"$|\widehat{L\Phi_\theta}(k)|^2/|\widehat{Lh}(k)|^2$: slice-averaged residual "
             r"FFT power over exact forcing power; 7-point running mean; "
             r"dotted: median $k_\star$; one curve per seed"
         ),

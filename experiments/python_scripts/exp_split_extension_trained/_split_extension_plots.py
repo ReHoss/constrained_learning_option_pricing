@@ -323,7 +323,7 @@ def _plot_residual_spectra(out_dir, runs, label):
     ax_ratio.set_ylim(0.0, 1.5)
     ax_ratio.axhline(0.5, ls=":", color="grey", lw=0.8)
     ax_ratio.set_xlabel("Spatial wavenumber $k$")
-    ax_ratio.set_ylabel(r"$|\hat r_k|^2/|\widehat{Lh}(k)|^2$ (running mean)")
+    ax_ratio.set_ylabel(r"$|\widehat{L\Phi_\theta}(k)|^2\,/\,|\widehat{Lh}(k)|^2$ (running mean)")
     ax_ratio.set_title(
         "Per-spectral-component cancellation (dotted: measured $k_\\star$)",
         fontsize=10,
