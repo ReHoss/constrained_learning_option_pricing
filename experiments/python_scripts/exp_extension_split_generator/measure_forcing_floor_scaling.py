@@ -149,7 +149,9 @@ def build_measurement_cells() -> list[dict]:
                     "cell_key": f"{generator_tag}_bernoulli_rho{regularity_index}",
                     "display_label": (
                         f"{generator_tag} {generator.name.replace('_', '–')}, "
-                        f"Bernoulli $\\rho={regularity_index}$"
+                        # m_g, as the report writes it: rho is the report's
+                        # CANCELLATION RATIO and must not be reused here.
+                        f"Bernoulli $m_g={regularity_index}$"
                     ),
                     "generator": generator,
                     "datum": PeriodisedBernoulliDatum(regularity_index),
@@ -159,7 +161,7 @@ def build_measurement_cells() -> list[dict]:
         {
             "cell_key": "G2_bernoulli_rho1",
             "display_label": (
-                f"G2 {generator_g2.name.replace('_', '–')}, Bernoulli $\\rho=1$"
+                f"G2 {generator_g2.name.replace('_', '–')}, Bernoulli $m_g=1$"
             ),
             "generator": generator_g2,
             "datum": PeriodisedBernoulliDatum(1),
@@ -418,6 +420,23 @@ def analyse_measurement_cell(
 # ---------------------------------------------------------------------------
 
 
+def _legend_label(cell_key: str, cell_summary: dict) -> str:
+    """The curve's legend text, DERIVED from the measured fields.
+
+    The saved ``display_label`` is a frozen presentation string: a run measured
+    before a notation change keeps the old symbols for ever, and re-plotting
+    cannot repair them. (That is exactly what happened: the saved labels write
+    the regularity order as rho, which is the report's CANCELLATION RATIO.) The
+    label is therefore rebuilt here from ``generator_name`` and
+    ``datum_regularity_index``, which are data; the saved string is advisory.
+    """
+    tag = cell_key.split("_")[0]
+    name = str(cell_summary["generator_name"]).replace("_", "\u2013")
+    if "square_wave" in cell_key:
+        return f"{tag} {name}, square wave (two break points, measured only)"
+    return f"{tag} {name}, Bernoulli $m_g={cell_summary['datum_regularity_index']}$"
+
+
 def render_main_figure(run_directory: Path) -> Path:
     """Rebuild the main figure from ``floor_curves.npz`` and ``summary.yaml``.
 
@@ -451,18 +470,19 @@ def render_main_figure(run_directory: Path) -> Path:
         predicted_exponent = cell_summary["predicted_exponent"]
         if predicted_exponent is None:
             legend_label = (
-                f"{cell_summary['display_label']}; measured slope "
+                f"{_legend_label(cell_key, cell_summary)}; measured slope "
                 f"{fitted_slope:.3f}"
             )
         elif fitted_slope is None:
             legend_label = (
-                f"{cell_summary['display_label']}; $e={predicted_exponent}$, "
-                f"plateau {cell_summary['plateau_value']:.3e}"
+                f"{_legend_label(cell_key, cell_summary)}; exponent "
+                f"{predicted_exponent}, plateau "
+                f"{cell_summary['plateau_value']:.3e}"
             )
         else:
             legend_label = (
-                f"{cell_summary['display_label']}; $e={predicted_exponent}$, "
-                f"measured slope {fitted_slope:.3f}, ratio "
+                f"{_legend_label(cell_key, cell_summary)}; exponent "
+                f"{predicted_exponent}, measured slope {fitted_slope:.3f}, ratio "
                 f"{cell_summary['ratio_measured_over_predicted_at_largest_band_edge']:.3f}"
             )
         # Solid stroke: measured curve.
@@ -505,9 +525,16 @@ def render_main_figure(run_directory: Path) -> Path:
     ax.set_xlabel(r"Working-band edge $K_{\max}$")
     # The defining formula of the floor is stated in the textbox below the
     # figure; the axis label stays short so it fits the canvas.
-    ax.set_ylabel(r"Operator-channel floor $\mathrm{floor}(K_{\max})$")
+    # The quantity is the squared L2 norm of the spectrally truncated operator
+    # channel -- a norm of a projected field, which the report's own convention
+    # says gets no letter of its own. The former label wrote it as a function
+    # called "floor", an English word used as a mathematical symbol, defined
+    # nowhere and colliding with the report's technical use of "floor".
+    ax.set_ylabel(
+        r"$\|\Pi_{K_{\max}}\mathcal{L}^X g\|^2_{L^2(\Omega)}$"
+    )
     ax.set_title(
-        "Operator-channel floor against the working-band edge: measured curves "
+        "Truncated operator channel against the working-band edge: measured "
         "(solid) and predicted power laws (dashed)",
         fontsize=10,
     )
@@ -517,7 +544,7 @@ def render_main_figure(run_directory: Path) -> Path:
     if prediction_line_handle is not None:
         legend_handles.append(prediction_line_handle)
         legend_labels.append(
-            r"Predicted $C_{\mathrm{pred}}K^{e}$ (dashed, per cell colour)"
+            r"Predicted power law (dashed, per curve colour)"
         )
     if plateau_line_handle is not None:
         legend_handles.append(plateau_line_handle)
@@ -542,16 +569,18 @@ def render_main_figure(run_directory: Path) -> Path:
         legends=[legend],
         axes=[ax],
         formula=(
-            r"$\mathrm{floor}(K)=2\pi\sum_{0<|k|\leq K}|a(k)|^2|c_k|^2$;"
-            r"  floor prediction: $\mathrm{floor}(K)=\frac{a_0^2 J^2}{\pi e}"
-            r"K^{e}\,(1+o(1))$ as $K\to\infty$, with $e=4p-2\rho-1$"
+            r"$\|\Pi_K \mathcal{L}^X g\|^2_{L^2(\Omega)}"
+            r"=2\pi\sum_{0<|k|\leq K}|a(k)|^2|c_k|^2$;  predicted "
+            r"$=\frac{a_0^2\,[g^{(m_g)}]_{x^\star}^2}{\pi\,(4p-2m_g-1)}\,"
+            r"K^{\,4p-2m_g-1}(1+o(1))$ as $K\to\infty$"
             "\n"
-            r"$a_0$ = principal constant of the generator, $J$ = jump of the "
-            r"$\rho$-th derivative at the single break point;"
-            r" $e<0$: saturation to the finite total sum (dotted plateau);"
+            r"$a_0$ = principal constant of the generator; "
+            r"$[g^{(m_g)}]_{x^\star}$ = jump of the $m_g$-th derivative at the "
+            r"single break point; a negative exponent means the series "
+            r"converges: saturation to the dotted plateau"
             "\n"
             r"square wave: two break points, measured only "
-            r"(single-break-point prediction not applied)"
+            r"(the single-break-point prediction is not applied to it)"
         ),
         formula_fontsize=7.5,
     )
