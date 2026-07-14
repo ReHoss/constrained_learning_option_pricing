@@ -259,17 +259,31 @@ def test_the_mis_specified_split_forcing_diverges_at_the_slice():
         f"(suprema {suprema} at tau {times_to_terminal})"
     )
 
-    # And it is genuinely UNBOUNDED, which is the property that matters: the matched
-    # split's supremum is flat over the same range (previous test), so the two
-    # extensions are separated by boundedness, not by the value of the exponent.
+    # The property that matters is not the value of the exponent but that the
+    # mis-specified forcing is UNBOUNDED while the matched one is bounded.  The
+    # observable form of that statement is that the SEPARATION between the two WIDENS
+    # without limit as the slice is approached: the matched supremum is flat (previous
+    # test) and the mis-specified one grows, so their ratio grows.  A separation by a
+    # fixed factor at one distance would say nothing -- both forcings are finite at any
+    # tau > 0, and at moderate tau the two are within an order of magnitude of each
+    # other.  It is the trend, not the gap, that distinguishes boundedness from
+    # unboundedness.
     matched = _field(VOLATILITY, n_quad=16000)
-    t_close = torch.full_like(x, STAGE_TERMINAL_TIME - times_to_terminal[-1])
-    matched_supremum = float(
-        _forcing(matched, x, t_close, comparison_volatility=VOLATILITY).abs().max()
+    ratios = []
+    for time_to_terminal, mis_specified_supremum in zip(times_to_terminal, suprema):
+        t = torch.full_like(x, STAGE_TERMINAL_TIME - time_to_terminal)
+        matched_supremum = float(
+            _forcing(matched, x, t, comparison_volatility=VOLATILITY).abs().max()
+        )
+        ratios.append(mis_specified_supremum / matched_supremum)
+
+    assert ratios == sorted(ratios), (
+        f"the separation does not widen as the slice is approached: {ratios} "
+        f"at tau {times_to_terminal}"
     )
-    assert suprema[-1] > 100.0 * matched_supremum, (
-        f"the mis-specified forcing ({suprema[-1]:.3e}) is not separated from the "
-        f"matched one ({matched_supremum:.3e}) close to the slice"
+    assert ratios[-1] > 3.0 * ratios[0], (
+        f"the separation widened by only a factor {ratios[-1] / ratios[0]:.2f} over a "
+        f"sixteen-fold decrease of the time-to-terminal (ratios {ratios})"
     )
 
 
