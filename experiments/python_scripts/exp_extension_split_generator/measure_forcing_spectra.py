@@ -838,6 +838,50 @@ def build_all_figures(run_directory: Path) -> None:
                         lw=1.0,
                         alpha=0.85,
                     )
+            # The crossover wavenumber k_c = ((T - t) nu)^{-1/2}, at which the
+            # Gaussian factor e^{-(T-t) nu k^2} of the split and graded
+            # extensions reaches e^{-1}. The formula box ASSERTS that the
+            # departure of the measured curve from the dashed envelope begins
+            # there; a marker lets the reader verify it instead of taking it on
+            # trust. Dotted, per the repository's stroke convention for
+            # auxiliary vertical markers (solid = measured, dashed = analytic
+            # reference).
+            diffusivity = summary["generators"][generator_key]["diffusivity"]
+            time_to_maturity = (
+                summary["parameters"]["terminal_time"] - time_points[time_tag]
+            )
+            if diffusivity > 0.0 and time_to_maturity > 0.0:
+                crossover_wavenumber = 1.0 / math.sqrt(
+                    time_to_maturity * diffusivity
+                )
+                axis.axvline(
+                    crossover_wavenumber,
+                    color="0.35",
+                    ls=":",
+                    lw=1.2,
+                    zorder=1,
+                )
+                axis.annotate(
+                    rf"$k_c={crossover_wavenumber:.3g}$",
+                    (crossover_wavenumber, 1.0),
+                    xycoords=("data", "axes fraction"),
+                    textcoords="offset points",
+                    xytext=(3, -11),
+                    fontsize=7.5,
+                    color="0.25",
+                )
+            else:
+                # A generator with no order-two term (nu = 0) has no Gaussian
+                # factor and therefore no crossover. Reported, not skipped in
+                # silence.
+                logger.info(
+                    "%s / %s: no crossover marker drawn "
+                    "(diffusivity = %g, time to maturity = %g)",
+                    generator_key,
+                    time_tag,
+                    diffusivity,
+                    time_to_maturity,
+                )
             axis.set_xlabel(r"Wavenumber $k$")
             axis.set_title(panel_titles[time_tag], fontsize=10)
             axis.grid(True, which="both", alpha=0.3)
@@ -862,6 +906,16 @@ def build_all_figures(run_directory: Path) -> None:
                 ls="--",
                 lw=1.0,
                 label=r"Predicted envelope (dashed, valid as $t\to T$)",
+            )
+        )
+        legend_handles.append(
+            Line2D(
+                [],
+                [],
+                color="0.35",
+                ls=":",
+                lw=1.2,
+                label=r"Crossover $k_c=((T-t)\nu)^{-1/2}$ (value per panel)",
             )
         )
         legend = fig.legend(
