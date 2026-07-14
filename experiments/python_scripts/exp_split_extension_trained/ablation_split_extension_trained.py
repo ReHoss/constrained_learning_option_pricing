@@ -70,6 +70,15 @@ SPECTRA_TIME_SLICE_FRACTIONS = (0.1, 0.3, 0.5, 0.7, 0.9)
 SPECTRA_RUNNING_MEAN_WINDOW = 7
 SPECTRA_IN_BAND_RELATIVE_THRESHOLD = 1.0e-5
 SPECTRA_CANCELLATION_THRESHOLD = 0.5
+# Upper truncation of the cancellation ratio before the running mean.  This is
+# NOT an inert guard: at a wavenumber whose forcing power is of the order of the
+# rounding error of the transform the denominator is denormal and the raw ratio
+# is astronomically large (values above 1e300 are observed).  The truncation
+# bounds the contribution such a wavenumber makes to the seven-point mean of its
+# in-band neighbours.  It can change the measured cutoff, so it is reported
+# whenever it binds (see the warning below) and it is stated in the report's
+# definition of the estimator rather than applied silently.
+SPECTRA_CANCELLATION_RATIO_CEILING = 1.5
 # Build-time agreement bound between the matched graded extension field and
 # its split {d_xx} twin (specification decision D3).
 GRADED_MATCHED_AGREEMENT_TOLERANCE = 1.0e-6
@@ -1006,7 +1015,24 @@ def compute_spectra(model, problem, variant, closed_form_extension) -> dict:
             residual_power / np.where(forcing_power > 0.0, forcing_power, 1.0),
             0.0,
         )
-        clipped_ratio = np.clip(cancellation_ratio, 0.0, 1.5)
+        number_of_truncated_bins = int(
+            (cancellation_ratio > SPECTRA_CANCELLATION_RATIO_CEILING).sum()
+        )
+        if number_of_truncated_bins > 0:
+            LOGGER.warning(
+                "cancellation-ratio truncation ACTIVE: %d of %d wavenumbers "
+                "exceed the ceiling %.3g and are truncated to it; largest raw "
+                "ratio %.6g. The truncation is part of the cutoff estimator "
+                "and can change the measured k_star -- the raw ratio is saved "
+                "so the aggregation can re-derive it without the truncation.",
+                number_of_truncated_bins,
+                cancellation_ratio.size,
+                SPECTRA_CANCELLATION_RATIO_CEILING,
+                float(cancellation_ratio.max()),
+            )
+        clipped_ratio = np.clip(
+            cancellation_ratio, 0.0, SPECTRA_CANCELLATION_RATIO_CEILING
+        )
         window = SPECTRA_RUNNING_MEAN_WINDOW
         running_mean = np.convolve(
             clipped_ratio, np.ones(window) / window, mode="same"
