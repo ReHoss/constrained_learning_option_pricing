@@ -944,9 +944,11 @@ def build_all_figures(run_directory: Path) -> None:
         axis.grid(True, which="both", alpha=0.3)
     # The full norm, with its function spaces, is stated in the formula box;
     # a long mathematical y-label would be clipped at the canvas top.
-    # The domain is the space-time cylinder Q; the full norm with its function
-    # spaces is stated in the formula box, so the axis label stays short.
-    axes[0].set_ylabel(r"Total forcing $\|Lh\|^2$")
+    # What is plotted is the SPECTRALLY TRUNCATED forcing -- the norm of the
+    # forcing projected onto the working band -- and not the total norm, which
+    # does not depend on K_max and could not be plotted against it. Naming the
+    # projection on the axis is what makes the figure self-consistent.
+    axes[0].set_ylabel(r"Truncated forcing $\|\Pi_{K_{\max}}Lh\|^2$")
     legend_handles = [
         Line2D(
             [],
