@@ -622,3 +622,103 @@ def test_main_without_any_run_still_writes_tables(tmp_path):
     assert not list(out_dir.glob("*.png"))
     table_text = (out_dir / "stage1_comparison_table.md").read_text()
     assert aggregator.NOT_MEASURED in table_text
+
+
+# ---------------------------------------------------------------------------
+# The terminal-target reference norm, and the Parseval convention it rests on.
+# ---------------------------------------------------------------------------
+
+
+def test_terminal_target_reference_norm_matches_pointwise():
+    r"""The closed-form norm must equal a pointwise evaluation in the RUNNER's norm.
+
+    This test exists because the obvious implementation is wrong. The exact
+    minimiser's terminal profile is
+    :math:`\Psi^\star(\cdot,T) = T\,(\mathcal{L}h)(\cdot,T)`, whose Fourier
+    coefficients the library returns for the POSITIVE wavenumbers only; summing
+    :math:`|c_k|^2` over those alone gives a norm smaller by a factor
+    :math:`\sqrt{2}` than the truth, because Parseval runs over BOTH signs. An
+    absolute error rescaled by that norm would then be understated by the same
+    factor -- silently, and in every row of the table.
+
+    The truth is fixed here by evaluating the profile pointwise, as the runner
+    does, and taking the runner's norm
+    :math:`\|f\| = (2\pi\,\mathrm{mean}(f^2))^{1/2}`.
+    """
+    import numpy as np
+
+    from learning_option_pricing.pde.periodic_spectral_toolbox import (
+        ConstantCoefficientGenerator,
+        PeriodisedBernoulliDatum,
+    )
+
+    band_edge = 128
+    terminal_time = 1.0
+    two_pi = 2.0 * np.pi
+
+    # Pointwise: the constant-in-time extension has Lh = L^X g = A g exactly,
+    # so Psi*(.,T) = T (A g), which is written out here with no library call.
+    datum = PeriodisedBernoulliDatum(regularity_index=1)
+    generator = ConstantCoefficientGenerator(
+        {2: 0.125, 1: -0.095, 0: -0.03}, name="G2"
+    )
+    wavenumbers = np.arange(1, band_edge + 1)[:, None]
+    grid = np.linspace(0.0, two_pi, 4096, endpoint=False)
+    cosine_amplitudes = 1.0 / (np.pi**2 * wavenumbers**2)
+    datum_values = (cosine_amplitudes * np.cos(wavenumbers * grid)).sum(0)
+    first_derivative = (
+        cosine_amplitudes * (-wavenumbers) * np.sin(wavenumbers * grid)
+    ).sum(0)
+    second_derivative = (
+        cosine_amplitudes * (-(wavenumbers**2)) * np.cos(wavenumbers * grid)
+    ).sum(0)
+    generator_applied_to_datum = (
+        generator.coefficients[2] * second_derivative
+        + generator.coefficients[1] * first_derivative
+        + generator.coefficients[0] * datum_values
+    )
+    terminal_profile = terminal_time * generator_applied_to_datum
+    pointwise_norm = float(
+        np.sqrt(two_pi * np.mean(terminal_profile**2))
+    )
+
+    closed_form_norm = aggregator.terminal_target_reference_norm(
+        "g2_bernoulli_bandlimited", "constant_in_time", band_edge
+    )
+
+    assert closed_form_norm is not None
+    assert closed_form_norm == pytest.approx(pointwise_norm, rel=1e-6)
+    # And the one-sided sum -- the wrong convention -- is smaller by sqrt(2).
+    assert closed_form_norm / np.sqrt(2.0) != pytest.approx(
+        pointwise_norm, rel=1e-3
+    )
+
+
+def test_terminal_target_reference_norm_is_empty_for_a_zero_target_variant():
+    """A variant whose forcing vanishes has an identically zero target.
+
+    Its relative distance does not exist, so there is nothing for a norm to
+    rescale: the slot must be explicitly empty, never a filler.
+    """
+    for variant in ("exact_solution", "matched_exponential_factor"):
+        assert (
+            aggregator.terminal_target_reference_norm(
+                "g2_bernoulli_bandlimited", variant, 128
+            )
+            is None
+        )
+
+
+def test_terminal_target_absolute_error_leaves_a_missing_factor_empty():
+    """A missing measurement or a missing norm yields an empty slot, not a zero."""
+    assert aggregator.terminal_target_absolute_error(None, 1.0) is None
+    assert aggregator.terminal_target_absolute_error({"x": 1}, None) is None
+    assert (
+        aggregator.terminal_target_absolute_error(
+            {"terminal_target_rel_l2": {"median": None}}, 1.0
+        )
+        is None
+    )
+    assert aggregator.terminal_target_absolute_error(
+        {"terminal_target_rel_l2": {"median": 0.25}}, 4.0
+    ) == pytest.approx(1.0)

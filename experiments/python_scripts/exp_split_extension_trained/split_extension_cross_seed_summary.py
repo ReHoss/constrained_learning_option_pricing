@@ -236,6 +236,11 @@ REPORT_NOTATION_LABEL = {
     "matched_exponential_factor": "Matched exponential factor",
 }
 
+# The variants whose extension has Lh = 0, so that Proposition 2 gives an
+# exact-minimiser terminal value identically ZERO. A relative distance to zero is
+# undefined; the runner reports the absolute norm for these, and it IS the error.
+ZERO_TARGET_VARIANT_NAMES = ("exact_solution", "matched_exponential_factor")
+
 CELL_MARKERS = {
     "g1_bernoulli_bandlimited": "o",
     "g2_bernoulli_bandlimited": "s",
@@ -817,6 +822,72 @@ def closed_form_band_edge_quantities(
         / (TWO_PI * extension.terminal_time),
     }
 
+
+
+def terminal_target_reference_norm(
+    cell_name: str, variant_name: str, generator_band_edge: int
+) -> float | None:
+    r"""Closed-form :math:`\|\Psi^\star(\cdot, T)\|_{L^2(\Omega)}`, the norm of the
+    exact minimiser's terminal profile.
+
+    Figure ``terminal_target.png`` reports a RELATIVE distance for the variants
+    whose target is non-zero and an ABSOLUTE norm for those whose target is
+    identically zero -- the relative one being undefined there. The two panels
+    are therefore not on the same scale, and a reader cannot compare them. This
+    norm is the missing factor: multiplying the measured relative distance by it
+    returns the absolute error, which IS comparable with the zero-target panel,
+    i.e. with the zero-forcing control: what the network attains when it
+    has nothing to cancel. (Not a 'floor' -- the report reserves that word for the
+    forcing floor ||Lh||^2, which is a property of the extension, not the network.)
+
+    By Proposition 2 the target is
+    :math:`\Psi^\star(\cdot,T) = -(\mathcal{L}h)(\cdot,T) / d_T'(T)
+    = T\,(\mathcal{L}h)(\cdot,T)` for the linear distance factor, so the norm
+    follows from the extension's forcing coefficient at :math:`t = T` alone --
+    no trained model, and no re-run.
+
+    The Parseval sum is SYMMETRIC (both signs of the wavenumber). That is not a
+    detail: the one-sided sum is smaller by a factor sqrt(2), and using it would
+    understate every absolute error by that factor. The convention is pinned by
+    ``test_terminal_target_reference_norm_matches_pointwise`` against a pointwise
+    evaluation in the runner's own norm.
+
+    Returns:
+        The norm, or ``None`` for a variant whose target is identically zero
+        (the exact-solution and matched-exponential-factor extensions, whose
+        forcing vanishes) -- for those the slot is explicitly empty, since the
+        relative distance the norm would rescale does not exist.
+    """
+    if variant_name in ZERO_TARGET_VARIANT_NAMES:
+        return None
+    extension = build_terminal_data_extension(cell_name, variant_name)
+    if extension is None:
+        return None
+    band_edge = cell_band_edge(cell_name, generator_band_edge)
+    wavenumbers = np.arange(1, band_edge + 1, dtype=np.int64)
+    terminal_time = extension.terminal_time
+    coefficients = terminal_time * extension.forcing_coefficient(
+        wavenumbers, terminal_time
+    )
+    return float(
+        np.sqrt(TWO_PI * 2.0 * np.sum(np.abs(coefficients) ** 2))
+    )
+
+
+def terminal_target_absolute_error(
+    measured: dict | None, reference_norm: float | None
+) -> float | None:
+    """The absolute terminal-target error: the relative distance, rescaled.
+
+    ``None`` -- an explicitly empty slot -- whenever either factor is missing,
+    never a filler.
+    """
+    if measured is None or reference_norm is None:
+        return None
+    entry = measured.get("terminal_target_rel_l2")
+    if entry is None or entry.get("median") is None:
+        return None
+    return float(entry["median"]) * reference_norm
 
 def compute_closed_forms(
     statistics: dict, generator_band_edge: int
@@ -1562,7 +1633,12 @@ def plot_terminal_target(summarised: dict, out_dir: Path) -> bool:
             "records a terminal-target distance yet (explicitly empty)."
         )
         return False
-    fig, (ax_rel, ax_abs) = plt.subplots(1, 2, figsize=(12, 5.5))
+    # ONE panel. The zero-target variants used to occupy a second one, which
+    # showed three near-equal bars of ~2-3e-4 -- a table in disguise, and no
+    # picture at all. Their content (the network's own floor, and every
+    # extension's absolute error as a multiple of it) is reported as a table
+    # instead, from terminal_target_abs_error_over_zero_forcing_control.
+    fig, ax_rel = plt.subplots(1, 1, figsize=(9.5, 5.5))
     for ax, entries, y_label, title in (
         (
             ax_rel,
@@ -1570,12 +1646,6 @@ def plot_terminal_target(summarised: dict, out_dir: Path) -> bool:
             r"$\|\Psi_\theta(\cdot,T) - \Psi^\star(\cdot,T)\|_2 \,/\, "
             r"\|\Psi^\star(\cdot,T)\|_2$",
             "Distance to the exact minimiser's terminal profile",
-        ),
-        (
-            ax_abs,
-            absolute_entries,
-            r"$\|\Psi_\theta(\cdot,T)\|_2$",
-            "Zero-target variants: absolute terminal norm",
         ),
     ):
         if entries:
@@ -1673,11 +1743,16 @@ def plot_terminal_target(summarised: dict, out_dir: Path) -> bool:
         fig,
         out_dir / "terminal_target.png",
         legends=[],
-        axes=[ax_rel, ax_abs],
+        axes=[ax_rel],
         formula=(
             r"$\Psi^\star(\cdot,T) = -\,(\mathcal{L}h)(\cdot,T)\,/\,d_T'(T) = "
             r"T\,(\mathcal{L}h)(\cdot,T)$ for the linear factor; median with "
-            r"interquartile range over seeds"
+            r"interquartile range over seeds."
+            "\n"
+            r"The forcing-free extensions ($\mathcal{L}h \equiv 0$) have "
+            r"$\Psi^\star(\cdot,T) \equiv 0$, so a relative distance is "
+            r"undefined for them; they are the network's own floor and are "
+            r"reported as a table."
         ),
     )
     return True
@@ -1858,10 +1933,30 @@ def build_yaml_payload(
         for variant in summarised.get(cell, {}):
             if variant not in variant_names:
                 variant_names.append(variant)
+        # The cell's zero-target floor: what the network attains when the
+        # extension leaves NO forcing, on this very generator and datum. It is
+        # the yardstick against which the other variants' absolute errors are
+        # read.
+        zero_forcing_control = None
+        for zero_variant in ZERO_TARGET_VARIANT_NAMES:
+            slot = summarised.get(cell, {}).get(zero_variant)
+            if slot is None:
+                continue
+            entry = slot["metrics"].get("terminal_target_abs_l2")
+            if entry is not None and entry.get("median") is not None:
+                zero_forcing_control = float(entry["median"])
+                break
         for variant in variant_names:
             measured = summarised.get(cell, {}).get(variant)
+            measured_metrics = None if measured is None else measured["metrics"]
             quantities = closed_forms.get(cell, {}).get(variant)
             mass_entry = unreachable_masses.get(cell, {}).get(variant)
+            reference_norm = terminal_target_reference_norm(
+                cell, variant, generator_band_edge
+            )
+            absolute_error = terminal_target_absolute_error(
+                measured_metrics, reference_norm
+            )
             cell_payload["variants"][variant] = {
                 "n_runs": None if measured is None else measured["n_runs"],
                 "seeds": [] if measured is None else measured["seeds"],
@@ -1869,6 +1964,15 @@ def build_yaml_payload(
                     None if measured is None else measured["metrics"]
                 ),
                 "closed_form_at_band_edge": quantities,
+                # The factor that puts the two panels of terminal_target.png on
+                # ONE scale (see terminal_target_reference_norm).
+                "terminal_target_reference_norm": reference_norm,
+                "terminal_target_abs_error": absolute_error,
+                "terminal_target_abs_error_over_zero_forcing_control": (
+                    None
+                    if absolute_error is None or not zero_forcing_control
+                    else absolute_error / zero_forcing_control
+                ),
                 "unreachable_mass_at_measured_cutoff": (
                     None
                     if mass_entry is None or mass_entry["median"] is None
