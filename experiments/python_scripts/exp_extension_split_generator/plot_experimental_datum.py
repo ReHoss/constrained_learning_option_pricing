@@ -126,11 +126,10 @@ FORMULA_BOX = (
     r"$g'(x)=\frac{x}{2\pi^2}-\frac{1}{2\pi}$ on $(0,2\pi)$, so "
     r"$[g']_{x^\star}=-\frac{1}{\pi}$ at $x^\star=0$"
     r"$\qquad g_{K_g}'(x)=-\sum_{k=1}^{K_g}\frac{\sin(kx)}{\pi^2k}$, continuous"
-    "\n"
-    r"Dashed: the exact datum $g$ (stage one). "
-    r"Solid: the band-limited truncation $g_{K_g}$ (stage two). "
-    r"Dotted: the break point $x^\star$ and the datum-band edge $K_g$."
 )
+# The box formerly restated the stroke convention on a third line; it duplicated
+# the legend verbatim and overlapped it at the foot of the canvas. The legend
+# carries the convention, so the line is gone.
 
 
 def exact_datum_values(spatial_points: np.ndarray) -> np.ndarray:
