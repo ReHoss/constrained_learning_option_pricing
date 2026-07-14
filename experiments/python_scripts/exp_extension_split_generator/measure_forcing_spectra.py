@@ -939,12 +939,14 @@ def build_all_figures(run_directory: Path) -> None:
             color="black",
             lw=1.1,
         )
-        axis.set_xlabel(r"Band edge $K_{\max}$")
+        axis.set_xlabel(r"Working-band edge $K_{\max}$")
         axis.set_title(GENERATOR_DISPLAY_LABELS[generator_key], fontsize=9)
         axis.grid(True, which="both", alpha=0.3)
     # The full norm, with its function spaces, is stated in the formula box;
     # a long mathematical y-label would be clipped at the canvas top.
-    axes[0].set_ylabel(r"Total strip forcing $\|Lh\|^2$")
+    # The domain is the space-time cylinder Q; the full norm with its function
+    # spaces is stated in the formula box, so the axis label stays short.
+    axes[0].set_ylabel(r"Total forcing $\|Lh\|^2$")
     legend_handles = [
         Line2D(
             [],

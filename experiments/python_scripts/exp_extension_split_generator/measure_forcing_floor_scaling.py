@@ -499,12 +499,15 @@ def render_main_figure(run_directory: Path) -> Path:
                 linewidth=1.2,
             )
 
-    ax.set_xlabel("Band edge $K$")
+    # "Working band" is the truncation of the spectral sum; it is one of the three
+    # named wavenumber bands of the report (the others being the reachable band and
+    # the datum band) and the qualifier keeps them apart on the figure itself.
+    ax.set_xlabel(r"Working-band edge $K_{\max}$")
     # The defining formula of the floor is stated in the textbox below the
     # figure; the axis label stays short so it fits the canvas.
-    ax.set_ylabel(r"Operator-channel floor $\mathrm{floor}(K)$")
+    ax.set_ylabel(r"Operator-channel floor $\mathrm{floor}(K_{\max})$")
     ax.set_title(
-        "Operator-channel floor against the band edge: measured curves "
+        "Operator-channel floor against the working-band edge: measured curves "
         "(solid) and predicted power laws (dashed)",
         fontsize=10,
     )
