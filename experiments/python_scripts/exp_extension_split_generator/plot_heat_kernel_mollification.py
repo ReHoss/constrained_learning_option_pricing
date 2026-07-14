@@ -283,9 +283,11 @@ def build_figure(arrays: dict, figure_path: Path) -> None:
         h, l = ax.get_legend_handles_labels()
         handles += h
         labels += l
+    # The formula box grows upwards from y = 0.012; the legend is anchored clear of
+    # it. The layout checker warns when they collide, and it is read.
     legend = fig.legend(handles, labels, loc="upper center",
-                        bbox_to_anchor=(0.5, 0.30), ncol=3, fontsize=8, frameon=True)
-    fig.tight_layout(rect=[0, 0.34, 1, 1])
+                        bbox_to_anchor=(0.5, 0.36), ncol=3, fontsize=8, frameon=True)
+    fig.tight_layout(rect=[0, 0.40, 1, 1])
     finalize_figure(fig, figure_path, legends=[legend], formula=FORMULA_BOX,
                     axes=list(axes))
 
