@@ -76,7 +76,7 @@ from learning_option_pricing.pde.black_scholes_references import (
     black_scholes_put_exact,
 )
 from learning_option_pricing.pde.real_line_extension_fields import (
-    EXTENSION_FIELD_KINDS,
+    REAL_LINE_EXTENSION_FIELD_KINDS,
     GaussianSemigroupExtensionField,
     GradedChenMangasarianExtensionField,
     constant_chen_mangasarian_datum,
@@ -90,7 +90,7 @@ __all__ = [
     "black_scholes_generator_coefficients",
     "black_scholes_propagate",
     "black_scholes_put_exact",
-    "EXTENSION_FIELD_KINDS",
+    "REAL_LINE_EXTENSION_FIELD_KINDS",
     "GaussianSemigroupExtensionField",
     "GradedChenMangasarianExtensionField",
     "constant_chen_mangasarian_datum",

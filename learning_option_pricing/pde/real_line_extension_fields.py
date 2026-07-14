@@ -115,11 +115,11 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "GaussianSemigroupExtensionField",
     "GradedChenMangasarianExtensionField",
-    "EXTENSION_FIELD_KINDS",
+    "REAL_LINE_EXTENSION_FIELD_KINDS",
 ]
 
 #: The extension kinds this module can build, in the order of the paper's ledger.
-EXTENSION_FIELD_KINDS = (
+REAL_LINE_EXTENSION_FIELD_KINDS = (
     "gaussian_semigroup",
     "graded_chen_mangasarian",
 )
