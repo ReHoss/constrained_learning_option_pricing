@@ -102,6 +102,9 @@ _yaml_version = yaml.__version__
 # Make the sibling catalogue importable whether run as a module or a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from learning_option_pricing.pde.cancellation_cutoff import (  # noqa: E402
+    measured_cancellation_cutoff,
+)
 from learning_option_pricing.pde.periodic_spectral_toolbox import (  # noqa: E402
     ConstantCoefficientGenerator,
     PeriodisedBernoulliDatum,
@@ -313,6 +316,20 @@ RUN_DIRECTORY_PATTERN = re.compile(
 # ---------------------------------------------------------------------------
 
 
+def _positive_or_masked(values):
+    """Values for a logarithmic axis, with the non-positive ones omitted.
+
+    A logarithmic axis cannot represent zero. Flooring a zero to 1e-30 draws it
+    as a tiny non-zero value, which misreports the datum (the exact-solution
+    variant has an identically zero forcing, and it must not appear as a small
+    positive one). Masking omits the point: the curve is simply absent there.
+    """
+    import numpy as np
+
+    array = np.asarray(values, dtype=float)
+    return np.ma.masked_where(~(array > 0.0), array)
+
+
 def parse_run_directory_name(directory_basename: str) -> dict | None:
     """Parse a run-directory basename into its cell and (optional) seed.
 
@@ -471,31 +488,43 @@ def read_measured_cutoff(
 ) -> float | None:
     """The measured reachable cutoff ``k_star`` of one trained run.
 
-    Preference order: the run-summary key ``k_star`` when it holds a valid
-    cutoff (finite and strictly positive); else the ``k_star`` entry of
-    ``spectra.npz`` (the canonical location per specification Section 3.4).
-    A non-finite or non-positive stored value encodes "absent" (the
-    zero-forcing variants record no cutoff), so ``None`` is returned when
-    neither location holds a valid value.
+    The cutoff is RE-DERIVED from the raw per-wavenumber powers saved by the
+    run, never read back from the stored ``k_star``. Runs produced before the
+    clamp-free estimator stored a cutoff computed with a ceiling of 1.5 on the
+    cancellation ratio; that ceiling was load-bearing (it made the G1 cutoff
+    vanish on two seeds of three), so the stored value cannot be trusted. The
+    raw powers were saved precisely so that the estimate could be re-derived
+    without retraining, and that is what happens here.
+
+    ``None`` encodes "absent": either the variant carries no forcing at all, or
+    the running mean never reaches the threshold on the informative band -- which
+    means the network cancels more than half the forcing everywhere the ratio can
+    be measured.
     """
-
-    def _valid_cutoff(raw) -> float | None:
-        if raw is None:
-            return None
-        value = float(raw)
-        if not np.isfinite(value) or value <= 0.0:
-            return None
-        return value
-
-    summary_cutoff = _valid_cutoff(summary_entry.get("k_star"))
-    if summary_cutoff is not None:
-        return summary_cutoff
     spectra = load_spectra_arrays(run_directory, variant_name)
-    if spectra is not None and "k_star" in spectra:
-        k_star_array = np.asarray(spectra["k_star"], dtype=float).reshape(-1)
-        if k_star_array.size:
-            return _valid_cutoff(k_star_array[0])
-    return None
+    if spectra is None:
+        return None
+    if "forcing_power" not in spectra or "residual_power" not in spectra:
+        return None
+    forcing_power = np.asarray(spectra["forcing_power"], dtype=float)
+    residual_power = np.asarray(spectra["residual_power"], dtype=float)
+    if forcing_power.size == 0 or forcing_power.max() <= 0.0:
+        return None  # a zero-forcing variant records no cutoff
+    wavenumber_bins = (
+        np.asarray(spectra["wavenumber_bins"])
+        if "wavenumber_bins" in spectra
+        else None
+    )
+    try:
+        result = measured_cancellation_cutoff(
+            forcing_power, residual_power, wavenumber_bins=wavenumber_bins
+        )
+    except ValueError:
+        # The residual floor is not measurable on this run (the forcing vanishes
+        # nowhere). Leave the slot explicitly empty rather than guess a floor.
+        return None
+    cutoff = result["cutoff"]
+    return None if cutoff is None else float(cutoff)
 
 
 # ---------------------------------------------------------------------------
@@ -1218,7 +1247,7 @@ def plot_rel_l2_by_cell(summarised: dict, out_dir: Path) -> bool:
         bar_centres = x_positions + j * bar_width
         ax.bar(
             bar_centres,
-            np.clip(np.asarray(medians, dtype=float), 1e-30, None),
+            _positive_or_masked(np.asarray(medians, dtype=float)),
             bar_width,
             color=display["color"],
             label=display["label"],
@@ -1226,8 +1255,8 @@ def plot_rel_l2_by_cell(summarised: dict, out_dir: Path) -> bool:
         # Interquartile interval drawn directly (per-seed spread over seeds).
         ax.vlines(
             bar_centres,
-            np.clip(np.asarray(lower_quartiles, dtype=float), 1e-30, None),
-            np.clip(np.asarray(upper_quartiles, dtype=float), 1e-30, None),
+            _positive_or_masked(np.asarray(lower_quartiles, dtype=float)),
+            _positive_or_masked(np.asarray(upper_quartiles, dtype=float)),
             color="black",
             lw=1.0,
         )
@@ -1553,15 +1582,15 @@ def plot_terminal_target(summarised: dict, out_dir: Path) -> bool:
             colors = [variant_display_properties(e[1])["color"] for e in entries]
             ax.bar(
                 positions,
-                np.clip(medians, 1e-30, None),
+                _positive_or_masked(medians),
                 0.7,
                 color=colors,
             )
             # Interquartile interval drawn directly (spread over seeds).
             ax.vlines(
                 positions,
-                np.clip(np.asarray(lower_quartiles, dtype=float), 1e-30, None),
-                np.clip(np.asarray(upper_quartiles, dtype=float), 1e-30, None),
+                _positive_or_masked(np.asarray(lower_quartiles, dtype=float)),
+                _positive_or_masked(np.asarray(upper_quartiles, dtype=float)),
                 color="black",
                 lw=1.0,
             )
@@ -1615,14 +1644,33 @@ def plot_residual_spectra_by_cell(
             spectra = load_spectra_arrays(record.path, variant)
             if spectra is None:
                 continue
-            if "wavenumbers" not in spectra or "running_mean" not in spectra:
+            # The running mean is RE-DERIVED from the raw powers, exactly as the
+            # cutoff is. Reading the stored curve would plot the one computed
+            # with the old ceiling of 1.5 on the ratio, while the dotted cutoff
+            # line came from the clamp-free estimator: the figure would then show
+            # a curve and a cutoff that do not belong to the same quantity.
+            if "forcing_power" not in spectra or "residual_power" not in spectra:
                 continue
-            mask = spectra.get("in_band_mask")
+            forcing_power = np.asarray(spectra["forcing_power"], dtype=float)
+            residual_power = np.asarray(spectra["residual_power"], dtype=float)
+            if forcing_power.size == 0 or forcing_power.max() <= 0.0:
+                continue
+            wavenumbers = (
+                np.asarray(spectra["wavenumbers"], dtype=float)
+                if "wavenumbers" in spectra
+                else np.arange(float(forcing_power.size))
+            )
+            try:
+                cutoff_result = measured_cancellation_cutoff(
+                    forcing_power, residual_power, wavenumber_bins=wavenumbers
+                )
+            except ValueError:
+                continue
             curves[(record.cell, variant)].append(
                 (
-                    np.asarray(spectra["wavenumbers"], dtype=float),
-                    np.asarray(spectra["running_mean"], dtype=float),
-                    None if mask is None else np.asarray(mask, dtype=bool),
+                    wavenumbers,
+                    cutoff_result["running_mean"],
+                    cutoff_result["in_band_mask"],
                 )
             )
             cutoff = read_measured_cutoff(
@@ -1665,7 +1713,7 @@ def plot_residual_spectra_by_cell(
                 )
                 ax.semilogx(
                     wavenumbers[keep],
-                    np.clip(running_mean[keep], 0.0, 1.3),
+                    running_mean[keep],
                     "-",
                     color=display["color"],
                     lw=1.2,

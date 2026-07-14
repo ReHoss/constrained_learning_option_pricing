@@ -38,6 +38,20 @@ _DIRECTORY_NAME_CELL_PATTERN = re.compile(
 # Loading
 # ---------------------------------------------------------------------------
 
+def _positive_or_masked(values):
+    """Values for a logarithmic axis, with the non-positive ones omitted.
+
+    A logarithmic axis cannot represent zero. Flooring a zero to 1e-30 draws it
+    as a tiny non-zero value, which misreports the datum (the exact-solution
+    variant has an identically zero forcing, and it must not appear as a small
+    positive one). Masking omits the point: the curve is simply absent there.
+    """
+    import numpy as np
+
+    array = np.asarray(values, dtype=float)
+    return np.ma.masked_where(~(array > 0.0), array)
+
+
 def _resolve_cell_name(ablation_dir: Path, metadata: dict) -> str:
     if "cell" in metadata:
         return str(metadata["cell"])
@@ -123,7 +137,7 @@ def _plot_loss_components(out_dir, runs, label):
                 continue
             h = entry["hist"]
             v = entry["variant"]
-            ax.loglog(h["iter"], np.clip(h[key], 1e-30, None), "-",
+            ax.loglog(h["iter"], _positive_or_masked(h[key]), "-",
                       marker=".", ms=3, color=v["color"], label=v["label"],
                       lw=1.3)
         ax.set_title(title, fontsize=9)
@@ -164,7 +178,7 @@ def _plot_loss_decomposition(out_dir, runs, label):
             h = entry["hist"]
             v = entry["variant"]
             values = np.abs(h[key]) if key == "cross_term" else h[key]
-            ax.loglog(h["iter"], np.clip(values, 1e-30, None), "-",
+            ax.loglog(h["iter"], _positive_or_masked(values), "-",
                       marker=".", ms=3, color=v["color"], label=v["label"],
                       lw=1.3)
         ax.set_title(title, fontsize=9)
@@ -228,7 +242,7 @@ def _plot_error_t0(out_dir, runs, label):
         s = entry["slices"]
         v = entry["variant"]
         pointwise_error = np.abs(s["u_pred_t0"] - s["u_ref_t0"])
-        ax.semilogy(s["x"], np.clip(pointwise_error, 1e-30, None), "-",
+        ax.semilogy(s["x"], _positive_or_masked(pointwise_error), "-",
                     color=v["color"], label=v["label"], lw=1.4)
     ax.set_title(r"Absolute error vs exact at $t=0$", fontsize=10)
     ax.set_xlabel("x")
@@ -290,21 +304,23 @@ def _plot_residual_spectra(out_dir, runs, label):
             mask = sp["in_band_mask"].astype(bool) & (k > 0)
             ax_ratio.semilogx(
                 k[mask],
-                np.clip(sp["cancellation_ratio_running_mean"][mask], 0, 1.3),
+                sp["cancellation_ratio_running_mean"][mask],
                 "-", color=v["color"], lw=1.5, label=v["label"],
             )
             if bool(sp["k_star_defined"][0]):
                 ax_ratio.axvline(float(sp["k_star"][0]), ls=":",
                                  color=v["color"], lw=1.0)
             ax_power.loglog(
-                k[1:], np.clip(sp["forcing_power"][1:], 1e-32, None), "--",
+                k[1:], _positive_or_masked(sp["forcing_power"][1:]), "--",
                 color=v["color"], lw=1.0,
             )
         ax_power.loglog(
-            k[1:], np.clip(sp["residual_power"][1:], 1e-32, None), "-",
+            k[1:], _positive_or_masked(sp["residual_power"][1:]), "-",
             color=v["color"], lw=1.4, label=v["label"],
         )
     ax_ratio.axhline(1.0, ls=":", color="grey", lw=1.0)
+    # Bound the VIEW, never the data: a ratio above the frame runs off it.
+    ax_ratio.set_ylim(0.0, 1.5)
     ax_ratio.axhline(0.5, ls=":", color="grey", lw=0.8)
     ax_ratio.set_xlabel("Spatial wavenumber $k$")
     ax_ratio.set_ylabel(r"$|\hat r_k|^2/|\widehat{Lh}(k)|^2$ (running mean)")
@@ -353,7 +369,7 @@ def _plot_summary_metrics(out_dir, runs, label):
     for ax, (key, title) in zip(axes, keys):
         values = [float(runs[n]["metrics"][key][0]) for n in names]
         colors = [runs[n]["variant"]["color"] for n in names]
-        ax.bar(range(len(names)), np.clip(values, 1e-30, None), color=colors)
+        ax.bar(range(len(names)), _positive_or_masked(values), color=colors)
         ax.set_yscale("log")
         ax.set_title(title, fontsize=9)
         ax.set_xticks(range(len(names)))

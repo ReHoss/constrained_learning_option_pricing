@@ -68,17 +68,16 @@ CORNER_WINDOW_HALF_WIDTH = math.pi / 16.0
 SPECTRA_GRID_SIZE = 1024
 SPECTRA_TIME_SLICE_FRACTIONS = (0.1, 0.3, 0.5, 0.7, 0.9)
 SPECTRA_RUNNING_MEAN_WINDOW = 7
-SPECTRA_IN_BAND_RELATIVE_THRESHOLD = 1.0e-5
 SPECTRA_CANCELLATION_THRESHOLD = 0.5
-# Upper truncation of the cancellation ratio before the running mean.  This is
-# NOT an inert guard: at a wavenumber whose forcing power is of the order of the
-# rounding error of the transform the denominator is denormal and the raw ratio
-# is astronomically large (values above 1e300 are observed).  The truncation
-# bounds the contribution such a wavenumber makes to the seven-point mean of its
-# in-band neighbours.  It can change the measured cutoff, so it is reported
-# whenever it binds (see the warning below) and it is stated in the report's
-# definition of the estimator rather than applied silently.
-SPECTRA_CANCELLATION_RATIO_CEILING = 1.5
+# The cancellation ratio |r_k|^2 / |Lh(k)|^2 is meaningful only where the forcing
+# power stands above the numerical floor of the residual.  That floor is not a
+# chosen constant: the datum is band-limited, so the forcing vanishes IDENTICALLY
+# above its band edge, and the residual power measured there is pure round-off of
+# the autograd evaluation and the transform.  It is therefore READ OFF each run
+# (:func:`_residual_numerical_floor`) and used to define the band on which the
+# ratio is defined at all.  No value is ever truncated: the earlier ceiling of
+# 1.5 on the ratio was a clamp over a broken guard, it was load-bearing (it made
+# the G1 cutoff vanish on two seeds of three), and it is gone.
 # Build-time agreement bound between the matched graded extension field and
 # its split {d_xx} twin (specification decision D3).
 GRADED_MATCHED_AGREEMENT_TOLERANCE = 1.0e-6
@@ -1007,43 +1006,30 @@ def compute_spectra(model, problem, variant, closed_form_extension) -> dict:
     forcing_maximum = float(forcing_power.max())
     forcing_defined = forcing_maximum > 0.0
     if forcing_defined:
-        in_band_mask = forcing_power > (
-            SPECTRA_IN_BAND_RELATIVE_THRESHOLD * forcing_maximum
+        from learning_option_pricing.pde.cancellation_cutoff import (
+            measured_cancellation_cutoff,
         )
-        cancellation_ratio = np.where(
-            forcing_power > 0.0,
-            residual_power / np.where(forcing_power > 0.0, forcing_power, 1.0),
-            0.0,
+
+        cutoff_result = measured_cancellation_cutoff(
+            forcing_power,
+            residual_power,
+            wavenumber_bins=wavenumber_bins,
+            running_mean_window=SPECTRA_RUNNING_MEAN_WINDOW,
+            cancellation_threshold=SPECTRA_CANCELLATION_THRESHOLD,
         )
-        number_of_truncated_bins = int(
-            (cancellation_ratio > SPECTRA_CANCELLATION_RATIO_CEILING).sum()
+        cancellation_ratio = cutoff_result["ratio"]
+        in_band_mask = cutoff_result["in_band_mask"]
+        running_mean = cutoff_result["running_mean"]
+        k_star = -1 if cutoff_result["cutoff"] is None else int(cutoff_result["cutoff"])
+        LOGGER.info(
+            "cancellation cutoff: residual numerical floor MEASURED at %.3e "
+            "(from the %d wavenumbers where the forcing vanishes identically); "
+            "the ratio is informative on %d wavenumbers; k_star = %s",
+            cutoff_result["residual_floor"],
+            int((forcing_power == 0.0).sum()),
+            int(in_band_mask.sum()),
+            "absent" if k_star < 0 else k_star,
         )
-        if number_of_truncated_bins > 0:
-            LOGGER.warning(
-                "cancellation-ratio truncation ACTIVE: %d of %d wavenumbers "
-                "exceed the ceiling %.3g and are truncated to it; largest raw "
-                "ratio %.6g. The truncation is part of the cutoff estimator "
-                "and can change the measured k_star -- the raw ratio is saved "
-                "so the aggregation can re-derive it without the truncation.",
-                number_of_truncated_bins,
-                cancellation_ratio.size,
-                SPECTRA_CANCELLATION_RATIO_CEILING,
-                float(cancellation_ratio.max()),
-            )
-        clipped_ratio = np.clip(
-            cancellation_ratio, 0.0, SPECTRA_CANCELLATION_RATIO_CEILING
-        )
-        window = SPECTRA_RUNNING_MEAN_WINDOW
-        running_mean = np.convolve(
-            clipped_ratio, np.ones(window) / window, mode="same"
-        )
-        k_star = -1
-        for bin_index in range(1, len(wavenumber_bins)):
-            if in_band_mask[bin_index] and (
-                running_mean[bin_index] >= SPECTRA_CANCELLATION_THRESHOLD
-            ):
-                k_star = int(wavenumber_bins[bin_index])
-                break
         k_star_defined = k_star >= 0
     else:
         in_band_mask = np.zeros(len(wavenumber_bins), dtype=bool)

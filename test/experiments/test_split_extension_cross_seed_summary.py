@@ -127,6 +127,34 @@ def _write_run_directory(
     return run_directory
 
 
+def _synthetic_spectrum(number_of_cancelled_wavenumbers: int) -> dict:
+    """A spectrum whose re-derived cutoff is known analytically.
+
+    Wavenumbers 1..8 are informative (their forcing stands above the residual's
+    numerical floor, which is measured at the zero-forcing wavenumbers 9..11).
+    The ratio is 0 up to ``number_of_cancelled_wavenumbers`` and 1 above, so the
+    centred seven-point mean first reaches 1/2 at a wavenumber that the test
+    states explicitly.
+    """
+    forcing_power = np.array([0.0] + [1.0] * 8 + [0.0, 0.0, 0.0])
+    residual_power = np.array(
+        [0.0]
+        + [0.0] * number_of_cancelled_wavenumbers
+        + [1.0] * (8 - number_of_cancelled_wavenumbers)
+        + [1.0e-19, 1.0e-19, 1.0e-19]
+    )
+    return {
+        "wavenumber_bins": np.arange(12.0),
+        "forcing_power": forcing_power,
+        "residual_power": residual_power,
+        # A DELIBERATELY WRONG stored cutoff: the aggregator must ignore it and
+        # re-derive from the raw powers above. Runs produced before the
+        # clamp-free estimator carry exactly such an untrustworthy value.
+        "k_star": np.asarray([999.0]),
+        "k_star_defined": np.asarray([True]),
+    }
+
+
 @pytest.fixture
 def synthetic_tree(tmp_path):
     """Two seeds of the G2 cell plus one debug directory and one stray file."""
@@ -156,12 +184,8 @@ def synthetic_tree(tmp_path):
             "convex_raw": {"forcing_floor": np.asarray([3.0, 5.0, 4.0])}
         },
         spectra={
-            "split_diffusion": {
-                "wavenumbers": np.arange(0.0, 33.0),
-                "running_mean": np.linspace(0.0, 1.0, 33),
-                "in_band_mask": np.ones(33, dtype=bool),
-                "k_star": np.asarray([8.0]),
-            }
+            "split_diffusion": _synthetic_spectrum(4),
+            "convex_raw": _synthetic_spectrum(4),
         },
     )
     _write_run_directory(
@@ -272,8 +296,12 @@ def test_collect_statistics_across_seeds(synthetic_tree):
     # k_star: the convex entries are positive (16, 32); the split seed-0
     # sentinel -1 is replaced by the spectra.npz value 8; the split seed-1
     # run stores neither.
-    assert cell_stats["convex_raw"]["metrics"]["k_star"] == [16.0, 32.0]
-    assert cell_stats["split_diffusion"]["metrics"]["k_star"] == [8.0]
+    # k_star is RE-DERIVED from the raw powers, never read back: both runs store
+    # a deliberately wrong 999.0, and both cells resolve to the analytic cutoff 5
+    # of the synthetic spectrum. Seed 1 of convex_raw carries no spectrum, so its
+    # slot stays explicitly empty rather than being filled from the summary.
+    assert cell_stats["convex_raw"]["metrics"]["k_star"] == [5.0]
+    assert cell_stats["split_diffusion"]["metrics"]["k_star"] == [5.0]
 
     summarised = aggregator.summarise_statistics(statistics)
     convex = summarised["g2_bernoulli_bandlimited"]["convex_raw"]
@@ -317,15 +345,11 @@ def test_collect_statistics_runner_native_schema(tmp_path):
             },
         },
         spectra={
-            "split_diffusion": {
-                "wavenumber_bins": np.arange(0.0, 65.0),
-                "cancellation_ratio_running_mean": np.linspace(0.0, 1.0, 65),
-                "in_band_mask": np.ones(65, dtype=bool),
-                "k_star": np.asarray([24]),
-                "k_star_defined": np.asarray([True]),
-            },
+            "split_diffusion": _synthetic_spectrum(4),
             "exact_solution": {
+                # A zero-forcing variant: no cutoff exists, and none is invented.
                 "wavenumber_bins": np.arange(0.0, 65.0),
+                "forcing_power": np.zeros(65),
                 "residual_power": np.ones(65),
                 "k_star": np.asarray([-1]),
                 "k_star_defined": np.asarray([False]),
@@ -349,14 +373,19 @@ def test_collect_statistics_runner_native_schema(tmp_path):
     assert exact_metrics["terminal_target_abs_l2"] == [1.5e-4]
     assert "terminal_target_rel_l2" not in exact_metrics
     # k_star: measured for the split variant, absent for the zero-forcing one.
-    assert split_metrics["k_star"] == [24.0]
+    # The stored 24 is IGNORED: the cutoff is re-derived from the raw powers,
+    # which put it at the analytic value 5 of the synthetic spectrum.
+    assert split_metrics["k_star"] == [5.0]
     assert "k_star" not in exact_metrics
     # The flags never enter the metric samples.
     assert "k_star_defined" not in split_metrics
     assert "terminal_target_is_zero_target" not in split_metrics
-    # Runner spectra key names resolve through the alias map.
+    # Runner spectra key names resolve through the alias map. What the aggregator
+    # now REQUIRES are the raw powers -- the running mean and the cutoff are both
+    # re-derived from them, so a stored curve is neither needed nor trusted.
     spectra = aggregator.load_spectra_arrays(run_directory, "split_diffusion")
-    assert "wavenumbers" in spectra and "running_mean" in spectra
+    assert "forcing_power" in spectra and "residual_power" in spectra
+    assert "wavenumbers" in spectra
 
 
 # ---------------------------------------------------------------------------
