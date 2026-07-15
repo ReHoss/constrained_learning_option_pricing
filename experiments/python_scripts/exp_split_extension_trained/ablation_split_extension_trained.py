@@ -1030,7 +1030,7 @@ def compute_spectra(
         in_band_mask = cutoff_result["in_band_mask"]
         running_mean = cutoff_result["running_mean"]
         k_star = -1 if cutoff_result["cutoff"] is None else int(cutoff_result["cutoff"])
-        LOGGER.info(
+        logger.info(
             "cancellation cutoff: residual numerical floor MEASURED at %.3e "
             "(from the %d wavenumbers where the forcing vanishes identically); "
             "the ratio is informative on %d wavenumbers; k_star = %s",
