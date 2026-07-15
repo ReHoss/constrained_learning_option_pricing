@@ -1371,8 +1371,14 @@ def plot_floor_vs_accuracy(
     unreachable_masses: dict,
     out_dir: Path,
 ) -> bool:
-    """H1 figure: best loss against the closed-form floor and against
-    the unreachable mass at the measured cutoff."""
+    """H1 figure: best loss against the closed-form floor (single panel).
+
+    The former right panel plotted the loss against the unreachable mass at the
+    measured cancellation cutoff; that cutoff is not a well-defined scalar (it
+    moves by a factor of several with the threshold on the ratio), so the panel
+    is dropped and the closed-form floor -- which needs no cutoff -- is the
+    predictor shown.
+    """
     points_floor = []  # (floor, best_loss, cell, variant)
     points_unreachable = []
     for cell in _cells_present(summarised):
@@ -1408,68 +1414,40 @@ def plot_floor_vs_accuracy(
         )
         return False
 
-    fig, (ax_floor, ax_mass) = plt.subplots(1, 2, figsize=(12, 5.5))
-    for ax, points, x_label, title, empty_text in (
-        (
-            ax_floor,
-            points_floor,
-            r"Closed-form floor $\mathbb{E}[(\mathcal{L}h)^2]$ at the band edge",
-            "Best loss against the closed-form floor",
+    fig, ax_floor = plt.subplots(1, 1, figsize=(7.0, 5.6))
+    if points_floor:
+        values = np.asarray([[p[0], p[1]] for p in points_floor], dtype=float)
+        span = np.asarray([values.min() * 0.3, values.max() * 3.0], dtype=float)
+        ax_floor.plot(span, span, "--", color="black", lw=1.0, label=r"Identity $y = x$")
+        for x_value, y_value, cell, variant in points_floor:
+            display = variant_display_properties(variant)
+            ax_floor.scatter(
+                x_value, y_value, c=display["color"],
+                marker=CELL_MARKERS.get(cell, "o"), s=90,
+                edgecolors="black", linewidths=0.5,
+            )
+        ax_floor.set_xscale("log")
+        ax_floor.set_yscale("log")
+    else:
+        ax_floor.text(
+            0.5, 0.5,
             "No variant with a strictly positive closed-form\nfloor has a "
             "saved best loss yet (slot explicitly empty)",
-        ),
-        (
-            ax_mass,
-            points_unreachable,
-            r"Unreachable mass $\mathcal{F}(k_\star)$ at the measured cutoff",
-            "Best loss against the unreachable mass",
-            "No measured cutoff $k_\\star$ saved yet\n(slot explicitly "
-            "empty, decision D9)",
-        ),
-    ):
-        if points:
-            values = np.asarray([[p[0], p[1]] for p in points], dtype=float)
-            span = np.asarray(
-                [values.min() * 0.3, values.max() * 3.0], dtype=float
-            )
-            ax.plot(
-                span, span, "--", color="black", lw=1.0,
-                label=r"Identity $y = x$",
-            )
-            for x_value, y_value, cell, variant in points:
-                display = variant_display_properties(variant)
-                ax.scatter(
-                    x_value,
-                    y_value,
-                    c=display["color"],
-                    marker=CELL_MARKERS.get(cell, "o"),
-                    s=90,
-                    edgecolors="black",
-                    linewidths=0.5,
-                )
-            ax.set_xscale("log")
-            ax.set_yscale("log")
-        else:
-            ax.text(
-                0.5,
-                0.5,
-                empty_text,
-                ha="center",
-                va="center",
-                transform=ax.transAxes,
-                fontsize=9,
-            )
-        ax.set_xlabel(x_label)
-        ax.set_ylabel(
-            r"Best training loss $\mathbb{E}[(\mathcal{L}\Phi_\theta)^2]$ (median)"
+            ha="center", va="center", transform=ax_floor.transAxes, fontsize=9,
         )
-        ax.set_title(title, fontsize=10)
-        ax.grid(True, which="both", alpha=0.3)
+    ax_floor.set_xlabel(
+        r"Closed-form floor $\mathbb{E}[(\mathcal{L}h)^2]$ at the band edge"
+    )
+    ax_floor.set_ylabel(
+        r"Best training loss $\mathbb{E}[(\mathcal{L}\Phi_\theta)^2]$ (median)"
+    )
+    ax_floor.set_title("Best loss against the closed-form floor", fontsize=10)
+    ax_floor.grid(True, which="both", alpha=0.3)
 
     from matplotlib.lines import Line2D
 
     seen_variants: list[str] = []
-    for _, _, _, variant in points_floor + points_unreachable:
+    for _, _, _, variant in points_floor:
         if variant not in seen_variants:
             seen_variants.append(variant)
     variant_handles = [
@@ -1492,22 +1470,19 @@ def plot_floor_vs_accuracy(
     ]
     legend = fig.legend(
         handles=variant_handles + cell_handles,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 0.24),
-        ncol=3,
-        fontsize=7,
-        frameon=True,
+        loc="upper center", bbox_to_anchor=(0.5, 0.20),
+        ncol=3, fontsize=7, frameon=True,
     )
-    fig.tight_layout(rect=[0, 0.34, 1, 1])
+    fig.tight_layout(rect=[0, 0.32, 1, 1])
     finalize_figure(
         fig,
         out_dir / "floor_vs_accuracy.png",
         legends=[legend],
-        axes=[ax_floor, ax_mass],
+        axes=[ax_floor],
         formula=(
-            r"$\mathbb{E}[(\mathcal{L}h)^2]=\frac{1}{T}\sum_{0<|k|\leq K_g}I_k$;  "
-            r"$\mathcal{F}(k_\star)=\frac{1}{T}\sum_{k_\star<|k|\leq K_g}I_k$;  "
-            r"$I_k=\int_0^T|\widehat{Lh}(k,t)|^2\,dt$ (closed forms)"
+            r"$\mathbb{E}[(\mathcal{L}h)^2]=\frac{1}{T}\sum_{0<|k|\leq K_g}I_k$,  "
+            r"$I_k=\int_0^T|\widehat{Lh}(k,t)|^2\,dt$ (closed form); "
+            r"marker shape = cell, colour = extension; dashed = identity $y=x$"
         ),
         formula_fontsize=7,
     )
