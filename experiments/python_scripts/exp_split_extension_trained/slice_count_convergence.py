@@ -122,6 +122,10 @@ def discover_variant_runs(data_root: Path):
     for model_path in sorted(data_root.glob("*/variant_*/models/model.pt")):
         variant_directory = model_path.parent.parent
         run_directory = variant_directory.parent
+        # Exploratory smoke runs are excluded: a _debug_ run is a few hundred
+        # iterations and its cutoff is not a real measurement.
+        if run_directory.name.startswith("_debug_"):
+            continue
         if (run_directory / "metadata.yaml").is_file():
             yield run_directory, variant_directory.name.replace("variant_", "")
 
