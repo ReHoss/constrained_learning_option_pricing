@@ -938,7 +938,9 @@ def compute_slices(model, problem, terminal_target: dict) -> dict:
     return out
 
 
-def compute_spectra(model, problem, variant, closed_form_extension) -> dict:
+def compute_spectra(
+    model, problem, variant, closed_form_extension, slice_fractions=None
+) -> dict:
     r"""Residual frequency decomposition (specification Section 3.4).
 
     (i) The residual field :math:`r(x, t_s) = (P\hat u)(x, t_s)` is
@@ -969,7 +971,14 @@ def compute_spectra(model, problem, variant, closed_form_extension) -> dict:
     x64 = np.linspace(0.0, TWO_PI, n_grid, endpoint=False)
     wavenumber_bins = np.fft.rfftfreq(n_grid, d=1.0 / n_grid)
 
-    slice_fractions = np.asarray(SPECTRA_TIME_SLICE_FRACTIONS)
+    # The time slices at which the trained residual is sampled. Defaults to the
+    # production set SPECTRA_TIME_SLICE_FRACTIONS; the parameter lets a
+    # convergence diagnostic re-evaluate a saved model at a denser set without
+    # retraining (slice_count_convergence.py).
+    slice_fractions = np.asarray(
+        SPECTRA_TIME_SLICE_FRACTIONS if slice_fractions is None
+        else slice_fractions
+    )
     residual_power_per_slice = np.zeros(
         (len(slice_fractions), len(wavenumber_bins))
     )
