@@ -1761,23 +1761,28 @@ def plot_terminal_target(summarised: dict, out_dir: Path) -> bool:
 def plot_residual_spectra_by_cell(
     records: list[RunRecord], summarised: dict, out_dir: Path
 ) -> bool:
-    """Residual frequency decomposition (specification Section 3.4),
-    aggregated across seeds: per-seed running-mean cancellation ratios."""
-    # Gather the per-(cell, variant, seed) running means from spectra.npz.
-    curves: dict = defaultdict(list)  # (cell, variant) -> list of (k, rsm, mask)
-    cutoffs: dict = defaultdict(list)
+    """Residual and forcing power spectra, per extension and cell.
+
+    For each extension the figure overlays two power spectra against the
+    wavenumber: the \emph{forcing} :math:`|\\widehat{Lh}(k)|^2` (dashed, a
+    closed form) and the trained \emph{residual}
+    :math:`|\\widehat{L\\Phi_\\theta}(k)|^2` (solid, measured, median over
+    seeds), in one colour per extension. Where the solid curve sits below the
+    dashed one the network cancels the forcing; where they meet it does not. No
+    ratio is formed and no cutoff is extracted: the transition is read from the
+    figure, which is gradual, not a sharp edge.
+    """
+    from matplotlib.lines import Line2D
+
+    forcing_curves: dict = {}   # (cell, variant) -> (k, forcing_power)
+    residual_curves: dict = defaultdict(list)  # (cell, variant) -> [residual_power]
     for record in records:
         for variant in record.variant_summaries:
             if (record.cell, variant) in ZERO_FORCING_VARIANTS:
-                continue  # cancellation ratio undefined (zero forcing)
+                continue  # no forcing to cancel; nothing to plot
             spectra = load_spectra_arrays(record.path, variant)
             if spectra is None:
                 continue
-            # The running mean is RE-DERIVED from the raw powers, exactly as the
-            # cutoff is. Reading the stored curve would plot the one computed
-            # with the old ceiling of 1.5 on the ratio, while the dotted cutoff
-            # line came from the clamp-free estimator: the figure would then show
-            # a curve and a cutoff that do not belong to the same quantity.
             if "forcing_power" not in spectra or "residual_power" not in spectra:
                 continue
             forcing_power = np.asarray(spectra["forcing_power"], dtype=float)
@@ -1789,104 +1794,103 @@ def plot_residual_spectra_by_cell(
                 if "wavenumbers" in spectra
                 else np.arange(float(forcing_power.size))
             )
-            try:
-                cutoff_result = measured_cancellation_cutoff(
-                    forcing_power, residual_power, wavenumber_bins=wavenumbers
-                )
-            except ValueError:
-                continue
-            curves[(record.cell, variant)].append(
-                (
-                    wavenumbers,
-                    cutoff_result["running_mean"],
-                    cutoff_result["in_band_mask"],
-                )
-            )
-            cutoff = read_measured_cutoff(
-                record.path, variant, record.variant_summaries[variant]
-            )
-            if cutoff is not None:
-                cutoffs[(record.cell, variant)].append(cutoff)
-    if not curves:
+            forcing_curves[(record.cell, variant)] = (wavenumbers, forcing_power)
+            residual_curves[(record.cell, variant)].append(residual_power)
+    if not forcing_curves:
         print(
-            "NOTICE: residual_spectra_by_cell.png not generated — no saved "
-            "spectra.npz with a running-mean cancellation ratio yet "
-            "(explicitly empty)."
+            "NOTICE: residual_spectra_by_cell.png not generated -- no saved "
+            "spectra.npz with forcing and residual powers yet (explicitly empty)."
         )
         return False
 
     cells_with_curves = [
-        c for c in _cells_present(summarised) if any(k[0] == c for k in curves)
+        c for c in _cells_present(summarised)
+        if any(k[0] == c for k in forcing_curves)
+        and c != CONTROL_CELL_NAME  # single-component datum: no spectrum to show
     ]
     fig, axes = plt.subplots(
         1,
         len(cells_with_curves),
-        figsize=(max(9.0, 6.0 * len(cells_with_curves)), 5.2),
+        figsize=(max(9.0, 6.2 * len(cells_with_curves)), 5.4),
         squeeze=False,
     )
     legend_labels_done: set[str] = set()
-    all_legends = []
     for ax, cell in zip(axes[0], cells_with_curves):
-        for (curve_cell, variant), seed_curves in curves.items():
+        for (curve_cell, variant), (wavenumbers, forcing_power) in forcing_curves.items():
             if curve_cell != cell:
                 continue
             display = variant_display_properties(variant)
-            for wavenumbers, running_mean, mask in seed_curves:
-                keep = (wavenumbers > 0)
-                if mask is not None and mask.shape == wavenumbers.shape:
-                    keep &= mask
-                label = (
-                    display["label"]
-                    if variant not in legend_labels_done
-                    else None
-                )
-                positive = keep & (running_mean > 0.0)
-                ax.plot(
-                    wavenumbers[positive],
-                    running_mean[positive],
-                    "-",
-                    color=display["color"],
-                    lw=1.2,
-                    alpha=0.7,
-                    label=label,
-                )
-                if label is not None:
-                    legend_labels_done.add(variant)
-            variant_cutoffs = cutoffs.get((cell, variant), [])
-            if variant_cutoffs:
-                ax.axvline(
-                    float(np.median(variant_cutoffs)),
-                    ls=":",
-                    color=display["color"],
-                    lw=1.0,
-                )
+            colour = display["color"]
+            positive_k = wavenumbers > 0
+            # Forcing (closed form): dashed, the analytic reference.
+            forcing_positive = positive_k & (forcing_power > 0.0)
+            ax.plot(
+                wavenumbers[forcing_positive], forcing_power[forcing_positive],
+                "--", color=colour, lw=1.0, alpha=0.9,
+            )
+            # Residual (measured): solid, median over seeds.
+            residual_median = np.median(
+                np.stack(residual_curves[(cell, variant)]), axis=0
+            )
+            residual_positive = positive_k & (residual_median > 0.0)
+            label = display["label"] if variant not in legend_labels_done else None
+            ax.plot(
+                wavenumbers[residual_positive], residual_median[residual_positive],
+                "-", color=colour, lw=1.3, alpha=0.9, label=label,
+            )
+            if label is not None:
+                legend_labels_done.add(variant)
         ax.set_xscale("log")
-        # Log y: the ratio runs from well below 1 (the network cancels the
-        # forcing) to many orders above it (round-off floor over a forcing that
-        # has itself vanished), so on a LINEAR axis the crossing of 1/2 -- which
-        # is the cutoff k* -- is crushed against zero and cannot be read. On a
-        # log axis the crossing sits on the 1/2 gridline and is legible.
         ax.set_yscale("log")
-        ax.axhline(0.5, ls=":", color="black", lw=0.8)
+        # Clip to the informative band. The forcing of a split plunges like a
+        # Gaussian to double-precision underflow (~1e-280), which would crush the
+        # region that matters -- the residual near its round-off floor and the
+        # forcing peak -- into a top sliver. Show nine decades below the largest
+        # power; the deep Gaussian plunge simply exits the bottom.
+        panel_powers = []
+        for (cc, vv), (kk, fp) in forcing_curves.items():
+            if cc == cell:
+                panel_powers.append(fp[fp > 0.0].max())
+                rm = np.median(np.stack(residual_curves[(cc, vv)]), axis=0)
+                panel_powers.append(rm[rm > 0.0].max())
+        if panel_powers:
+            top = 5.0 * max(panel_powers)
+            ax.set_ylim(bottom=top * 1e-9, top=top)
         ax.set_xlabel(r"Wavenumber $k$")
-        ax.set_ylabel("Cancellation ratio (running mean, log scale)")
+        ax.set_ylabel(r"Power spectrum")
         ax.set_title(_catalogue.cell_short_label(cell), fontsize=10)
         ax.grid(True, which="both", alpha=0.3)
-    legend = fig.legend(
-        loc="upper center", bbox_to_anchor=(0.5, 0.22), ncol=3, fontsize=7,
+    # Two legends: the variants (colour), and the stroke convention.
+    stroke_handles = [
+        Line2D([], [], color="0.3", ls="-", lw=1.3,
+               label=r"Residual $|\widehat{L\Phi_\theta}(k)|^2$ (measured)"),
+        Line2D([], [], color="0.3", ls="--", lw=1.0,
+               label=r"Forcing $|\widehat{Lh}(k)|^2$ (closed form)"),
+    ]
+    variant_legend = fig.legend(
+        loc="upper center", bbox_to_anchor=(0.5, 0.20), ncol=3, fontsize=7,
         frameon=True,
     )
-    all_legends.append(legend)
-    fig.tight_layout(rect=[0.04, 0.32, 1, 1])
+    fig.add_artist(variant_legend)
+    stroke_legend = fig.legend(
+        handles=stroke_handles, loc="upper center",
+        bbox_to_anchor=(0.5, 0.30), ncol=2, fontsize=7.5, frameon=True,
+    )
+    fig.tight_layout(rect=[0.04, 0.34, 1, 1])
     finalize_figure(
         fig,
         out_dir / "residual_spectra_by_cell.png",
-        legends=all_legends,
+        legends=[variant_legend, stroke_legend],
         axes=list(axes[0]),
         formula=(
-            r"$|\widehat{L\Phi_\theta}(k)|^2/|\widehat{Lh}(k)|^2$: slice-averaged residual "
-            r"FFT power over exact forcing power; 7-point running mean; "
-            r"dotted: median $k_\star$; one curve per seed"
+            r"Per extension (colour): forcing $|\widehat{Lh}(k)|^2$ (dashed, "
+            r"closed form) and trained residual $|\widehat{L\Phi_\theta}(k)|^2$ "
+            r"(solid, median over seeds); axes clipped to nine decades below the "
+            r"largest power." + "\n"
+            r"The network cancels the forcing where the solid curve lies below "
+            r"the dashed one. The split forcings are concentrated at low $k$ and "
+            r"their residuals stay low; the convex and constant-in-time forcings "
+            r"are broadband and their residuals rise to meet them."
         ),
         formula_fontsize=7,
     )
