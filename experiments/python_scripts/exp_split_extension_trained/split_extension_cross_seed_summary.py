@@ -1840,9 +1840,10 @@ def plot_residual_spectra_by_cell(
                     if variant not in legend_labels_done
                     else None
                 )
-                ax.semilogx(
-                    wavenumbers[keep],
-                    running_mean[keep],
+                positive = keep & (running_mean > 0.0)
+                ax.plot(
+                    wavenumbers[positive],
+                    running_mean[positive],
                     "-",
                     color=display["color"],
                     lw=1.2,
@@ -1859,10 +1860,17 @@ def plot_residual_spectra_by_cell(
                     color=display["color"],
                     lw=1.0,
                 )
+        ax.set_xscale("log")
+        # Log y: the ratio runs from well below 1 (the network cancels the
+        # forcing) to many orders above it (round-off floor over a forcing that
+        # has itself vanished), so on a LINEAR axis the crossing of 1/2 -- which
+        # is the cutoff k* -- is crushed against zero and cannot be read. On a
+        # log axis the crossing sits on the 1/2 gridline and is legible.
+        ax.set_yscale("log")
         ax.axhline(0.5, ls=":", color="black", lw=0.8)
         ax.set_xlabel(r"Wavenumber $k$")
-        ax.set_ylabel("Cancellation ratio (running mean)")
-        ax.set_title(f"Cell {cell}", fontsize=10)
+        ax.set_ylabel("Cancellation ratio (running mean, log scale)")
+        ax.set_title(_catalogue.cell_short_label(cell), fontsize=10)
         ax.grid(True, which="both", alpha=0.3)
     legend = fig.legend(
         loc="upper center", bbox_to_anchor=(0.5, 0.22), ncol=3, fontsize=7,
