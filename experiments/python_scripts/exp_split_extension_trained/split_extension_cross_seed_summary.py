@@ -1830,7 +1830,7 @@ def plot_residual_spectra_by_cell(
                 panel_powers.append(rm[rm > 0.0].max())
         if panel_powers:
             top = 5.0 * max(panel_powers)
-            ax.set_ylim(bottom=top * 1e-9, top=top)
+            ax.set_ylim(bottom=top * 1e-12, top=top)
         ax.set_xlabel(r"Wavenumber $k$")
         ax.set_ylabel(r"Power spectrum")
         ax.set_title(_catalogue.cell_short_label(cell), fontsize=10)
@@ -1860,7 +1860,7 @@ def plot_residual_spectra_by_cell(
         formula=(
             r"Per extension (colour): forcing $|\widehat{Lh}(k)|^2$ (dashed, "
             r"closed form) and trained residual $|\widehat{L\Phi_\theta}(k)|^2$ "
-            r"(solid, median over seeds); axes clipped to nine decades below the "
+            r"(solid, median over seeds); axes clipped to twelve decades below the "
             r"largest power." + "\n"
             r"The network cancels the forcing where the solid curve lies below "
             r"the dashed one. The split forcings are concentrated at low $k$ and "
