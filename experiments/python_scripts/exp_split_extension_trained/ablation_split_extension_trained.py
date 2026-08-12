@@ -408,6 +408,7 @@ def build_ansatz(variant: dict, problem: dict, hparams: dict, *, model_seed: int
         n=int(hparams["net_width"]),
         M=int(hparams["net_blocks"]),
         L=int(hparams["net_layers_per_block"]),
+        residual=bool(hparams.get("residual", True)),
     )
 
     terminal_time = problem["terminal_time"]
@@ -1152,6 +1153,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n-interior", type=int, default=None)
     parser.add_argument("--n-terminal", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=None)
+    # Architecture-study overrides. These let a single variant (e.g.
+    # ``split_diffusion``) be trained under different backbones without editing
+    # the catalogue: ``--net-blocks 0`` gives a shallow one-hidden-layer MLP,
+    # ``--no-residual`` disables the skip connection (a plain MLP of the same
+    # depth). ``--arch-tag`` labels the output directory so runs are separable.
+    parser.add_argument("--net-width", type=int, default=None,
+                        help="Override net_width (architecture study).")
+    parser.add_argument("--net-blocks", type=int, default=None,
+                        help="Override net_blocks M (0 = shallow MLP, no blocks).")
+    parser.add_argument("--net-layers-per-block", type=int, default=None,
+                        help="Override net_layers_per_block L.")
+    parser.add_argument("--no-residual", action="store_true",
+                        help="Disable the skip connection (plain MLP backbone).")
+    parser.add_argument("--arch-tag", type=str, default=None,
+                        help="Label appended to the output directory to "
+                             "distinguish architectures.")
     return parser
 
 
@@ -1165,6 +1182,14 @@ def resolve_hparams(args) -> dict:
         hparams["n_terminal"] = args.n_terminal
     if args.learning_rate is not None:
         hparams["learning_rate"] = args.learning_rate
+    if getattr(args, "net_width", None) is not None:
+        hparams["net_width"] = args.net_width
+    if getattr(args, "net_blocks", None) is not None:
+        hparams["net_blocks"] = args.net_blocks
+    if getattr(args, "net_layers_per_block", None) is not None:
+        hparams["net_layers_per_block"] = args.net_layers_per_block
+    if getattr(args, "no_residual", False):
+        hparams["residual"] = False
     return hparams
 
 
@@ -1221,10 +1246,13 @@ def main(argv=None) -> int:
         ablation_dir = Path(args.ablation_dir)
     else:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S-%fZ")
+        arch_suffix = (
+            f"_{args.arch_tag}" if getattr(args, "arch_tag", None) else ""
+        )
         ablation_dir = (
             script_data_dir(__file__)
             / (f"{debug_prefix}{timestamp}_{args.cell}"
-               f"_iters{hparams['num_iterations']}_seed{args.seed}")
+               f"_iters{hparams['num_iterations']}_seed{args.seed}{arch_suffix}")
         )
     ablation_dir.mkdir(parents=True, exist_ok=True)
 
