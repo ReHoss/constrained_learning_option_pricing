@@ -26,8 +26,9 @@ class ResidualBlock(nn.Module):
         return h + x   (residual skip connection)
     """
 
-    def __init__(self, n: int, L: int) -> None:
+    def __init__(self, n: int, L: int, residual: bool = True) -> None:
         super().__init__()
+        self.residual = residual
         layers: list[nn.Module] = []
         for _ in range(L):
             layers.append(nn.Linear(n, n))
@@ -35,7 +36,11 @@ class ResidualBlock(nn.Module):
         self.layers = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.layers(x) + x
+        out = self.layers(x)
+        # With ``residual=False`` the block is a plain feed-forward stack, so the
+        # backbone reduces to an ordinary multilayer perceptron of the same depth;
+        # this is the control used to test whether the skip connection is needed.
+        return out + x if self.residual else out
 
 
 class ResNet(nn.Module):
@@ -61,6 +66,7 @@ class ResNet(nn.Module):
         n: int = 50,
         M: int = 4,
         L: int = 2,
+        residual: bool = True,
     ) -> None:
         super().__init__()
         self.d_in = d_in
@@ -68,9 +74,12 @@ class ResNet(nn.Module):
         self.n = n
         self.M = M
         self.L = L
+        self.residual = residual
 
         self.input_layer = nn.Sequential(nn.Linear(d_in, n), nn.Tanh())
-        self.blocks = nn.Sequential(*[ResidualBlock(n, L) for _ in range(M)])
+        self.blocks = nn.Sequential(
+            *[ResidualBlock(n, L, residual=residual) for _ in range(M)]
+        )
         self.output_layer = nn.Linear(n, d_out)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
