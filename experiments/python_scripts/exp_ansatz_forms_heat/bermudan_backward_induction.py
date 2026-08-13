@@ -394,10 +394,13 @@ def rebuild_models(run_dir: Path, meta: dict) -> dict:
         models[k] = ansatz
 
         def make_cont(frozen):
+            model_device = next(frozen.parameters()).device
             def cont(x):
-                xc = x.reshape(-1, 1).to(torch.float64)
+                xc = x.reshape(-1, 1).to(dtype=torch.float64, device=model_device)
                 xt = torch.cat([xc, torch.zeros_like(xc)], dim=1)
-                return frozen(xt).reshape(x.shape).to(x.dtype)
+                return frozen(xt).reshape(x.shape).to(
+                    dtype=x.dtype, device=x.device
+                )
             return cont
         cont_above_fn = make_cont(ansatz)
     return models
@@ -715,11 +718,17 @@ def main(argv=None) -> int:
         # datum may call this with x shaped (N,) or (N,1); build a (N,2) input
         # at local time s=0 and return the value reshaped to match x.
         def make_cont(frozen_model):
-            dtype = next(frozen_model.parameters()).dtype
+            frozen_params = next(frozen_model.parameters())
+            dtype, model_device = frozen_params.dtype, frozen_params.device
             def cont(x):
-                xc = x.reshape(-1, 1).to(dtype)
+                # Evaluate the frozen continuation on ITS OWN device, then return on
+                # the caller's --- the tabulation grid of the split extension may live
+                # on a different device from the frozen stage-above network.
+                xc = x.reshape(-1, 1).to(dtype=dtype, device=model_device)
                 xt = torch.cat([xc, torch.zeros_like(xc)], dim=1)
-                return frozen_model(xt).reshape(x.shape).to(x.dtype)
+                return frozen_model(xt).reshape(x.shape).to(
+                    dtype=x.dtype, device=x.device
+                )
             return cont
         cont_above_fn = make_cont(model)
 
