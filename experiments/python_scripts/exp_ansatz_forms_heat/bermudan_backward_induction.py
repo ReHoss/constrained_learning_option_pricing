@@ -724,15 +724,18 @@ def _plot(val, out_dir, variant_label):
                   for s in stages if s["k"] in (0, 3, 6, 9)]
     cmap = plt.get_cmap("viridis")
     n_sel = max(1, len(curves) - 1)
+    # Learned: thick coloured solids underneath (colour encodes time).
     for i, c in enumerate(curves):
         colour = cmap(i / n_sel)
-        ax.plot(S, c["v_net"], "-", color=colour, lw=1.6,
+        ax.plot(S, c["v_net"], "-", color=colour, lw=2.4, zorder=2,
                 label=rf"learned $t={c['t']:.2f}$")
-        ax.plot(S, c["v_exact"], "--", color=colour, lw=1.1)
-    # Proxy handle so the "dashed = exact reference" convention is stated in the
-    # legend (the per-time dashed curves sit under the solid learned curves).
-    ax.plot([], [], "--", color="black", lw=1.1, label="exact reference (dashed)")
-    ax.plot(S, val["payoff"], ":", color="#888888", lw=1.2,
+    # Exact: black dashes ON TOP of every learned curve, so the dashes lie over the
+    # coloured solids and make the coincidence visible (the two agree to line width,
+    # so a same-colour dashed line would be invisible underneath).
+    for c in curves:
+        ax.plot(S, c["v_exact"], "--", color="black", lw=0.9, zorder=3)
+    ax.plot([], [], "--", color="black", lw=0.9, label="exact reference (dashed)")
+    ax.plot(S, val["payoff"], ":", color="#888888", lw=1.2, zorder=1,
             label=r"payoff $(K-S)^+$")
     ax.set_xlabel("spot $S$"); ax.set_ylabel("value")
     ax.set_title(f"Learned vs exact value surface ({variant_label})", fontsize=10)
