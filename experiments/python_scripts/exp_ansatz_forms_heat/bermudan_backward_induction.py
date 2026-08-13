@@ -544,15 +544,27 @@ def _validate(models, exercise_times, tau, *, variant=None, n_x=400, n_quad=4000
         cont = cont_dev.to(device="cpu", dtype=torch.float64)
         v_net = cont if k == 0 else torch.maximum(payoff, cont)
         if is_black_scholes:
-            v_exact = bermudan_put_value_exact_black_scholes(
+            v_exact_continuation = bermudan_put_value_exact_black_scholes(
                 x, torch.full_like(x, float(tau[k])), exercise_times=exercise_times,
                 K=K, volatility=SIGMA, risk_free_rate=R,
                 y_lo=bext_cat.QUADRATURE_LO, y_hi=bext_cat.QUADRATURE_HI,
                 n_quad=bext_cat.REFERENCE_QUADRATURE_NODES)
         else:
-            v_exact = bermudan_put_value_exact(
+            v_exact_continuation = bermudan_put_value_exact(
                 x, torch.full_like(x, float(tau[k])), exercise_times=exercise_times,
                 K=K, sigma=SIGMA, y_lo=Y_LO, y_hi=Y_HI, n_quad=n_quad)
+        # The exact reference returns the PRE-exercise continuation at an exercise
+        # date tau[k] (k>=1): it propagates only the exercises strictly after tau[k],
+        # so deep in-the-money it sits the early-exercise premium below the payoff.
+        # The learned value applies the exercise decision at tau[k] through
+        # max(payoff, cont); apply the SAME decision to the reference so both are the
+        # Bermudan value including the right to exercise at tau[k].  Without this the
+        # comparison is inconsistent (max(payoff, cont) against a bare continuation)
+        # and charges the whole early-exercise premium -- of order 0.5 at S=60 -- as
+        # error, inflating the per-stage relative L2 from about 1e-4 to about 1e-2.
+        # (t=0 is not an exercise date, so k=0 keeps the bare continuation on both.)
+        v_exact = (v_exact_continuation if k == 0
+                   else torch.maximum(payoff, v_exact_continuation))
         rel_l2 = float((v_net - v_exact).norm() / v_exact.norm())
         stages.append({
             "k": k, "t_global": float(tau[k]),
@@ -626,15 +638,20 @@ def _evaluate_surface(models, exercise_times, tau, times, *, variant, n_x=400):
         is_exercise = (round(t_global, 10) in exercise_set) and t_global > 1e-12
         v_net = torch.maximum(payoff, cont) if is_exercise else cont
         if is_black_scholes:
-            v_exact = bermudan_put_value_exact_black_scholes(
+            v_exact_continuation = bermudan_put_value_exact_black_scholes(
                 x, torch.full_like(x, t_global), exercise_times=exercise_times,
                 K=K, volatility=SIGMA, risk_free_rate=R,
                 y_lo=bext_cat.QUADRATURE_LO, y_hi=bext_cat.QUADRATURE_HI,
                 n_quad=bext_cat.REFERENCE_QUADRATURE_NODES)
         else:
-            v_exact = bermudan_put_value_exact(
+            v_exact_continuation = bermudan_put_value_exact(
                 x, torch.full_like(x, t_global), exercise_times=exercise_times,
                 K=K, sigma=SIGMA, y_lo=Y_LO, y_hi=Y_HI, n_quad=4000)
+        # Apply the same exercise decision to the reference as to the learned value
+        # (see _validate): at an exercise date the reference is the pre-exercise
+        # continuation, so both must be glued with the payoff to compare consistently.
+        v_exact = (torch.maximum(payoff, v_exact_continuation) if is_exercise
+                   else v_exact_continuation)
         curves.append({"t": t_global, "v_net": v_net.numpy(),
                        "v_exact": v_exact.numpy()})
     return curves
@@ -673,40 +690,32 @@ def _plot(val, out_dir, variant_label):
                  f"{inception['rel_l2']:.2e}"), dpi=140, formula_fontsize=8)
 
     # --- Figure 2: error-propagation curve ---
-    # The exercise-date values (k >= 1) carry the payoff kink from the max-gluing
-    # max(g, C_k); the inception value (k = 0, t = 0) is a kink-free continuation
-    # (no exercise at t = 0), a distinct quantity, so it is drawn separately rather
-    # than joined to the exercise-date series.
+    # Relative L2 error of the Bermudan value at each global time tau[k], with the
+    # exercise decision applied consistently to both the learned and the exact value
+    # (see _validate).  The error is flat across the chain -- it does not compound.
     fig, ax = plt.subplots(figsize=(8, 5))
-    exercise = [s for s in stages if s["k"] >= 1]
-    inception = stages[0]
-    ax.semilogy([s["t_global"] for s in exercise], [s["rel_l2"] for s in exercise],
-                "-o", color="#1b6ca8", lw=1.6,
-                label=r"exercise-date value $\max(g,\hat C_k)$ (payoff kink)")
-    ax.semilogy([inception["t_global"]], [inception["rel_l2"]], "*",
-                color="#d1495b", ms=15,
-                label=r"inception price $\hat V(\cdot,0)$ (kink-free)")
+    ts = [s["t_global"] for s in stages]
+    errs = [s["rel_l2"] for s in stages]
+    ax.semilogy(ts, errs, "-o", color="#1b6ca8", lw=1.6)
     for s in stages:
         ax.annotate(f"k={s['k']}", (s["t_global"], s["rel_l2"]),
                     textcoords="offset points", xytext=(0, 8), fontsize=8, ha="center")
-    err_lo = min(s["rel_l2"] for s in exercise)
-    err_hi = max(s["rel_l2"] for s in exercise)
+    err_lo, err_hi = min(errs), max(errs)
     ax.set_xlabel("global time $t_k$ (0 = inception, $T$ = maturity)")
     ax.set_ylabel(r"relative $L^2$ error vs exact")
     ax.set_title("Error propagation through the backward induction", fontsize=10)
     ax.grid(True, which="both", alpha=0.3)
+    ax.set_ylim(1e-5, 1e-3)  # fixed band so the flatness (no compounding) is legible
     ax.invert_xaxis()  # induction proceeds from maturity (right) to inception (left)
-    leg = ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8, frameon=True)
-    fig.tight_layout(rect=[0, 0.13, 0.80, 1])
+    fig.tight_layout(rect=[0, 0.13, 1, 1])
     finalize_figure(
-        fig, out_dir / "error_propagation.png", legends=[leg], axes=[ax],
-        formula=(r"Exercise-date error in "
+        fig, out_dir / "error_propagation.png", axes=[ax],
+        formula=(r"Relative $L^2$ error of the Bermudan value against the exact "
+                 r"reference (exercise decision applied to both). Flat in "
                  f"$[{err_lo:.1e},\\,{err_hi:.1e}]$"
                  r" across all "
                  f"{len(stages)}"
-                 r" chained stages (bounded, no compounding); inception price "
-                 r"($k=0$, kink-free) rel $L^2$ = "
-                 f"{inception['rel_l2']:.2e}."),
+                 r" chained stages: the error does not compound."),
         dpi=140, formula_fontsize=8)
 
     # --- Figure 3: value-surface overlay at selected global times ---
