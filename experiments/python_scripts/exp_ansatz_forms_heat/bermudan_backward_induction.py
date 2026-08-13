@@ -578,6 +578,68 @@ def _validate(models, exercise_times, tau, *, variant=None, n_x=400, n_quad=4000
 # Figures
 # ---------------------------------------------------------------------------
 
+def _evaluate_surface(models, exercise_times, tau, times, *, variant, n_x=400):
+    """Learned and exact value at arbitrary global times, for the surface overlay.
+
+    Unlike :func:`_validate`, which evaluates only at the exercise-date grid
+    ``tau[k]``, this accepts arbitrary global times, including points strictly
+    inside an inter-exercise interval.  For such an interior time ``t`` the value
+    is the pure continuation ``model_k(x, s = t - tau[k])`` of the stage ``k``
+    whose interval ``[tau[k], tau[k+1]]`` contains ``t`` (no exercise maximum, as
+    ``t`` is not an exercise date); at an exercise date the max-gluing
+    ``max((K - e^x)^+, cont)`` is applied, matching :func:`_validate`.  The exact
+    reference evaluates arbitrary ``t`` directly (pure continuation toward the
+    next exercise date inside an interval, the maximum at an exercise date).
+
+    Returns a list of ``{"t", "v_net", "v_exact"}`` in the order of ``times``.
+    """
+    import torch
+
+    from learning_option_pricing.pde import heat_put_payoff
+
+    is_black_scholes = _is_black_scholes_variant(variant)
+    if is_black_scholes:
+        from learning_option_pricing.pde import bermudan_put_value_exact_black_scholes
+    else:
+        from learning_option_pricing.pde import bermudan_put_value_exact
+
+    x = torch.linspace(X_EVAL_LO, X_EVAL_HI, n_x, dtype=torch.float64)
+    payoff = heat_put_payoff(x, K)
+    m = len(tau) - 1
+    exercise_set = {round(float(e), 10) for e in exercise_times}
+    curves = []
+    for t_global in times:
+        t_global = float(t_global)
+        # Interval containing t: the largest k with tau[k] <= t, clamped to the
+        # last interval so t = maturity maps to stage m-1.
+        k = min(sum(1 for j in range(m) if tau[j] <= t_global + 1e-12) - 1, m - 1)
+        k = max(k, 0)
+        s_local = t_global - tau[k]  # local time, 0 at the interval start tau[k]
+        model = models[k]
+        model.eval()
+        p0 = next(model.parameters())
+        xq = x.to(device=p0.device, dtype=p0.dtype)
+        s_col = torch.full_like(xq, s_local)
+        with torch.no_grad():
+            cont = model(torch.stack([xq, s_col], dim=1)).squeeze(-1)
+        cont = cont.to(device="cpu", dtype=torch.float64)
+        is_exercise = (round(t_global, 10) in exercise_set) and t_global > 1e-12
+        v_net = torch.maximum(payoff, cont) if is_exercise else cont
+        if is_black_scholes:
+            v_exact = bermudan_put_value_exact_black_scholes(
+                x, torch.full_like(x, t_global), exercise_times=exercise_times,
+                K=K, volatility=SIGMA, risk_free_rate=R,
+                y_lo=bext_cat.QUADRATURE_LO, y_hi=bext_cat.QUADRATURE_HI,
+                n_quad=bext_cat.REFERENCE_QUADRATURE_NODES)
+        else:
+            v_exact = bermudan_put_value_exact(
+                x, torch.full_like(x, t_global), exercise_times=exercise_times,
+                K=K, sigma=SIGMA, y_lo=Y_LO, y_hi=Y_HI, n_quad=4000)
+        curves.append({"t": t_global, "v_net": v_net.numpy(),
+                       "v_exact": v_exact.numpy()})
+    return curves
+
+
 def _plot(val, out_dir, variant_label):
     import matplotlib
     matplotlib.use("Agg")
@@ -650,14 +712,26 @@ def _plot(val, out_dir, variant_label):
     # --- Figure 3: value-surface overlay at selected global times ---
     # learned (solid) vs exact (dashed); colour encodes the time axis (viridis).
     fig, ax = plt.subplots(figsize=(8, 5))
-    selected = [s for s in stages if s["k"] in (0, 3, 6, 9)]
+    # Prefer the explicitly-evaluated surface curves (which may include global
+    # times strictly inside an inter-exercise interval); otherwise fall back to a
+    # subset of the exercise-date grid stages.
+    surface = val.get("surface")
+    if surface:
+        curves = [{"t": c["t"], "v_net": c["v_net"], "v_exact": c["v_exact"]}
+                  for c in surface]
+    else:
+        curves = [{"t": s["t_global"], "v_net": s["v_net"], "v_exact": s["v_exact"]}
+                  for s in stages if s["k"] in (0, 3, 6, 9)]
     cmap = plt.get_cmap("viridis")
-    n_sel = max(1, len(selected) - 1)
-    for i, s in enumerate(selected):
+    n_sel = max(1, len(curves) - 1)
+    for i, c in enumerate(curves):
         colour = cmap(i / n_sel)
-        ax.plot(S, s["v_net"], "-", color=colour, lw=1.6,
-                label=rf"learned $t={s['t_global']:.1f}$")
-        ax.plot(S, s["v_exact"], "--", color=colour, lw=1.1)
+        ax.plot(S, c["v_net"], "-", color=colour, lw=1.6,
+                label=rf"learned $t={c['t']:.2f}$")
+        ax.plot(S, c["v_exact"], "--", color=colour, lw=1.1)
+    # Proxy handle so the "dashed = exact reference" convention is stated in the
+    # legend (the per-time dashed curves sit under the solid learned curves).
+    ax.plot([], [], "--", color="black", lw=1.1, label="exact reference (dashed)")
     ax.plot(S, val["payoff"], ":", color="#888888", lw=1.2,
             label=r"payoff $(K-S)^+$")
     ax.set_xlabel("spot $S$"); ax.set_ylabel("value")
@@ -688,6 +762,13 @@ def _save_arrays(val, out_dir):
         flat[f"stage{k}_v_net"] = s["v_net"]
         flat[f"stage{k}_v_exact"] = s["v_exact"]
         flat[f"stage{k}_rel_l2"] = np.asarray([s["rel_l2"]])
+    surface = val.get("surface")
+    if surface:
+        flat["surf_count"] = np.asarray([len(surface)])
+        for i, c in enumerate(surface):
+            flat[f"surf{i}_t"] = np.asarray([c["t"]])
+            flat[f"surf{i}_v_net"] = c["v_net"]
+            flat[f"surf{i}_v_exact"] = c["v_exact"]
     np.savez(out_dir / "validation.npz", **flat)
 
 
@@ -702,9 +783,16 @@ def _load_arrays(npz_path):
             "cont_net": z[f"stage{k}_cont_net"], "v_net": z[f"stage{k}_v_net"],
             "v_exact": z[f"stage{k}_v_exact"], "rel_l2": float(z[f"stage{k}_rel_l2"][0]),
         })
-    return {"x": z["x"], "S": z["S"], "payoff": z["payoff"],
-            "european0": z["european0"], "tau": z["tau"],
-            "exercise_times": z["exercise_times"], "stages": stages}
+    out = {"x": z["x"], "S": z["S"], "payoff": z["payoff"],
+           "european0": z["european0"], "tau": z["tau"],
+           "exercise_times": z["exercise_times"], "stages": stages}
+    if "surf_count" in z.files:
+        n_surf = int(z["surf_count"][0])
+        out["surface"] = [{"t": float(z[f"surf{i}_t"][0]),
+                           "v_net": z[f"surf{i}_v_net"],
+                           "v_exact": z[f"surf{i}_v_exact"]}
+                          for i in range(n_surf)]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -737,6 +825,11 @@ def build_parser():
                         "validation against the exact reference (overwriting "
                         "validation.npz, figures, and the metadata error fields), "
                         "and exit; no training")
+    p.add_argument("--surface-times", type=str, default="0,0.3,0.6,0.9",
+                   help="comma-separated global times for the value-surface overlay; "
+                        "times may lie strictly inside an inter-exercise interval "
+                        "(e.g. 0.95), where the learned value is the pure "
+                        "continuation of the containing stage")
     return p
 
 
@@ -768,8 +861,11 @@ def main(argv=None) -> int:
         models = rebuild_models(run_dir, meta)
         exercise_times = [float(s) for s in meta["exercise_times"]]
         tau = [float(s) for s in meta["tau"]]
-        val = _validate(models, exercise_times, tau,
-                        variant=cat.variant_by_name(meta["variant"]))
+        variant = cat.variant_by_name(meta["variant"])
+        val = _validate(models, exercise_times, tau, variant=variant)
+        surface_times = [float(t) for t in args.surface_times.split(",")]
+        val["surface"] = _evaluate_surface(
+            models, exercise_times, tau, surface_times, variant=variant)
         _save_arrays(val, run_dir)
         _plot(val, run_dir, meta.get("variant_label", meta.get("variant", "")))
         meta["rel_l2_per_stage"] = {f"k{s['k']}_t{s['t_global']:.3f}": s["rel_l2"]
@@ -915,6 +1011,9 @@ def main(argv=None) -> int:
 
     # Validate against the exact reference + plot
     val = _validate(models, exercise_times, tau, variant=variant)
+    surface_times = [float(t) for t in args.surface_times.split(",")]
+    val["surface"] = _evaluate_surface(
+        models, exercise_times, tau, surface_times, variant=variant)
     _save_arrays(val, out_dir)
     _plot(val, out_dir, variant["label"] if "label" in variant else args.variant)
 
