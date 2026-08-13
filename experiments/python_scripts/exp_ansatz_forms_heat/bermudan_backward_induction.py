@@ -583,6 +583,12 @@ def build_parser():
     p.add_argument("--variant", choices=cat.variant_names(), default="hard_convex_linear",
                    help="ansatz form for every stage")
     p.add_argument("--num-iterations", type=int, default=cat.DEFAULT_HPARAMS["num_iterations"])
+    # Architecture-study overrides (default: catalogue = width 64, 4 blocks).
+    # net_blocks=0 gives a shallow one-hidden-layer MLP. An architecture suffix is
+    # appended to the output dir when any is set, so a size sweep does not collide.
+    p.add_argument("--net-width", type=int, default=None)
+    p.add_argument("--net-blocks", type=int, default=None)
+    p.add_argument("--net-layers-per-block", type=int, default=None)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cpu")
     p.add_argument("--log-every", type=int, default=1000)
@@ -670,6 +676,17 @@ def main(argv=None) -> int:
 
     hparams = dict(cat.DEFAULT_HPARAMS)
     hparams["num_iterations"] = args.num_iterations
+    arch_parts = []
+    if args.net_width is not None:
+        hparams["net_width"] = args.net_width
+        arch_parts.append(f"w{args.net_width}")
+    if args.net_blocks is not None:
+        hparams["net_blocks"] = args.net_blocks
+        arch_parts.append(f"b{args.net_blocks}")
+    if args.net_layers_per_block is not None:
+        hparams["net_layers_per_block"] = args.net_layers_per_block
+        arch_parts.append(f"L{args.net_layers_per_block}")
+    arch_suffix = ("_" + "".join(arch_parts)) if arch_parts else ""
 
     # Geometry: equally spaced exercise dates t_j = MATURITY * j / m, j=1..m.
     m = args.m
@@ -678,7 +695,8 @@ def main(argv=None) -> int:
 
     debug_prefix = "_debug_" if args.debug else ""
     out_dir = script_data_dir(__file__) / (
-        f"{debug_prefix}{utc_timestamp()}_m{m}_{args.variant}_iters{args.num_iterations}_seed{args.seed}")
+        f"{debug_prefix}{utc_timestamp()}_m{m}_{args.variant}"
+        f"_iters{args.num_iterations}_seed{args.seed}{arch_suffix}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("command: %s", " ".join(sys.argv))
