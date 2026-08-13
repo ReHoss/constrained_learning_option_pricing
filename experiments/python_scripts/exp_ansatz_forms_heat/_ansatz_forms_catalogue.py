@@ -89,6 +89,31 @@ METHOD_VARIANTS: list[dict] = [
         "label": r"split, matched $\nu_c=\nu$ (Gaussian semigroup)",
     },
     {
+        # Black--Scholes convex baseline, mirroring the convex_exact_datum row of
+        # _bermudan_extension_catalogue.  The stage datum is the exact glued maximum
+        # max(g, C), imposed exactly by the convex-combination form (no smoothing
+        # bias at the slice), but with NO interior extension of its own: the datum is
+        # its own extension, weighted by the interpolation coefficient lambda(t).  The
+        # extension forcing P Psi therefore contains a Dirac mass at the free boundary
+        # and the exact minimiser the network must represent has a first-derivative
+        # discontinuity whose amplitude diverges as the slice is approached (unbounded
+        # target).  This is the baseline the matched split is designed to beat, on the
+        # SAME Black--Scholes generator (rate R) as split_matched; validated against the
+        # exact Black--Scholes Bermudan reference.  Trained -> solid stroke per the
+        # repository plot convention.
+        "name": "convex_exact_datum",
+        "form": "hard_convex",
+        "interpolation": "linear",
+        "datum": "exact_maximum",
+        "extension": None,
+        "comparison_volatility_ratio": None,
+        "grading_exponent": None,
+        "analytic_derivatives": False,
+        "fair_floor": False,
+        "color": "#d62728",  # red
+        "label": r"convex, exact datum $\max(g,C)$ (unbounded target)",
+    },
+    {
         "name": "soft_pinn",
         "form": "soft_pinn",
         "interpolation": None,

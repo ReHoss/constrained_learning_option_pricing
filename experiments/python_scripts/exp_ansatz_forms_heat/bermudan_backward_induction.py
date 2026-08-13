@@ -146,6 +146,25 @@ def _is_split_variant(variant: dict) -> bool:
     return variant is not None and variant.get("extension") == "gaussian_semigroup"
 
 
+def _is_black_scholes_variant(variant: dict) -> bool:
+    """Whether ``variant`` runs on the genuine Black--Scholes generator.
+
+    Two variants share the Black--Scholes path: the matched-diffusion split
+    (``split_matched``, ``extension == "gaussian_semigroup"``) and the convex
+    exact-datum baseline (``convex_exact_datum``, ``datum == "exact_maximum"`` with
+    ``extension is None``).  Both route through the free-boundary ablation's
+    ``build_ansatz`` / ``train_variant`` (Black--Scholes generator, strictly positive
+    rate ``R``, float64) and are validated against
+    :func:`bermudan_put_value_exact_black_scholes`.  The four heat forms
+    (``hard_convex_linear`` etc.) carry neither key and stay on the pure backward-heat
+    path.
+    """
+    return variant is not None and (
+        variant.get("extension") == "gaussian_semigroup"
+        or variant.get("datum") == "exact_maximum"
+    )
+
+
 def _far_field_composite_datum(continuation_fn, K, x_lo, x_hi, *, n_tabulate=4096):
     r"""Composite stage datum valid on the WIDE convolution grid.
 
@@ -314,16 +333,83 @@ def _make_split_stage_problem(k, tau, delta_k, cont_above_fn, variant):
     }
 
 
+def _make_bs_convex_stage_problem(k, tau, delta_k, cont_above_fn):
+    """Build the ``train_variant``-compatible problem dict for the Black--Scholes
+    convex-baseline stage k (``convex_exact_datum``).
+
+    Mirrors :func:`bermudan_free_boundary_extension_ablation.build_problem` for the
+    ``convex_exact_datum`` variant: the Black--Scholes generator, no extension field
+    (``extension_fn=None``, ``extension_derivative_fns=None``), and the exact glued
+    maximum :math:`\\max((K-e^x)^+,\\,C_{k}(x))` as the terminal datum.
+
+    Unlike the split stage the datum is used **directly** (not via the tabulated
+    far-field composite of :func:`_far_field_composite_datum`): the convex form has no
+    interior extension, so the extension forcing :math:`\\mathcal P\\Psi` is assembled
+    by autograd through the datum itself, and its spatial derivatives must be exact.
+    The far-field composite tabulates the frozen continuation and linearly interpolates
+    it, which would flatten those derivatives (a zero second derivative on each cell)
+    and corrupt the forcing.  Evaluating the maximum directly keeps them exact; the
+    interior sampler stays inside the training window, where ``cont_above_fn`` is valid,
+    so no far-field replacement is needed.  The Dirac forcing at the free boundary is
+    the intended defect of this baseline, not an artefact to be smoothed.
+
+    The excluded terminal sliver and the (zero) own-quadrature floor mirror what
+    ``build_problem`` sets for ``convex_exact_datum``: a single shared constant so the
+    interior sampler does not differ across the Black--Scholes comparison axis, and a
+    zero floor because there is no semigroup quadrature to leave unresolved.
+    """
+    import torch
+
+    from learning_option_pricing.pde import (
+        black_scholes_generator_coefficients,
+        heat_put_payoff,
+    )
+
+    def terminal_datum(x):
+        # Exact glued maximum on the window; evaluated directly so its x-derivatives
+        # (which enter P Psi through autograd) are exact.
+        return torch.maximum(heat_put_payoff(x, K), cont_above_fn(x))
+
+    free_boundary, derivative_jump = _split_free_boundary_and_jump(cont_above_fn)
+
+    return {
+        # Keys consumed by the free-boundary ablation's build_ansatz /
+        # make_interior_sampler / train_variant (imported and reused, not duplicated).
+        "sigma": SIGMA,
+        "T": delta_k,
+        "stage_terminal_time": delta_k,
+        "x_lo": X_LO, "x_hi": X_HI,
+        "x_eval_lo": X_EVAL_LO, "x_eval_hi": X_EVAL_HI,
+        "generator_coefficients": black_scholes_generator_coefficients(
+            volatility=SIGMA, risk_free_rate=R),
+        "terminal_datum": terminal_datum,
+        "extension_field": None,
+        "extension_fn": None,
+        "extension_derivative_fns": None,
+        "free_boundary": free_boundary,
+        "derivative_jump": derivative_jump,
+        # A single shared excluded sliver, own floor zero (no semigroup quadrature),
+        # exactly as build_problem sets for convex_exact_datum.
+        "excluded_terminal_sliver": bext_cat.EXCLUDED_TERMINAL_SLIVER,
+        "own_quadrature_floor": 0.0,
+        "ic_name": f"bermudan_bs_convex_stage{k}",
+        "label": f"Bermudan BS convex stage {k}: [{tau[k]:.3f}, {tau[k+1]:.3f}]",
+    }
+
+
 def _make_stage_problem(k, exercise_times, tau, cont_above_fn, coarse_exact,
                         variant=None):
     """Build a ``train_variant``-compatible problem dict for stage k (interval
     ``[tau[k], tau[k+1]]`` in local time ``s in [0, delta_k]``).
 
-    When ``variant`` is the matched-diffusion split (``extension ==
-    "gaussian_semigroup"``) the problem carries the Gaussian-semigroup extension of
-    the far-field composite datum and the Black--Scholes generator; otherwise the
-    hard heat forms use the time-constant Chen--Mangasarian-smoothed datum
-    (``extension_fn=None``), exactly as before.
+    Three paths, by variant.  When ``variant`` is the matched-diffusion split
+    (``extension == "gaussian_semigroup"``) the problem carries the Gaussian-semigroup
+    extension of the far-field composite datum and the Black--Scholes generator.  When
+    it is the convex exact-datum baseline (``datum == "exact_maximum"`` with
+    ``extension is None``) the problem carries the same Black--Scholes generator but no
+    extension: the exact glued maximum is used directly as the datum (unbounded
+    target / Dirac forcing).  Otherwise the hard heat forms use the time-constant
+    Chen--Mangasarian-smoothed datum (``extension_fn=None``), exactly as before.
     """
     import torch
 
@@ -333,6 +419,8 @@ def _make_stage_problem(k, exercise_times, tau, cont_above_fn, coarse_exact,
 
     if _is_split_variant(variant):
         return _make_split_stage_problem(k, tau, delta_k, cont_above_fn, variant)
+    if _is_black_scholes_variant(variant):
+        return _make_bs_convex_stage_problem(k, tau, delta_k, cont_above_fn)
 
     def terminal_datum(x):
         # Value at the top of the interval (global tau[k+1]): smoothed max of the
@@ -367,8 +455,8 @@ def rebuild_models(run_dir: Path, meta: dict) -> dict:
     import torch
 
     variant = cat.variant_by_name(meta["variant"])
-    is_split = _is_split_variant(variant)
-    if is_split:
+    is_black_scholes = _is_black_scholes_variant(variant)
+    if is_black_scholes:
         torch.set_default_dtype(torch.float64)
         from bermudan_free_boundary_extension_ablation import (
             build_ansatz as build_ansatz_fn)
@@ -413,9 +501,10 @@ def rebuild_models(run_dir: Path, meta: dict) -> dict:
 def _validate(models, exercise_times, tau, *, variant=None, n_x=400, n_quad=4000):
     """Per-global-time learned-vs-exact comparison (the error-propagation curve).
 
-    For the matched-diffusion split variant the reference is the exact Black--Scholes
-    Bermudan value :func:`bermudan_put_value_exact_black_scholes` (genuine generator,
-    strictly positive rate ``R``); for the heat variants it stays the pure backward-heat
+    For the Black--Scholes variants (the matched-diffusion split and the convex
+    exact-datum baseline) the reference is the exact Black--Scholes Bermudan value
+    :func:`bermudan_put_value_exact_black_scholes` (genuine generator, strictly positive
+    rate ``R``); for the heat variants it stays the pure backward-heat
     chained-convolution reference :func:`bermudan_put_value_exact`.
     """
     import numpy as np
@@ -424,8 +513,8 @@ def _validate(models, exercise_times, tau, *, variant=None, n_x=400, n_quad=4000
     from learning_option_pricing.pde import (
         bermudan_put_value_exact, heat_put_exact, heat_put_payoff)
 
-    is_split = _is_split_variant(variant)
-    if is_split:
+    is_black_scholes = _is_black_scholes_variant(variant)
+    if is_black_scholes:
         from learning_option_pricing.pde import (
             bermudan_put_value_exact_black_scholes, black_scholes_put_exact)
 
@@ -447,7 +536,7 @@ def _validate(models, exercise_times, tau, *, variant=None, n_x=400, n_quad=4000
             cont_dev = model(torch.stack([xq, torch.zeros_like(xq)], dim=1)).squeeze(-1)
         cont = cont_dev.to(device="cpu", dtype=torch.float64)
         v_net = cont if k == 0 else torch.maximum(payoff, cont)
-        if is_split:
+        if is_black_scholes:
             v_exact = bermudan_put_value_exact_black_scholes(
                 x, torch.full_like(x, float(tau[k])), exercise_times=exercise_times,
                 K=K, volatility=SIGMA, risk_free_rate=R,
@@ -465,7 +554,7 @@ def _validate(models, exercise_times, tau, *, variant=None, n_x=400, n_quad=4000
         })
         logger.info("stage k=%d  t=%.3f  rel_l2(value vs exact)=%.3e", k, tau[k], rel_l2)
 
-    if is_split:
+    if is_black_scholes:
         european0 = black_scholes_put_exact(
             x, torch.zeros_like(x), K=K, T=MATURITY, volatility=SIGMA, risk_free_rate=R)
     else:
@@ -659,15 +748,18 @@ def main(argv=None) -> int:
 
     device = torch.device(args.device)
     variant = cat.variant_by_name(args.variant)
-    is_split = _is_split_variant(variant)
-    # The split path reuses the (tested) build/train functions of the M=2 split
-    # ablation, which thread the analytic extension derivatives into the ansatz,
-    # assemble P Psi with the Black--Scholes generator, and exclude the unresolved
-    # terminal sliver from the interior sampler.  The heat variants keep the shared
-    # ablation_ansatz_forms.train_variant unchanged.  The split ablation is validated
-    # in float64, so the whole split run is set to float64 for a consistent frozen
-    # continuation chain and the tightest analytic-vs-autograd cross-check.
-    if is_split:
+    is_black_scholes = _is_black_scholes_variant(variant)
+    # The Black--Scholes path (matched split and convex exact-datum baseline) reuses the
+    # (tested) build/train functions of the M=2 free-boundary ablation, which assemble
+    # P Psi with the Black--Scholes generator and exclude the terminal sliver from the
+    # interior sampler; the split additionally threads the analytic extension
+    # derivatives into the ansatz, while the convex baseline has no extension and uses
+    # the autograd route on its exact-maximum datum.  The heat variants keep the shared
+    # ablation_ansatz_forms.train_variant unchanged.  The free-boundary ablation is
+    # validated in float64, so the whole Black--Scholes run is set to float64 for a
+    # consistent frozen continuation chain and the tightest analytic-vs-autograd
+    # cross-check.
+    if is_black_scholes:
         torch.set_default_dtype(torch.float64)
         from bermudan_free_boundary_extension_ablation import (
             train_variant as train_variant_fn)
@@ -713,9 +805,10 @@ def main(argv=None) -> int:
     for k in range(m - 1, -1, -1):
         logger.info("=== training stage k=%d  interval [%.3f, %.3f] ===",
                     k, tau[k], tau[k + 1])
-        # The split train path does not use the coarse exact diagnostic; the heat path
-        # samples it once per stage for the cheap per-iteration boundary comparison.
-        coarse_exact = None if is_split else _build_coarse_exact(
+        # The Black--Scholes train path does not use the coarse exact diagnostic; the
+        # heat path samples it once per stage for the cheap per-iteration boundary
+        # comparison.
+        coarse_exact = None if is_black_scholes else _build_coarse_exact(
             exercise_times, tau[k], float(tau[k + 1] - tau[k]))
         problem = _make_stage_problem(
             k, exercise_times, tau, cont_above_fn, coarse_exact, variant=variant)
