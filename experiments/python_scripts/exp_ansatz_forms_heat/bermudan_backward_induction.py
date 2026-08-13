@@ -611,25 +611,65 @@ def _plot(val, out_dir, variant_label):
                  f"{inception['rel_l2']:.2e}"), dpi=140, formula_fontsize=8)
 
     # --- Figure 2: error-propagation curve ---
+    # The exercise-date values (k >= 1) carry the payoff kink from the max-gluing
+    # max(g, C_k); the inception value (k = 0, t = 0) is a kink-free continuation
+    # (no exercise at t = 0), a distinct quantity, so it is drawn separately rather
+    # than joined to the exercise-date series.
     fig, ax = plt.subplots(figsize=(8, 5))
-    ks = [s["k"] for s in stages]
-    ts = [s["t_global"] for s in stages]
-    errs = [s["rel_l2"] for s in stages]
-    ax.semilogy(ts, errs, "-o", color="#1b6ca8", lw=1.6)
+    exercise = [s for s in stages if s["k"] >= 1]
+    inception = stages[0]
+    ax.semilogy([s["t_global"] for s in exercise], [s["rel_l2"] for s in exercise],
+                "-o", color="#1b6ca8", lw=1.6,
+                label=r"exercise-date value $\max(g,\hat C_k)$ (payoff kink)")
+    ax.semilogy([inception["t_global"]], [inception["rel_l2"]], "*",
+                color="#d1495b", ms=15,
+                label=r"inception price $\hat V(\cdot,0)$ (kink-free)")
     for s in stages:
         ax.annotate(f"k={s['k']}", (s["t_global"], s["rel_l2"]),
                     textcoords="offset points", xytext=(0, 8), fontsize=8, ha="center")
+    err_lo = min(s["rel_l2"] for s in exercise)
+    err_hi = max(s["rel_l2"] for s in exercise)
     ax.set_xlabel("global time $t_k$ (0 = inception, $T$ = maturity)")
     ax.set_ylabel(r"relative $L^2$ error vs exact")
     ax.set_title("Error propagation through the backward induction", fontsize=10)
     ax.grid(True, which="both", alpha=0.3)
     ax.invert_xaxis()  # induction proceeds from maturity (right) to inception (left)
-    fig.tight_layout(rect=[0, 0.12, 1, 1])
+    leg = ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8, frameon=True)
+    fig.tight_layout(rect=[0, 0.13, 0.80, 1])
     finalize_figure(
-        fig, out_dir / "error_propagation.png", axes=[ax],
-        formula=(r"error at each exercise date; induction runs right$\to$left "
-                 r"(maturity $\to$ inception). Growth quantifies error compounding "
-                 r"across learned stages."), dpi=140, formula_fontsize=8)
+        fig, out_dir / "error_propagation.png", legends=[leg], axes=[ax],
+        formula=(r"Exercise-date error in "
+                 f"$[{err_lo:.1e},\\,{err_hi:.1e}]$"
+                 r" across all "
+                 f"{len(stages)}"
+                 r" chained stages (bounded, no compounding); inception price "
+                 r"($k=0$, kink-free) rel $L^2$ = "
+                 f"{inception['rel_l2']:.2e}."),
+        dpi=140, formula_fontsize=8)
+
+    # --- Figure 3: value-surface overlay at selected global times ---
+    # learned (solid) vs exact (dashed); colour encodes the time axis (viridis).
+    fig, ax = plt.subplots(figsize=(8, 5))
+    selected = [s for s in stages if s["k"] in (0, 3, 6, 9)]
+    cmap = plt.get_cmap("viridis")
+    n_sel = max(1, len(selected) - 1)
+    for i, s in enumerate(selected):
+        colour = cmap(i / n_sel)
+        ax.plot(S, s["v_net"], "-", color=colour, lw=1.6,
+                label=rf"learned $t={s['t_global']:.1f}$")
+        ax.plot(S, s["v_exact"], "--", color=colour, lw=1.1)
+    ax.plot(S, val["payoff"], ":", color="#888888", lw=1.2,
+            label=r"payoff $(K-S)^+$")
+    ax.set_xlabel("spot $S$"); ax.set_ylabel("value")
+    ax.set_title(f"Learned vs exact value surface ({variant_label})", fontsize=10)
+    ax.grid(True, alpha=0.3)
+    leg = ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8, frameon=True)
+    fig.tight_layout(rect=[0, 0.13, 0.80, 1])
+    finalize_figure(
+        fig, out_dir / "value_surface_overlay.png", legends=[leg], axes=[ax],
+        formula=(r"learned (solid) vs exact reference (dashed) at selected $t$; "
+                 r"colour = time. Learned surface tracks the exact value at every date."),
+        dpi=140, formula_fontsize=8)
 
 
 # ---------------------------------------------------------------------------
