@@ -46,6 +46,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _ansatz_forms_catalogue as cat  # noqa: E402
+# Torch-free split-extension catalogue: reused for the matched-diffusion split
+# variant (wide quadrature support, node count, excluded terminal sliver and the
+# strictly-positive Black--Scholes risk-free rate).  See _make_split_stage_problem.
+import _bermudan_extension_catalogue as bext_cat  # noqa: E402
 
 logger = logging.getLogger("bermudan_induction")
 
@@ -64,6 +68,12 @@ import math  # noqa: E402
 X_LO, X_HI = math.log(20.0), math.log(200.0)
 X_EVAL_LO, X_EVAL_HI = math.log(60.0), math.log(140.0)
 Y_LO, Y_HI = math.log(5.0), math.log(600.0)  # convolution support for the exact ref
+
+# Risk-free rate for the matched-diffusion split variant.  The heat variants use the
+# pure backward-heat operator (rate zero); the split is validated against the genuine
+# Black--Scholes reference, whose rate is single-sourced from the M=2 split ablation
+# catalogue so the two studies share the same generator.
+R = bext_cat.RISK_FREE_RATE
 
 
 # ---------------------------------------------------------------------------
@@ -126,14 +136,203 @@ def _build_coarse_exact(exercise_times, t_k, delta_k, *, n_xg=121, n_sg=13, n_qu
 # Stage problem construction
 # ---------------------------------------------------------------------------
 
-def _make_stage_problem(k, exercise_times, tau, cont_above_fn, coarse_exact):
+def _is_split_variant(variant: dict) -> bool:
+    """Whether ``variant`` is the matched-diffusion Gaussian-semigroup split.
+
+    The split variant carries the extra catalogue keys mirrored from the M=2
+    ablation (``extension == "gaussian_semigroup"``); the four heat forms
+    (``hard_convex_linear`` etc.) have no ``extension`` key at all.
+    """
+    return variant is not None and variant.get("extension") == "gaussian_semigroup"
+
+
+def _far_field_composite_datum(continuation_fn, K, x_lo, x_hi, *, n_tabulate=4096):
+    r"""Composite stage datum valid on the WIDE convolution grid.
+
+    The Gaussian-semigroup extension convolves the stage datum on the wide
+    quadrature support :math:`[y_{\mathrm{lo}}, y_{\mathrm{hi}}]`, which extends far
+    beyond the training window :math:`[x_{\mathrm{lo}}, x_{\mathrm{hi}}]` on which the
+    trained continuation network is valid.  Extrapolating the network onto that
+    support is forbidden; the analytic put payoff is used instead outside the
+    window.  The composite is
+
+    .. math::
+
+        V(y) =
+        \begin{cases}
+            \max\bigl((K - e^{y})^{+},\ C_{k}(y)\bigr), & y \in [x_{\mathrm{lo}},\,
+                x_{\mathrm{hi}}], \\
+            (K - e^{y})^{+}, & \text{otherwise}.
+        \end{cases}
+
+    The replacement is exact in both far-field regions: below :math:`x_{\mathrm{lo}}`
+    the put is deep in-the-money and lies in the exercise region, where the maximum
+    equals the payoff; above :math:`x_{\mathrm{hi}}` the put payoff is zero and the
+    continuation is negligible, so the maximum again equals the payoff (zero).  On the
+    training window the composite equals the exact glued maximum
+    :math:`\max((K - e^{y})^{+}, C_{k}(y))`.  For the top stage the continuation is
+    identically zero, so :math:`V(y) = (K - e^{y})^{+}` everywhere.
+
+    Args:
+        continuation_fn:  Callable ``C(y) -> Tensor`` (the frozen stage-above
+                          network at local time ``s = 0``, or ``zeros`` for the top
+                          stage), differentiable in ``y`` on the window.
+        K:                Strike.
+        x_lo, x_hi:       Training-window bounds delimiting where the continuation is
+                          used; outside them the analytic payoff is used.
+
+    Returns:
+        A callable ``V(y) -> Tensor`` (torch, differentiable in ``y`` on the window).
+    """
+    import torch
+
+    from learning_option_pricing.pde import heat_put_payoff
+
+    # The frozen continuation C_k is, for a lower stage, itself a split-extended
+    # network whose evaluation triggers the stage-above Gaussian convolution.  The
+    # extension convolves this datum on a fixed n_quad grid at every training
+    # iteration, so calling C_k directly would nest one convolution inside another
+    # (an O(n_quad^2) cost per step).  Because C_k is frozen, it is tabulated once
+    # per (device, dtype) on a dense window grid and linearly interpolated
+    # thereafter: only its VALUES enter the convolution (the extension's
+    # derivatives come from the analytic kernel, not from differentiating the
+    # datum), and the tabulation grid is finer than the quadrature grid, so this is
+    # exact to quadrature resolution while removing the nesting.
+    grid_step = (x_hi - x_lo) / (n_tabulate - 1)
+    tabulated: dict = {}
+
+    def _continuation_values(y: "torch.Tensor") -> "torch.Tensor":
+        key = (y.device, y.dtype)
+        values = tabulated.get(key)
+        if values is None:
+            grid = torch.linspace(
+                x_lo, x_hi, n_tabulate, dtype=y.dtype, device=y.device
+            )
+            with torch.no_grad():
+                values = continuation_fn(grid).reshape(-1)
+            tabulated[key] = values
+        query = y.reshape(-1)
+        position = ((query - x_lo) / grid_step).clamp(0.0, n_tabulate - 1 - 1e-6)
+        left_index = position.floor().long()
+        fraction = position - left_index.to(y.dtype)
+        interpolated = (
+            values[left_index] * (1.0 - fraction)
+            + values[left_index + 1] * fraction
+        )
+        return interpolated.reshape(y.shape)
+
+    def datum(y: "torch.Tensor") -> "torch.Tensor":
+        payoff = heat_put_payoff(y, K)
+        inside_window = (y >= x_lo) & (y <= x_hi)
+        glued_on_window = torch.maximum(payoff, _continuation_values(y))
+        return torch.where(inside_window, glued_on_window, payoff)
+
+    return datum
+
+
+def _split_free_boundary_and_jump(continuation_fn):
+    r"""Free boundary :math:`x^{\star}` and datum-derivative jump for logging.
+
+    Both are used only in the training log lines of the split ``train_variant``.  A
+    poorly trained continuation (a smoke run of a few iterations) may fail to cross
+    the payoff on the window; the crossing is then reported as ``nan`` rather than
+    aborting the run, since these quantities are diagnostic only.
+    """
+    import torch
+
+    from learning_option_pricing.pde import (
+        bermudan_exercise_boundary, heat_put_payoff)
+
+    try:
+        free_boundary = bermudan_exercise_boundary(
+            continuation_fn, K=K, x_lo=X_LO, x_hi=X_HI)
+    except ValueError:
+        return float("nan"), float("nan")
+
+    point = torch.tensor([free_boundary], dtype=torch.float64, requires_grad=True)
+    difference = heat_put_payoff(point, K) - continuation_fn(point)
+    (slope,) = torch.autograd.grad(difference, point, torch.ones_like(difference))
+    return free_boundary, abs(float(slope))
+
+
+def _make_split_stage_problem(k, tau, delta_k, cont_above_fn, variant):
+    """Build the ``train_variant``-compatible problem dict for the split stage k.
+
+    Mirrors :func:`bermudan_free_boundary_extension_ablation.build_problem` for the
+    ``split_matched`` variant, but the extension is built from the far-field composite
+    datum (:func:`_far_field_composite_datum`) so an arbitrary trained continuation can
+    be convolved on the wide quadrature grid without being extrapolated.
+    """
+    from learning_option_pricing.pde import (
+        GaussianSemigroupExtensionField,
+        black_scholes_generator_coefficients,
+    )
+
+    composite_datum = _far_field_composite_datum(cont_above_fn, K, X_LO, X_HI)
+
+    comparison_volatility = float(variant["comparison_volatility_ratio"]) * SIGMA
+    extension_field = GaussianSemigroupExtensionField(
+        composite_datum,
+        terminal_time=delta_k,
+        comparison_volatility=comparison_volatility,
+        y_lo=bext_cat.QUADRATURE_LO,
+        y_hi=bext_cat.QUADRATURE_HI,
+        n_quad=bext_cat.EXTENSION_QUADRATURE_NODES,
+        name=f"{variant['name']}_stage{k}",
+    )
+    own_quadrature_floor = extension_field.time_to_terminal_floor
+    if own_quadrature_floor > bext_cat.EXCLUDED_TERMINAL_SLIVER:
+        raise ValueError(
+            f"split stage {k}: unresolved-quadrature floor "
+            f"{own_quadrature_floor:.3e} exceeds the excluded terminal sliver "
+            f"{bext_cat.EXCLUDED_TERMINAL_SLIVER:.3e}; raise EXTENSION_QUADRATURE_NODES "
+            "or the excluded sliver in _bermudan_extension_catalogue.")
+
+    free_boundary, derivative_jump = _split_free_boundary_and_jump(cont_above_fn)
+
+    return {
+        # Keys consumed by the split ablation's build_ansatz / make_interior_sampler /
+        # train_variant (imported and reused, not duplicated).
+        "sigma": SIGMA,
+        "T": delta_k,
+        "stage_terminal_time": delta_k,
+        "x_lo": X_LO, "x_hi": X_HI,
+        "x_eval_lo": X_EVAL_LO, "x_eval_hi": X_EVAL_HI,
+        "generator_coefficients": black_scholes_generator_coefficients(
+            volatility=SIGMA, risk_free_rate=R),
+        # Exact glued maximum on the window (not the Chen--Mangasarian-smoothed max).
+        "terminal_datum": composite_datum,
+        "extension_field": extension_field,
+        "extension_fn": extension_field.field,
+        "extension_derivative_fns": extension_field.derivative_callables(),
+        "free_boundary": free_boundary,
+        "derivative_jump": derivative_jump,
+        "excluded_terminal_sliver": bext_cat.EXCLUDED_TERMINAL_SLIVER,
+        "own_quadrature_floor": own_quadrature_floor,
+        "ic_name": f"bermudan_split_stage{k}",
+        "label": f"Bermudan split stage {k}: [{tau[k]:.3f}, {tau[k+1]:.3f}]",
+    }
+
+
+def _make_stage_problem(k, exercise_times, tau, cont_above_fn, coarse_exact,
+                        variant=None):
     """Build a ``train_variant``-compatible problem dict for stage k (interval
-    ``[tau[k], tau[k+1]]`` in local time ``s in [0, delta_k]``)."""
+    ``[tau[k], tau[k+1]]`` in local time ``s in [0, delta_k]``).
+
+    When ``variant`` is the matched-diffusion split (``extension ==
+    "gaussian_semigroup"``) the problem carries the Gaussian-semigroup extension of
+    the far-field composite datum and the Black--Scholes generator; otherwise the
+    hard heat forms use the time-constant Chen--Mangasarian-smoothed datum
+    (``extension_fn=None``), exactly as before.
+    """
     import torch
 
     from learning_option_pricing.pde import chen_mangasarian_max, heat_put_payoff
 
     delta_k = float(tau[k + 1] - tau[k])
+
+    if _is_split_variant(variant):
+        return _make_split_stage_problem(k, tau, delta_k, cont_above_fn, variant)
 
     def terminal_datum(x):
         # Value at the top of the interval (global tau[k+1]): smoothed max of the
@@ -167,9 +366,15 @@ def rebuild_models(run_dir: Path, meta: dict) -> dict:
     in float64 eval mode with gradients disabled."""
     import torch
 
-    from ablation_ansatz_forms import build_ansatz
-
     variant = cat.variant_by_name(meta["variant"])
+    is_split = _is_split_variant(variant)
+    if is_split:
+        torch.set_default_dtype(torch.float64)
+        from bermudan_free_boundary_extension_ablation import (
+            build_ansatz as build_ansatz_fn)
+    else:
+        from ablation_ansatz_forms import build_ansatz as build_ansatz_fn
+
     hparams = dict(cat.DEFAULT_HPARAMS)
     hparams["num_iterations"] = meta["num_iterations"]
     exercise_times, tau, m = meta["exercise_times"], meta["tau"], meta["m"]
@@ -178,8 +383,9 @@ def rebuild_models(run_dir: Path, meta: dict) -> dict:
     cont_above_fn = lambda x: torch.zeros_like(x)  # noqa: E731  (nothing above maturity)
     dummy_exact = lambda x, t: torch.zeros_like(x)  # noqa: E731  (unused at evaluation)
     for k in range(m - 1, -1, -1):
-        problem = _make_stage_problem(k, exercise_times, tau, cont_above_fn, dummy_exact)
-        ansatz = build_ansatz(variant, problem, hparams, model_seed=0)
+        problem = _make_stage_problem(
+            k, exercise_times, tau, cont_above_fn, dummy_exact, variant=variant)
+        ansatz = build_ansatz_fn(variant, problem, hparams, model_seed=0)
         state = torch.load(run_dir / f"stage{k}" / "model.pt", map_location="cpu")
         ansatz.load_state_dict(state)
         ansatz.double().eval()
@@ -201,13 +407,24 @@ def rebuild_models(run_dir: Path, meta: dict) -> dict:
 # Validation against the exact reference
 # ---------------------------------------------------------------------------
 
-def _validate(models, exercise_times, tau, *, n_x=400, n_quad=4000):
-    """Per-global-time learned-vs-exact comparison (the error-propagation curve)."""
+def _validate(models, exercise_times, tau, *, variant=None, n_x=400, n_quad=4000):
+    """Per-global-time learned-vs-exact comparison (the error-propagation curve).
+
+    For the matched-diffusion split variant the reference is the exact Black--Scholes
+    Bermudan value :func:`bermudan_put_value_exact_black_scholes` (genuine generator,
+    strictly positive rate ``R``); for the heat variants it stays the pure backward-heat
+    chained-convolution reference :func:`bermudan_put_value_exact`.
+    """
     import numpy as np
     import torch
 
     from learning_option_pricing.pde import (
         bermudan_put_value_exact, heat_put_exact, heat_put_payoff)
+
+    is_split = _is_split_variant(variant)
+    if is_split:
+        from learning_option_pricing.pde import (
+            bermudan_put_value_exact_black_scholes, black_scholes_put_exact)
 
     x = torch.linspace(X_EVAL_LO, X_EVAL_HI, n_x, dtype=torch.float64)
     payoff = heat_put_payoff(x, K)
@@ -227,9 +444,16 @@ def _validate(models, exercise_times, tau, *, n_x=400, n_quad=4000):
             cont_dev = model(torch.stack([xq, torch.zeros_like(xq)], dim=1)).squeeze(-1)
         cont = cont_dev.to(device="cpu", dtype=torch.float64)
         v_net = cont if k == 0 else torch.maximum(payoff, cont)
-        v_exact = bermudan_put_value_exact(
-            x, torch.full_like(x, float(tau[k])), exercise_times=exercise_times,
-            K=K, sigma=SIGMA, y_lo=Y_LO, y_hi=Y_HI, n_quad=n_quad)
+        if is_split:
+            v_exact = bermudan_put_value_exact_black_scholes(
+                x, torch.full_like(x, float(tau[k])), exercise_times=exercise_times,
+                K=K, volatility=SIGMA, risk_free_rate=R,
+                y_lo=bext_cat.QUADRATURE_LO, y_hi=bext_cat.QUADRATURE_HI,
+                n_quad=bext_cat.REFERENCE_QUADRATURE_NODES)
+        else:
+            v_exact = bermudan_put_value_exact(
+                x, torch.full_like(x, float(tau[k])), exercise_times=exercise_times,
+                K=K, sigma=SIGMA, y_lo=Y_LO, y_hi=Y_HI, n_quad=n_quad)
         rel_l2 = float((v_net - v_exact).norm() / v_exact.norm())
         stages.append({
             "k": k, "t_global": float(tau[k]),
@@ -238,7 +462,11 @@ def _validate(models, exercise_times, tau, *, n_x=400, n_quad=4000):
         })
         logger.info("stage k=%d  t=%.3f  rel_l2(value vs exact)=%.3e", k, tau[k], rel_l2)
 
-    european0 = heat_put_exact(x, torch.zeros_like(x), K=K, T=MATURITY, sigma=SIGMA)
+    if is_split:
+        european0 = black_scholes_put_exact(
+            x, torch.zeros_like(x), K=K, T=MATURITY, volatility=SIGMA, risk_free_rate=R)
+    else:
+        european0 = heat_put_exact(x, torch.zeros_like(x), K=K, T=MATURITY, sigma=SIGMA)
     return {
         "x": x.numpy(), "S": torch.exp(x).numpy(), "payoff": payoff.numpy(),
         "european0": european0.numpy(), "stages": stages,
@@ -395,7 +623,8 @@ def main(argv=None) -> int:
         models = rebuild_models(run_dir, meta)
         exercise_times = [float(s) for s in meta["exercise_times"]]
         tau = [float(s) for s in meta["tau"]]
-        val = _validate(models, exercise_times, tau)
+        val = _validate(models, exercise_times, tau,
+                        variant=cat.variant_by_name(meta["variant"]))
         _save_arrays(val, run_dir)
         _plot(val, run_dir, meta.get("variant_label", meta.get("variant", "")))
         meta["rel_l2_per_stage"] = {f"k{s['k']}_t{s['t_global']:.3f}": s["rel_l2"]
@@ -417,10 +646,25 @@ def main(argv=None) -> int:
     import torch
     import yaml
 
-    from ablation_ansatz_forms import train_variant, derive_seed
+    from ablation_ansatz_forms import derive_seed
 
     device = torch.device(args.device)
     variant = cat.variant_by_name(args.variant)
+    is_split = _is_split_variant(variant)
+    # The split path reuses the (tested) build/train functions of the M=2 split
+    # ablation, which thread the analytic extension derivatives into the ansatz,
+    # assemble P Psi with the Black--Scholes generator, and exclude the unresolved
+    # terminal sliver from the interior sampler.  The heat variants keep the shared
+    # ablation_ansatz_forms.train_variant unchanged.  The split ablation is validated
+    # in float64, so the whole split run is set to float64 for a consistent frozen
+    # continuation chain and the tightest analytic-vs-autograd cross-check.
+    if is_split:
+        torch.set_default_dtype(torch.float64)
+        from bermudan_free_boundary_extension_ablation import (
+            train_variant as train_variant_fn)
+    else:
+        from ablation_ansatz_forms import train_variant as train_variant_fn
+
     hparams = dict(cat.DEFAULT_HPARAMS)
     hparams["num_iterations"] = args.num_iterations
 
@@ -448,10 +692,14 @@ def main(argv=None) -> int:
     for k in range(m - 1, -1, -1):
         logger.info("=== training stage k=%d  interval [%.3f, %.3f] ===",
                     k, tau[k], tau[k + 1])
-        coarse_exact = _build_coarse_exact(exercise_times, tau[k], float(tau[k + 1] - tau[k]))
-        problem = _make_stage_problem(k, exercise_times, tau, cont_above_fn, coarse_exact)
+        # The split train path does not use the coarse exact diagnostic; the heat path
+        # samples it once per stage for the cheap per-iteration boundary comparison.
+        coarse_exact = None if is_split else _build_coarse_exact(
+            exercise_times, tau[k], float(tau[k + 1] - tau[k]))
+        problem = _make_stage_problem(
+            k, exercise_times, tau, cont_above_fn, coarse_exact, variant=variant)
         stage_seed = derive_seed(args.seed, f"stage{k}")
-        model, history = train_variant(
+        model, history = train_variant_fn(
             variant, problem, hparams, num_iterations=args.num_iterations,
             seed=stage_seed, device=device, log_every=args.log_every)
         model.eval()
@@ -476,7 +724,7 @@ def main(argv=None) -> int:
         cont_above_fn = make_cont(model)
 
     # Validate against the exact reference + plot
-    val = _validate(models, exercise_times, tau)
+    val = _validate(models, exercise_times, tau, variant=variant)
     _save_arrays(val, out_dir)
     _plot(val, out_dir, variant["label"] if "label" in variant else args.variant)
 

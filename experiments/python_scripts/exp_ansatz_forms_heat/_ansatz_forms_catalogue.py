@@ -67,6 +67,28 @@ METHOD_VARIANTS: list[dict] = [
         "label": r"hard, $\Psi=\lambda g$, exp.\ $\lambda$",
     },
     {
+        # Matched-diffusion Gaussian-semigroup (split) extension, mirroring the
+        # split_matched row of _bermudan_extension_catalogue.  The stage datum is the
+        # exact glued maximum; the extension is the Gaussian convolution of that datum
+        # at the matched comparison volatility (nu_c = nu), so the extension forcing
+        # P Psi collapses to the bounded first-order defect part.  The analytic
+        # extension derivatives are threaded into the ansatz, so P Psi is assembled
+        # without the catastrophic cancellation of the autograd route.  Validated
+        # against the exact Black--Scholes Bermudan reference (rate R), not the heat
+        # reference.  Trained -> solid stroke per the repository plot convention.
+        "name": "split_matched",
+        "form": "hard_constant",
+        "interpolation": "linear",
+        "datum": "exact_maximum",
+        "extension": "gaussian_semigroup",
+        "comparison_volatility_ratio": 1.0,
+        "grading_exponent": None,
+        "analytic_derivatives": True,
+        "fair_floor": True,
+        "color": "#1f77b4",  # blue
+        "label": r"split, matched $\nu_c=\nu$ (Gaussian semigroup)",
+    },
+    {
         "name": "soft_pinn",
         "form": "soft_pinn",
         "interpolation": None,
