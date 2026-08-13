@@ -184,6 +184,29 @@ def test_heat_propagate_returns_g_at_terminal():
         g(x), atol=1e-10)
 
 
+def test_heat_propagate_evaluates_datum_once_for_a_full_interval():
+    # Regression guard against an O(2^m) blow-up in the chained Bermudan reference.
+    # For a full inter-exercise interval (tau above the grid-resolvable floor) the
+    # datum must be evaluated exactly once, on the quadrature grid.  The earlier
+    # torch.where(raw_tau < floor, g(x), conv) form evaluated g(x) eagerly as well;
+    # since the datum is the recursive value at the stage above, that second call
+    # re-descends the whole chain at every level, doubling the work per level and
+    # holding an O(n_quad^2) kernel live at every depth.  Counting the calls pins
+    # the single evaluation and hence the linear-in-m cost.
+    K, sigma, T = 100.0, 0.25, 1.0
+    calls = {"n": 0}
+
+    def counting_datum(y):
+        calls["n"] += 1
+        return heat_put_payoff(y, K)
+
+    x = torch.linspace(math.log(60.0), math.log(140.0), 50, dtype=torch.float64)
+    t = torch.full_like(x, 0.5)  # tau = 0.5, well above the grid floor
+    heat_propagate(counting_datum, x, t, t_terminal=T, sigma=sigma,
+                   y_lo=math.log(5.0), y_hi=math.log(600.0), n_quad=4000)
+    assert calls["n"] == 1
+
+
 def test_chen_mangasarian_max_converges():
     a = torch.tensor([1.0, 5.0, 3.0], dtype=torch.float64)
     b = torch.tensor([4.0, 2.0, 3.0], dtype=torch.float64)

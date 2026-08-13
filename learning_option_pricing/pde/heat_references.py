@@ -247,6 +247,13 @@ def chen_mangasarian_max(
     return 0.5 * (a + b + torch.sqrt((a - b) ** 2 + eps**2))
 
 
+# Query-dimension chunk size for :func:`heat_propagate`.  Bounds the peak
+# convolution kernel to (this, n_quad): at the reference resolution n_quad = 2e4
+# a chunk of 2048 gives a ~0.3 GB float64 kernel, so the chained multi-stage
+# Bermudan reference stays within a few GB of host memory at any exercise count.
+_HEAT_PROPAGATE_QUERY_CHUNK = 2048
+
+
 def heat_propagate(
     g_fn,
     x: torch.Tensor,
@@ -285,18 +292,41 @@ def heat_propagate(
     """
     y = torch.linspace(y_lo, y_hi, n_quad, dtype=x.dtype, device=x.device)
     dy = (y_hi - y_lo) / (n_quad - 1)
-    g_y = g_fn(y)  # (n_quad,)
-    raw_tau = t_terminal - t
+    g_y = g_fn(y)  # (n_quad,) -- the (possibly recursive) datum, evaluated ONCE
     # Below the grid-resolvable scale the Gaussian kernel collapses to a delta the
     # fixed quadrature cannot represent; there the heat solution is just g(x)
     # (the tau -> 0 limit u(., t_terminal) = g).  Require sigma*sqrt(tau) >= 5 dy.
     tau_floor = (5.0 * dy / sigma) ** 2
-    tau = torch.clamp(raw_tau, min=tau_floor).unsqueeze(-1)  # (N, 1)
-    xc = x.unsqueeze(-1)  # (N, 1)
-    var = sigma**2 * tau
-    kernel = torch.exp(-((xc - y.unsqueeze(0)) ** 2) / (2.0 * var)) / torch.sqrt(2.0 * math.pi * var)
-    conv = (kernel * g_y.unsqueeze(0)).sum(dim=-1) * dy
-    return torch.where(raw_tau < tau_floor, g_fn(x), conv)
+    raw_tau = (t_terminal - t) * torch.ones_like(x)  # (N,), broadcast if t is scalar
+
+    # Convolve chunk-by-chunk over the query points.  The kernel is (chunk, n_quad);
+    # at the reference resolution n_quad ~ 2e4 the intermediate induction levels
+    # evaluate on the quadrature grid itself (N = n_quad), so a single (N, n_quad)
+    # kernel would be ~3 GB in float64 and, chained over the m exercise dates,
+    # exhausts host memory.  Chunking bounds the peak to (chunk, n_quad); the matmul
+    # over the quadrature axis avoids materialising a second (chunk, n_quad) product.
+    conv = torch.empty_like(x)
+    n = x.shape[0]
+    chunk = max(1, min(n, _HEAT_PROPAGATE_QUERY_CHUNK))
+    for i in range(0, n, chunk):
+        xc = x[i:i + chunk].unsqueeze(-1)  # (chunk, 1)
+        tau = torch.clamp(raw_tau[i:i + chunk], min=tau_floor).unsqueeze(-1)  # (chunk, 1)
+        var = sigma**2 * tau
+        kernel = torch.exp(-((xc - y.unsqueeze(0)) ** 2) / (2.0 * var)) / torch.sqrt(2.0 * math.pi * var)
+        conv[i:i + chunk] = (kernel @ g_y) * dy
+
+    # tau -> 0 branch: return g(x) where tau is below the resolvable floor.  Evaluate
+    # g there ONLY when it binds and ONLY on the affected points: g_fn may be the
+    # deep recursive Bermudan chain, so an unconditional g_fn(x) (as a torch.where
+    # argument, which evaluates both branches) would re-descend the whole chain at
+    # every level --- an O(2^m) blow-up in time and in the number of live
+    # O(n_quad^2) kernels.  In the nested induction raw_tau is a full inter-exercise
+    # interval, well above tau_floor, so this branch does not bind and g_fn is not
+    # re-evaluated.
+    below = raw_tau < tau_floor
+    if bool(below.any()):
+        conv[below] = g_fn(x[below])
+    return conv
 
 
 def bermudan_put_value_exact(

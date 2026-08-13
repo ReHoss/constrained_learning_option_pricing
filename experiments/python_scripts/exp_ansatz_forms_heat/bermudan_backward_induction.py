@@ -465,6 +465,13 @@ def rebuild_models(run_dir: Path, meta: dict) -> dict:
 
     hparams = dict(cat.DEFAULT_HPARAMS)
     hparams["num_iterations"] = meta["num_iterations"]
+    # Restore the run's net architecture so the rebuilt chain matches the saved
+    # state dicts exactly; without this the ansatz would be built at the default
+    # width/depth and load_state_dict would raise a shape mismatch on any run that
+    # overrode --net-width / --net-blocks / --net-layers-per-block.
+    for arch_key in ("net_width", "net_blocks", "net_layers_per_block"):
+        if meta.get(arch_key) is not None:
+            hparams[arch_key] = meta[arch_key]
     exercise_times, tau, m = meta["exercise_times"], meta["tau"], meta["m"]
 
     models: dict = {}
@@ -843,22 +850,39 @@ def main(argv=None) -> int:
             return cont
         cont_above_fn = make_cont(model)
 
+    # Persist run metadata (config + resolved net architecture) BEFORE the
+    # validation step.  The exact multi-stage reference chains O(m) Gaussian
+    # convolutions, each allocating an O(n_quad^2) kernel, so at large m it can
+    # exhaust host memory; writing the metadata here guarantees that a validation
+    # failure never discards a completed training run.  The saved stage models
+    # plus this file are exactly what `--revalidate` needs to recompute the
+    # errors offline (e.g. on a large-memory prepost node).  The net-architecture
+    # fields are mandatory for `rebuild_models`: without them the chain would be
+    # rebuilt at the default width/depth and the state-dict load would mismatch.
+    meta = {
+        "variant": args.variant, "variant_label": variant.get("label", args.variant),
+        "m": m, "exercise_times": exercise_times, "tau": tau,
+        "num_iterations": args.num_iterations, "seed": args.seed,
+        "net_width": hparams.get("net_width"),
+        "net_blocks": hparams.get("net_blocks"),
+        "net_layers_per_block": hparams.get("net_layers_per_block"),
+        "eps": EPS, "sigma": SIGMA, "K": K, "maturity": MATURITY,
+    }
+    with open(out_dir / "metadata.yaml", "w") as f:
+        yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
+    logger.info("wrote pre-validation metadata (stage models + config saved); "
+                "validating %d stages against the exact reference next", m)
+
     # Validate against the exact reference + plot
     val = _validate(models, exercise_times, tau, variant=variant)
     _save_arrays(val, out_dir)
     _plot(val, out_dir, variant["label"] if "label" in variant else args.variant)
 
     wall = time.time() - t_start
-    meta = {
-        "variant": args.variant, "variant_label": variant.get("label", args.variant),
-        "m": m, "exercise_times": exercise_times, "tau": tau,
-        "num_iterations": args.num_iterations, "seed": args.seed,
-        "eps": EPS, "sigma": SIGMA, "K": K, "maturity": MATURITY,
-        "wall_time_s": wall,
-        "rel_l2_per_stage": {f"k{s['k']}_t{s['t_global']:.3f}": s["rel_l2"]
-                             for s in val["stages"]},
-        "inception_rel_l2": val["stages"][0]["rel_l2"],
-    }
+    meta["wall_time_s"] = wall
+    meta["rel_l2_per_stage"] = {f"k{s['k']}_t{s['t_global']:.3f}": s["rel_l2"]
+                                for s in val["stages"]}
+    meta["inception_rel_l2"] = val["stages"][0]["rel_l2"]
     with open(out_dir / "metadata.yaml", "w") as f:
         yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
 
