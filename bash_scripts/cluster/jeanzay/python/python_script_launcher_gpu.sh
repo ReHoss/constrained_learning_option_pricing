@@ -44,7 +44,10 @@ echo
 
 # --- sbatch defaults (overridable via CLI flags below) ---
 # 4 cores is the standard ratio for 1 GPU on the V100 partition (40 cores / 4 GPUs).
-S_BATCH_CPU_PER_TASK=4
+# Env-overridable: gpu_p13 bills 2000 MB RAM per CPU, so raising this is the way to
+# get more host memory for a single GPU (e.g. a memory-heavy exact-reference
+# validation). Cap ~10 (40 cores / 4 GPUs per node) to stay within one GPU's share.
+S_BATCH_CPU_PER_TASK="${S_BATCH_CPU_PER_TASK:-4}"
 # 1 GPU per job — variants are submitted independently to run in parallel.
 S_BATCH_GPUS=1
 # Time: most variants converge in <2h on V100; bump to 19:59:00 for long runs.
