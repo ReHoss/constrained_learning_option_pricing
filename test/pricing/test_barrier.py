@@ -22,6 +22,8 @@ import torch
 from learning_option_pricing.pricing.barrier import (
     barrier_composite_distance,
     make_corner_regularised_extension,
+    make_corner_regularised_extension_with_smoothed_payoff,
+    mangasarian_smoothed_put_payoff,
     reiner_rubinstein_down_and_out_put,
 )
 from learning_option_pricing.pricing.terminal import black_scholes_put, payoff_put
@@ -110,6 +112,115 @@ class TestCornerRegularisedExtension:
     def test_rejects_non_positive_epsilon(self) -> None:
         with pytest.raises(ValueError):
             make_corner_regularised_extension(K=1.0, B=0.6, epsilon=0.0)
+
+
+# ---------------------------------------------------------------------------
+# mangasarian_smoothed_put_payoff
+# ---------------------------------------------------------------------------
+
+class TestMangasarianSmoothedPutPayoff:
+    K, T = 1.0, 1.0
+    eps0 = 0.05
+
+    def test_time_graded_matches_raw_payoff_exactly_at_maturity(self) -> None:
+        """eps(T) = eps0*(T-T)/T = 0, so g_eps0(s, T) = (K-s)^+ exactly."""
+        s = torch.linspace(0.0, 2.0, 201)
+        t = torch.full_like(s, self.T)
+        smoothed = mangasarian_smoothed_put_payoff(s, t, self.K, self.T, self.eps0, grading="time_graded")
+        assert torch.allclose(smoothed, payoff_put(s, self.K), atol=1e-6)
+
+    def test_constant_grading_does_not_match_raw_payoff_at_maturity(self) -> None:
+        """eps(t) = eps0 everywhere under "constant" grading, so exactness at
+        t=T (unlike "time_graded") does not hold, in particular at the kink
+        s=K where the smoothing effect is largest."""
+        s = torch.tensor([self.K])
+        t = torch.full_like(s, self.T)
+        smoothed = mangasarian_smoothed_put_payoff(s, t, self.K, self.T, self.eps0, grading="constant")
+        assert not torch.allclose(smoothed, payoff_put(s, self.K), atol=1e-6)
+
+    def test_positive_everywhere(self) -> None:
+        """g_eps0 >= 0 always, since sqrt((K-s)^2 + eps(t)^2) >= |K-s|."""
+        s = torch.linspace(-1.0, 3.0, 401)
+        t = torch.linspace(0.0, self.T, 401)
+        ss, tt = torch.meshgrid(s, t, indexing="ij")
+        smoothed = mangasarian_smoothed_put_payoff(ss, tt, self.K, self.T, self.eps0, grading="time_graded")
+        assert torch.all(smoothed >= 0.0)
+
+    def test_c2_second_derivative_at_the_strike_matches_the_analytic_value(self) -> None:
+        """d^2/ds^2 at s=K (where the raw payoff has a first-derivative
+        discontinuity) is finite for eps(t) > 0, i.e. at an intermediate
+        time t < T, and matches the closed form 1/(2*eps(t)).
+
+        With g(x) = 0.5*(x + sqrt(x^2+eps^2)), x = K-s: d^2g/dx^2 =
+        0.5*eps^2/(x^2+eps^2)^{3/2}, which at x=0 (s=K) reduces to
+        1/(2*eps). Cross-checked against a central finite-difference second
+        difference over step sizes h in [1e-1, 1e-6] during development: the
+        raw payoff's finite-difference second derivative diverges like 1/h
+        (10 at h=1e-1 up to 1e6 at h=1e-6), while the smoothed payoff's
+        converges to this analytic value (7.81 at h=1e-1 down to 20.00006 at
+        h=1e-6, vs. the exact 20.0) before float64 round-off dominates below
+        h=1e-6 -- the intended C^2 behaviour at the strike."""
+        t_val = 0.5 * self.T
+        eps_t = self.eps0 * (self.T - t_val) / self.T
+        expected_second_derivative = 1.0 / (2.0 * eps_t)
+
+        s = torch.tensor(self.K, dtype=torch.float64, requires_grad=True)
+        t = torch.tensor(t_val, dtype=torch.float64)
+        smoothed = mangasarian_smoothed_put_payoff(s, t, self.K, self.T, self.eps0, grading="time_graded")
+        first_derivative = torch.autograd.grad(smoothed, s, create_graph=True)[0]
+        second_derivative = torch.autograd.grad(first_derivative, s)[0]
+        assert math.isfinite(float(second_derivative))
+        assert abs(float(second_derivative) - expected_second_derivative) < 1e-9
+
+    def test_rejects_unknown_grading(self) -> None:
+        s = torch.tensor([1.0])
+        t = torch.tensor([0.5])
+        with pytest.raises(ValueError):
+            mangasarian_smoothed_put_payoff(s, t, self.K, self.T, self.eps0, grading="bogus")
+
+    def test_rejects_non_positive_eps0(self) -> None:
+        s = torch.tensor([1.0])
+        t = torch.tensor([0.5])
+        with pytest.raises(ValueError):
+            mangasarian_smoothed_put_payoff(s, t, self.K, self.T, eps0=0.0)
+
+
+# ---------------------------------------------------------------------------
+# make_corner_regularised_extension_with_smoothed_payoff
+# ---------------------------------------------------------------------------
+
+class TestCornerRegularisedExtensionWithSmoothedPayoff:
+    K, B, T = 1.0, 0.6, 1.0
+    epsilon = 0.05
+    eps0 = 0.01
+
+    def test_zero_on_entire_barrier_face(self) -> None:
+        """h(B, t) = 0 for every t: the cutoff zeta(0) = 0 kills the smoothed
+        payoff regardless of its value there, exactly as for the raw-payoff
+        extension."""
+        t = torch.linspace(0.0, self.T, 101)
+        s = torch.full_like(t, self.B)
+        h_eps = make_corner_regularised_extension_with_smoothed_payoff(
+            self.K, self.B, self.epsilon, self.T, self.eps0, grading="time_graded"
+        )
+        assert torch.allclose(h_eps(s, t), torch.zeros_like(t), atol=1e-6)
+
+    def test_matches_raw_extension_at_maturity_with_time_graded_smoothing(self) -> None:
+        """With grading="time_graded", eps(T) = 0, so the smoothed extension
+        coincides exactly with the raw-payoff extension on the terminal face."""
+        s = torch.linspace(self.B, 5.0, 201)
+        t = torch.full_like(s, self.T)
+        h_raw = make_corner_regularised_extension(self.K, self.B, self.epsilon)
+        h_smoothed = make_corner_regularised_extension_with_smoothed_payoff(
+            self.K, self.B, self.epsilon, self.T, self.eps0, grading="time_graded"
+        )
+        assert torch.allclose(h_raw(s, t), h_smoothed(s, t), atol=1e-6)
+
+    def test_rejects_non_positive_eps0(self) -> None:
+        with pytest.raises(ValueError):
+            make_corner_regularised_extension_with_smoothed_payoff(
+                self.K, self.B, self.epsilon, self.T, eps0=0.0
+            )
 
 
 # ---------------------------------------------------------------------------

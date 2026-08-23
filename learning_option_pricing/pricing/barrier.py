@@ -26,6 +26,13 @@ Sections 2 and 4:
   :math:`\Sigma_T \cup \Sigma_B`.
 - :func:`make_corner_regularised_extension` -- a corner-regularised extension
   :math:`h_\varepsilon` in the sense of Definition 5, i.e. satisfying (11).
+- :func:`mangasarian_smoothed_put_payoff` -- the Chen-Mangasarian smoothed put
+  payoff, replacing the non-smooth :math:`(K-s)^+` by a :math:`C^\infty`
+  approximation with a bandwidth :math:`\varepsilon_0(t)` that may itself
+  depend on time.
+- :func:`make_corner_regularised_extension_with_smoothed_payoff` -- the same
+  construction as :func:`make_corner_regularised_extension`, with the raw
+  payoff replaced by :func:`mangasarian_smoothed_put_payoff`.
 - :func:`reiner_rubinstein_down_and_out_put` -- the exact closed-form price
   :math:`V_{DO}` (method of images / Reiner-Rubinstein 1991), the reference
   of Remark 6.
@@ -160,6 +167,156 @@ def make_corner_regularised_extension(
     def h_eps(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         weight = _smoothstep01((s - B) / epsilon)
         return weight * payoff_put(s, K)
+
+    return h_eps
+
+
+# ---------------------------------------------------------------------------
+# Chen-Mangasarian smoothed put payoff, with an optional time-dependent
+# smoothing bandwidth
+# ---------------------------------------------------------------------------
+
+def mangasarian_smoothed_put_payoff(
+    s: torch.Tensor,
+    t: torch.Tensor,
+    K: float,
+    T: float,
+    eps0: float,
+    grading: str = "time_graded",
+) -> torch.Tensor:
+    r"""Chen-Mangasarian :math:`C^\infty` smoothed put payoff.
+
+    .. math::
+
+        g_{\varepsilon_0}(s,t) = \frac{1}{2}\left(K-s+
+            \sqrt{(K-s)^2+\varepsilon_0(t)^2}\right),
+
+    a smoothed replacement for the non-smooth put payoff :math:`g(s)=(K-s)^+`
+    of :func:`~learning_option_pricing.pricing.terminal.payoff_put`, distinct
+    from and not to be confused with the corner-layer bandwidth
+    :math:`\varepsilon` of :func:`make_corner_regularised_extension` -- the
+    two epsilons act on different singularities (the payoff kink at
+    :math:`s=K` here, the corner :math:`\mathfrak c=(B,T)` there) and are
+    independent parameters throughout this module.
+
+    The bandwidth :math:`\varepsilon_0(t)` is selected by ``grading``:
+
+    - ``"constant"``: :math:`\varepsilon_0(t) = \varepsilon_0` for every
+      ``t`` -- a uniform smoothing scale, never exactly recovering the raw
+      payoff.
+    - ``"time_graded"``: :math:`\varepsilon_0(t) = \varepsilon_0 (T-t)/T` --
+      the smoothing bandwidth decreases linearly from :math:`\varepsilon_0`
+      at ``t=0`` to exactly ``0`` at ``t=T``, so :math:`g_{\varepsilon_0}(s,T)
+      = g(s)` exactly (the terminal trace is not perturbed by the smoothing).
+
+    Args:
+        s: Underlying asset price, any shape.
+        t: Time, broadcastable with ``s``.
+        K: Strike price.
+        T: Maturity.
+        eps0: Smoothing bandwidth scale, :math:`\varepsilon_0 > 0`.
+        grading: ``"constant"`` or ``"time_graded"`` (default), selecting
+            :math:`\varepsilon_0(t)` as above.
+
+    Returns:
+        :math:`g_{\varepsilon_0}(s,t)`, broadcast shape of ``s`` and ``t``.
+
+    Raises:
+        ValueError: If ``eps0 <= 0``, ``T <= 0``, or ``grading`` is neither
+            ``"constant"`` nor ``"time_graded"``.
+    """
+    if eps0 <= 0.0:
+        raise ValueError(f"eps0 must be > 0; got {eps0}.")
+    if T <= 0.0:
+        raise ValueError(f"T must be > 0; got {T}.")
+
+    if grading == "constant":
+        eps_t = torch.full_like(t, eps0)
+    elif grading == "time_graded":
+        eps_t = eps0 * (T - t) / T
+    else:
+        raise ValueError(
+            f'grading must be "constant" or "time_graded"; got {grading!r}.'
+        )
+
+    diff = K - s
+    return 0.5 * (diff + torch.sqrt(diff**2 + eps_t**2))
+
+
+def make_corner_regularised_extension_with_smoothed_payoff(
+    K: float,
+    B: float,
+    epsilon: float,
+    T: float,
+    eps0: float,
+    grading: str = "time_graded",
+) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+    r"""Corner-regularised extension using the Chen-Mangasarian smoothed payoff.
+
+    Identical construction to :func:`make_corner_regularised_extension`,
+
+    .. math::
+
+        h_{\varepsilon,\varepsilon_0}(s,t) = \zeta\!\left(\frac{s-B}{
+            \varepsilon}\right) g_{\varepsilon_0}(s,t),
+
+    except that the raw payoff :math:`g(s)=(K-s)^+` is replaced by the smoothed
+    payoff :math:`g_{\varepsilon_0}` of :func:`mangasarian_smoothed_put_payoff`.
+    The original, exact-payoff extension is left untouched by this addition;
+    use that one when the non-smoothness of :math:`g` at :math:`s=K` is not a
+    concern.
+
+    ``epsilon`` (corner-layer bandwidth, Definition 5) and ``eps0``
+    (Chen-Mangasarian smoothing bandwidth) are two independent parameters --
+    see :func:`mangasarian_smoothed_put_payoff`.
+
+    Two of the three conditions (11) of the note transfer unchanged, because
+    they act on the cutoff :math:`\zeta`, not on the payoff:
+
+    - On :math:`\Sigma_B` (``s=B``): :math:`\zeta(0)=0` identically, so
+      :math:`h_{\varepsilon,\varepsilon_0}(B,t) = 0` for every ``t``.
+    - :math:`\|h_{\varepsilon,\varepsilon_0}\|_{L^\infty(\mathcal N_\varepsilon)}
+      \le K-B` (up to :math:`O(\varepsilon_0)`; see below).
+
+    The terminal-face condition, :math:`h_{\varepsilon,\varepsilon_0}(s,T) =
+    g(s)` for :math:`s-B>\varepsilon`, holds **exactly** only with
+    ``grading="time_graded"`` (where :math:`\varepsilon_0(T)=0` makes
+    :math:`g_{\varepsilon_0}(\cdot,T)=g` exactly); with ``grading="constant"``
+    it holds only up to :math:`O(\varepsilon_0)`.
+
+    Args:
+        K: Strike price.
+        B: Knock-out barrier, :math:`0 < B < K`.
+        epsilon: Bandwidth of the corner regularisation, :math:`\varepsilon > 0`.
+        T: Maturity, passed through to :func:`mangasarian_smoothed_put_payoff`.
+        eps0: Chen-Mangasarian smoothing bandwidth, :math:`\varepsilon_0 > 0`.
+        grading: ``"constant"`` or ``"time_graded"`` (default), forwarded to
+            :func:`mangasarian_smoothed_put_payoff`.
+
+    Returns:
+        A callable ``h_eps(s, t) -> Tensor`` broadcasting over ``s`` and ``t``.
+
+    Raises:
+        ValueError: If ``epsilon <= 0``, ``B >= K``, ``eps0 <= 0``, ``T <= 0``,
+            or ``grading`` is neither ``"constant"`` nor ``"time_graded"``.
+    """
+    if epsilon <= 0.0:
+        raise ValueError(f"epsilon must be > 0; got {epsilon}.")
+    if not (0.0 < B < K):
+        raise ValueError(f"the reverse knock-out regime requires 0 < B < K; got {B=}, {K=}.")
+    if eps0 <= 0.0:
+        raise ValueError(f"eps0 must be > 0; got {eps0}.")
+    if T <= 0.0:
+        raise ValueError(f"T must be > 0; got {T}.")
+    if grading not in ("constant", "time_graded"):
+        raise ValueError(
+            f'grading must be "constant" or "time_graded"; got {grading!r}.'
+        )
+
+    def h_eps(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        weight = _smoothstep01((s - B) / epsilon)
+        smoothed_payoff = mangasarian_smoothed_put_payoff(s, t, K, T, eps0, grading=grading)
+        return weight * smoothed_payoff
 
     return h_eps
 
