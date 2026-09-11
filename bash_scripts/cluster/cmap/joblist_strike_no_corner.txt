@@ -1,8 +1,10 @@
 # One job per line. Terminal-function comparison with the ell^1 corner window
 # removed from the collocation sampler (--exclude-corner-from-collocation).
 # Three configurations x five master seeds = 15 runs, all at epsilon_coin=0.1,
-# 20000 iterations, 6 threads each (the CMAP machine is shared; 6 jobs x 6
-# threads = 36 cores). The split runs are the long pole (~0.35 s/iteration
+# 20000 iterations, 4 threads each: porte-d-orleans has 20 physical cores (40
+# hyperthreads) shared with other users, and 6 jobs x 6 threads = 36 threads ran
+# 3-4x slower per iteration than a solo job (measured 2026-09-11); 5 jobs x 4
+# threads = 20 threads keeps one thread per physical core. The split runs are the long pole (~0.35 s/iteration
 # alone on an M1) and are listed first so they start in the first wave.
 --epsilons 0.1 --iters 20000 --seed 0 --split-payoff --exclude-corner-from-collocation
 --epsilons 0.1 --iters 20000 --seed 1 --split-payoff --exclude-corner-from-collocation
