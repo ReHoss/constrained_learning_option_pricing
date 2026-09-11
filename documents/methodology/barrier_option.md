@@ -180,3 +180,160 @@ python3 experiments/python_scripts/exp_barrier_option/pilot_down_and_out_put.py 
 Every run's `metadata.yaml`, per-$\varepsilon$ `summary_eps<value>.yaml`, and
 `models/model_eps<value>.pt` are sufficient to reproduce every figure via
 `--replot` without access to a GPU or re-running training.
+
+## 9. Diagnostic — curvature profiles in $s$ at fixed $t$
+
+`experiments/python_scripts/exp_barrier_option/diagnostic_scripts/compare_payoff_modes_at_strike.py`
+compares four already-trained runs sharing a corner bandwidth $\varepsilon$ and a
+master seed, one per terminal-function mode of $g_2$. Its analyses 3, 5 and 6
+hold the underlying price fixed (at or near the strike) and sweep the calendar
+time. Analysis 8 is their transpose: the calendar time is held fixed at the
+values passed to `--gamma-profile-times`, and the whole $s$-profile of the
+second price derivative is drawn over $s\in[s_{\min},s_{\max}]$ (default
+$[B,2K]$), a range spanning both the corner layer
+$\mathcal N_\varepsilon\cap\{t=\text{const}\}=\{B\le s\le B+\varepsilon\}$ and
+the strike.
+
+The quantity drawn is the second price derivative of the **full** trial
+solution,
+
+$$
+\partial_{ss}\Phi_\theta(s,t) = \partial_{ss}\big(g_1(s,t)\,u_\theta(s,t)\big)
+    + \partial_{ss}h_\varepsilon(s,t),
+$$
+
+not of the corner-regularised extension $h_\varepsilon=g_2$ alone. Two figures
+are produced from one evaluation:
+
+| Figure | Content |
+|--------|---------|
+| `figures/gamma_profiles_vs_price.png` | one panel per fixed $t$; $\partial_{ss}\Phi_\theta(\cdot,t)$ for the four modes, against the exact $\partial_{ss}V_{DO}(\cdot,t)$ (dashed) |
+| `figures/gamma_profiles_vs_price_decomposition.png` | $3\times n_t$ grid: the same profiles split into $\partial_{ss}\Phi_\theta$, the network term $\partial_{ss}(g_1u_\theta)$, and the extension term $\partial_{ss}h_\varepsilon$ |
+
+$\partial_{ss}\Phi_\theta$ and $\partial_{ss}(g_1u_\theta)$ are obtained by two
+nested `torch.autograd.grad` passes on the trained model's own forward pass
+(`ETCNN.forward` and `ETCNN.forward_neural_manifold` respectively);
+$\partial_{ss}h_\varepsilon$ follows by subtraction, exactly, by linearity of
+$\partial_{ss}$. The reference is
+`pricing.barrier.reiner_rubinstein_down_and_out_put_gamma`, closed form, with
+no network involved. The $y$-axis is symmetric-logarithmic (linear below
+`--gamma-profile-linear-threshold`, default $10^{-1}$) because the profiles
+change sign inside the corner layer, which a logarithmic axis cannot
+represent. Both figures are redrawn from the saved
+`gamma_profiles_vs_price.npz` without re-running any autograd pass.
+
+Caveat for the `raw` mode, restated from the script: $(K-s)^+$ is affine on
+each side of $s=K$, so $\partial_{ss}g_2=0$ at every grid point away from that
+single point of Lebesgue measure zero. The `raw` curve is therefore the
+compensating curvature the network has learned, never the (distributional)
+curvature of the first-derivative discontinuity itself; the finite-difference
+step sweep of analysis 5 is the tool that exhibits the latter.
+
+## 10. Choice of the terminal-function mode for the strike singularity
+
+The payoff's first-derivative discontinuity at $s=K$ and the conflicting
+corner $(B,T)$ are two distinct singularities of this problem, regularised by
+two distinct bandwidths ($\varepsilon_0$ and $\varepsilon$ respectively).
+This section records the choice of $g_2$ made for the first of them; the
+corner is treated separately and afterwards.
+
+**Selection protocol.** Every metric is restricted to a strike band
+$|s-K|\le\delta$ with the $\ell^1$ corner window $(s-B)+(T-t)\le w$ removed,
+because the signed-error fields measured that the corner carries 47 to 63 per
+cent of the squared error of every smoothed mode and masks the strike ranking
+entirely. The corner is excluded from the metrics only: the training that
+produced these runs sampled the whole domain uniformly, so about 8.5 of 4096
+collocation points per iteration fall inside the corner layer at
+$\varepsilon=0.1$. Each mode is compared at its own best $\varepsilon_0$
+(envelope against envelope), since two modes carry a free bandwidth and three
+carry none. Measurements come from
+`diagnostic_scripts/select_terminal_function_at_strike.py`; a single master
+seed (0) was used, a deliberate limitation discussed under "Strength of the
+evidence" below.
+
+Two clamps were found to drive metrics silently and had to be neutralised
+before any ranking could be read:
+
+- The exact $\Gamma$ is unbounded as $t\to T$; the closed form returns a
+  finite value there only through its own floor $\tau\ge10^{-8}$
+  (`_TAU_EPS`), giving $\partial_{ss}V_{DO}(K,T)=1.330\times10^{4}$. That
+  single time slice dominated any $L^2$ norm over the band and drove the
+  relative $\Gamma$ error of every mode to $1.000$. Metrics are therefore
+  evaluated on $t\le T-\text{margin}$, reported for three margins.
+- The strike half-width $\delta$ is arbitrary and the ranking of the two best
+  modes reverses at $\delta=0.2$, where the band $[0.8,1.2]$ ceases to be a
+  neighbourhood of the strike. The sensitivity is reported with the result.
+
+**Result** ($\varepsilon=0.1$, 20 000 iterations, seed 0, $\delta=0.05$,
+maturity margin $0.01$, corner excluded):
+
+| Mode | $\varepsilon_0$ | Price rel. $L^2$ | $\Gamma$ rel. $L^2$ | Min price |
+|---|---:|---:|---:|---:|
+| Black-Scholes $V^e$ | -- | $4.837\times10^{-2}$ | $1.233\times10^{-1}$ | $8.9\times10^{-4}$ |
+| Chen-Mangasarian, constant | $0.02$ | $6.783\times10^{-2}$ | $4.365\times10^{-1}$ | $5.1\times10^{-3}$ |
+| Chen-Mangasarian, constant | $0.05$ | $7.721\times10^{-2}$ | $2.723\times10^{-1}$ | $1.2\times10^{-2}$ |
+| Chen-Mangasarian, time-graded | $0.05$ | $1.027\times10^{-1}$ | $7.503$ | $7.9\times10^{-4}$ |
+| Split semigroup (generic) | -- | $1.322\times10^{-1}$ | $\mathbf{7.344\times10^{-2}}$ | $5.5\times10^{-4}$ |
+| Raw payoff $(K-s)^+$ | -- | $1.287$ | $1.183$ | $\mathbf{-6.53\times10^{-2}}$ |
+
+The split-semigroup extension, measured after the table above was first
+written, **reproduces the curvature better than the Black-Scholes oracle** ---
+by a factor $1.68$, $1.68$ and $1.64$ at maturity margins $0.01$, $0.05$ and
+$0.2$ respectively --- and attains the lowest training loss of the thirteen
+runs ($7.31\times10^{-4}$), while carrying no closed-form requirement. Its
+price error is $2.73$ times that of the oracle, of which $78.3$ per cent is a
+constant offset of $-7.46\times10^{-3}$ (an additive bias contributes nothing
+to $\partial_{ss}$, which is consistent with its curvature being the best of
+the set). Under the primary metric fixed before the measurement --- the price
+--- the Black-Scholes extension remains the selection for this pilot, where a
+closed form exists; the split extension is the viable generic substitute where
+none does. See `rapports/selection_g2_strike/` for the full argument.
+
+**Decision: the Black-Scholes extension
+(`make_corner_regularised_extension_with_black_scholes_payoff`) is adopted as
+the terminal-function mode for the strike.** It is best on both metrics at
+every setting of $\delta$ up to $0.1$ and at every maturity margin, by a
+factor $1.40$ on the price and $2.2$ to $2.9$ on the $\Gamma$.
+
+Two competing modes are eliminated on grounds that do not depend on the
+measurement precision:
+
+- The raw payoff is **disqualified**, not merely last: it is the only mode
+  producing a negative price ($-6.53\times10^{-2}$), an arbitrage violation.
+  Its second price derivative also has no $h\to0$ limit --- the central second
+  difference of $(K-s)^+$ at $s=K$ is exactly $1/h$, measured as
+  $1.0\times10^{2},10^{3},10^{4},10^{5}$ for $h=10^{-2}\ldots10^{-5}$ ---
+  so the curvature of the trial solution is undefined at the strike.
+- The time-graded bandwidth is dominated by the constant one. Its
+  $\Gamma$ error grows from $8.43\times10^{-1}$ at maturity margin $0.2$ to
+  $7.503$ at margin $0.01$, i.e. it diverges as maturity is approached,
+  reproducing the analytic prediction $\partial_{ss}g_{\varepsilon_0}(K,t)=
+  1/(2\varepsilon_0(t))\to\infty$: it acquires an exact terminal trace at the
+  cost of a curvature that diverges faster than the true $\Gamma$.
+
+**Scope of the claim.** The Black-Scholes extension inserts the closed-form
+European price of the operator being solved. It is therefore an upper bound on
+what an extension can supply for this contract, not a construction available
+for a general one; the split-semigroup extension
+(`make_corner_regularised_extension_split`) is its generic counterpart and
+carries no such requirement. Within this pilot the requirement is met, and
+the choice has a further property that the corner study needs: $\mathcal
+L^{BS}h_\varepsilon^{BS}=0$ wherever the cutoff $\zeta$ is constant (verified
+in `diagnostic_scripts/check_bs_g2_residual.py`), so with this $g_2$ the only
+interior forcing the network must cancel is supported on the corner layer
+itself. The strike ceases to be a source of forcing, which is exactly the
+isolation required to study $(B,T)$ next.
+
+**Strength of the evidence.** One master seed. The inter-seed dispersion
+measured on the five available raw-mode runs at $\varepsilon=0.1$ is a
+coefficient of variation of $4.9$ per cent on this same metric (values
+$1.287$, $1.243$, $1.217$, $1.143$, $1.160$; standard deviation
+$5.94\times10^{-2}$). Against that scale, the Black-Scholes advantage over the
+best Chen-Mangasarian run ($40$ per cent) is $8.2$ standard deviations and the
+constant-over-time-graded advantage ($51$ per cent) is $10.4$; both are
+decided without replication. The choice of $\varepsilon_0$ *within* the
+Chen-Mangasarian family ($13.8$ per cent, $2.8$ standard deviations) is
+**not** decided by these runs --- it does not need to be, that family having
+been set aside. The dispersion estimate comes from the raw mode, the only
+multi-seed series available, and calibrates an order of magnitude rather than
+substituting for replication of the modes actually compared.
