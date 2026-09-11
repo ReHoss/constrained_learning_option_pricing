@@ -1,0 +1,21 @@
+# One job per line. Terminal-function comparison with the ell^1 corner window
+# removed from the collocation sampler (--exclude-corner-from-collocation).
+# Three configurations x five master seeds = 15 runs, all at epsilon_coin=0.1,
+# 20000 iterations, 6 threads each (the CMAP machine is shared; 6 jobs x 6
+# threads = 36 cores). The split runs are the long pole (~0.35 s/iteration
+# alone on an M1) and are listed first so they start in the first wave.
+--epsilons 0.1 --iters 20000 --seed 0 --split-payoff --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 1 --split-payoff --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 2 --split-payoff --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 3 --split-payoff --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 4 --split-payoff --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 0 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 1 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 2 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 3 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 4 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 0 --black-scholes-payoff --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 1 --black-scholes-payoff --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 2 --black-scholes-payoff --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 3 --black-scholes-payoff --exclude-corner-from-collocation
+--epsilons 0.1 --iters 20000 --seed 4 --black-scholes-payoff --exclude-corner-from-collocation
