@@ -51,6 +51,7 @@ import hashlib
 import logging
 import math
 import random
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -67,13 +68,22 @@ import matplotlib.pyplot as plt  # noqa: E402
 from learning_option_pricing.models.etcnn import ETCNN, InputNormalization  # noqa: E402
 from learning_option_pricing.models.resnet import ResNet  # noqa: E402
 from learning_option_pricing.pricing.barrier import (  # noqa: E402
+    SplitSemigroupCornerExtension,
     barrier_composite_distance,
     make_corner_regularised_extension,
+    make_corner_regularised_extension_split,
+    make_corner_regularised_extension_with_black_scholes_payoff,
+    BlackScholesCornerExtension,
+    make_corner_regularised_extension_with_smoothed_payoff,
     reiner_rubinstein_down_and_out_put,
 )
 from learning_option_pricing.pricing.terminal import bsm_operator  # noqa: E402
 from learning_option_pricing.utils.figure_layout import finalize_figure  # noqa: E402
-from learning_option_pricing.utils.run_context import script_data_dir  # noqa: E402
+from learning_option_pricing.utils.run_context import (  # noqa: E402
+    find_repo_root,
+    get_git_metadata,
+    script_data_dir,
+)
 
 logger = logging.getLogger("pilot_down_and_out_put")
 
@@ -87,7 +97,29 @@ DEFAULT_R = 0.03
 DEFAULT_SIGMA = 0.3
 DEFAULT_T = 1.0
 DEFAULT_S_INF = 3.0  # s_infty >> K (Remark 2's domain truncation)
+_CORNER_REJECTION_MAX_PASSES = 50  # guard; one pass suffices at w=0.1 (0.2% of the area)
 DEFAULT_EPSILONS = (0.2, 0.1, 0.05, 0.02, 0.01)
+DEFAULT_EPS0 = 0.05  # Chen-Mangasarian smoothed-payoff bandwidth (--smoothed-payoff only)
+DEFAULT_GRADING = "time_graded"
+
+# Split-semigroup payoff (--split-payoff only; make_corner_regularised_extension_split,
+# Proposition 7 / Example 7 of the note). n_quad=8000 matches
+# GaussianSemigroupExtensionField's own tested default and is chosen for training
+# viability, NOT for the ~1e-6 pointwise accuracy the unit tests target near
+# maturity (test/pricing/test_barrier.py needed n_quad up to 1_000_000 for that,
+# each single-batch query costing seconds -- see that test class's development
+# notes). GaussianSemigroupExtensionField recomputes its quadrature nodes and the
+# full batch convolution on every call with no caching, so this cost is paid
+# EVERY training iteration; --split-n-quad is deliberately exposed so it can be
+# raised if training is unstable, with the understanding that doing so multiplies
+# the per-iteration cost roughly linearly.
+DEFAULT_SPLIT_N_QUAD = 8000
+# Quadrature domain padding, in units of the diffusion length
+# comparison_volatility*sqrt(T), beyond the evaluation window (B, s_infty) in
+# log-price -- calibrated in test/pricing/test_barrier.py (>=6 diffusion lengths
+# leaves the domain-truncation error many orders of magnitude below the
+# resolution error, which is what actually limits accuracy near maturity).
+DEFAULT_SPLIT_PADDING_DIFFUSION_LENGTHS = 6.0
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -148,14 +180,55 @@ def _restore_rng_state(state: dict) -> None:
 
 def sample_collocation(
     n_f: int, B: float, s_inf: float, T: float, generator: torch.Generator,
+    corner_exclusion_window: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Interior collocation points, uniform on (B, s_infty) x (0, T)."""
-    s_f = (
-        torch.rand(n_f, generator=generator) * (s_inf - B) + B
-    ).to(DEVICE).requires_grad_(True)
-    t_f = (
-        torch.rand(n_f, generator=generator) * T
-    ).to(DEVICE).requires_grad_(True)
+    r"""Interior collocation points, uniform on (B, s_infty) x (0, T).
+
+    With ``corner_exclusion_window = w``, points falling in the ell^1 corner
+    window :math:`(s-B)+(T-t)\le w` are rejected and redrawn, so the sampler
+    is uniform on the domain **minus** that window -- the same mask the
+    evaluation metrics remove.  The interior residual is then never enforced
+    at the conflicting corner :math:`(B,T)`, which isolates the treatment of
+    the payoff singularity at :math:`s=K` from the treatment of the corner.
+
+    Rejection is by redraw of the rejected points only, so the returned tensors
+    always hold exactly ``n_f`` points and the draw stays a deterministic
+    function of ``generator``.  At :math:`w=0.1` the window covers
+    :math:`w^2/2 = 0.005` of a domain of area :math:`(s_\infty-B)T`, i.e.
+    about 0.2 per cent, so the loop converges immediately in practice.
+
+    Args:
+        n_f: Number of collocation points to return.
+        B: Knock-out barrier (lower end of the price range).
+        s_inf: Domain truncation (upper end of the price range).
+        T: Maturity.
+        generator: RNG handle, propagated explicitly.
+        corner_exclusion_window: Half-width ``w`` of the ell^1 corner window to
+            exclude, or ``None`` to sample the whole domain (default).
+
+    Returns:
+        ``(s_f, t_f)``, each of shape ``(n_f,)``, on ``DEVICE``, requiring grad.
+    """
+    s_raw = torch.rand(n_f, generator=generator) * (s_inf - B) + B
+    t_raw = torch.rand(n_f, generator=generator) * T
+
+    if corner_exclusion_window is not None:
+        for _ in range(_CORNER_REJECTION_MAX_PASSES):
+            inside_corner = (s_raw - B) + (T - t_raw) <= corner_exclusion_window
+            n_rejected = int(inside_corner.sum())
+            if n_rejected == 0:
+                break
+            s_raw[inside_corner] = torch.rand(n_rejected, generator=generator) * (s_inf - B) + B
+            t_raw[inside_corner] = torch.rand(n_rejected, generator=generator) * T
+        else:
+            raise RuntimeError(
+                f"corner rejection sampling did not converge in "
+                f"{_CORNER_REJECTION_MAX_PASSES} passes with window "
+                f"{corner_exclusion_window}; the window is too large for the domain."
+            )
+
+    s_f = s_raw.to(DEVICE).requires_grad_(True)
+    t_f = t_raw.to(DEVICE).requires_grad_(True)
     return s_f, t_f
 
 
@@ -164,10 +237,51 @@ def sample_collocation(
 # construction away from the corner; see the module docstring).
 # ---------------------------------------------------------------------------
 
-def compute_loss(model: torch.nn.Module, s_f: torch.Tensor, t_f: torch.Tensor, r: float, sigma: float) -> torch.Tensor:
+def compute_loss(model: ETCNN, s_f: torch.Tensor, t_f: torch.Tensor, r: float, sigma: float) -> torch.Tensor:
+    r"""Interior PDE residual loss, mean(F(U_theta)^2).
+
+    Two routes, selected by whether ``model.g2`` exposes
+    ``black_scholes_residual`` (true only for the split-semigroup mode,
+    :func:`~learning_option_pricing.pricing.barrier.make_corner_regularised_extension_split`):
+
+    - Ordinary route (raw/mangasarian/black-scholes-payoff g2, all plain
+      closed forms with no quadrature): autograd differentiates the FULL
+      trial solution U_theta = g1*u_theta + g2 in one graph, exactly as
+      before this function grew a second branch.
+    - Split-semigroup route: g2 is a fixed-grid quadratured convolution
+      (GaussianSemigroupExtensionField), and autograd through it near the
+      terminal slice or the corner would divide that quadrature's own
+      discretisation error of the VALUE by h^2 for a second-derivative-scale
+      perturbation, amplifying it by orders of magnitude (see
+      make_corner_regularised_extension_split's docstring, and
+      test/pricing/test_barrier.py's development notes for measurements of
+      that error). F(U_theta) is instead assembled from the two terms of
+      F(g1*u_theta + g2) = F(g1*u_theta) + F(g2) (F is linear): the first by
+      autograd on ETCNN.forward_neural_manifold (g1*u_theta alone, smooth,
+      no quadrature, safe for autograd), the second from g2's own analytic
+      black_scholes_residual -- never autograd, never a finite difference.
+      g2 does not depend on theta, so its contribution is computed under
+      torch.no_grad() and enters the loss as a constant additive shift; the
+      gradient the optimiser sees is exactly F(g1*u_theta)'s.
+    """
     x_f = torch.stack([s_f, t_f], dim=1)
-    u_f = model(x_f).squeeze()
-    F_u = bsm_operator(u_f, s_f, t_f, r, 0.0, sigma)
+    g2 = model.g2
+    # Capability test, not an isinstance check.  The docstring above has always
+    # described the route as selected by whether g2 exposes an analytic
+    # residual; the code tested `isinstance(g2, SplitSemigroupCornerExtension)`
+    # instead, so BlackScholesCornerExtension -- which does expose one -- fell
+    # silently into the ordinary route and the --analytic-residual flag was
+    # inert (verified: identical loss to 5 significant digits over 300
+    # iterations with and without it).
+    if hasattr(g2, "black_scholes_residual"):
+        neural_manifold = model.forward_neural_manifold(x_f).squeeze()
+        F_neural_manifold = bsm_operator(neural_manifold, s_f, t_f, r, 0.0, sigma)
+        with torch.no_grad():
+            F_g2 = g2.black_scholes_residual(s_f.detach(), t_f.detach(), r, sigma)
+        F_u = F_neural_manifold + F_g2
+    else:
+        u_f = model(x_f).squeeze()
+        F_u = bsm_operator(u_f, s_f, t_f, r, 0.0, sigma)
     return torch.mean(F_u**2)
 
 
@@ -217,6 +331,7 @@ def _save_checkpoint(
     best_iter: int,
     best_model_state: dict,
     label: str,
+    sampler_generator: torch.Generator,
 ) -> None:
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
@@ -229,6 +344,13 @@ def _save_checkpoint(
         "scheduler_state": scheduler.state_dict(),
         "history": history,
         "rng_state": _capture_rng_state(),
+        # The collocation sampler draws from an EXPLICIT generator, which the
+        # global torch RNG state does not cover.  Without it a resumed run
+        # re-seeds that generator from scratch and replays, from iteration 1,
+        # the very batches it has already trained on -- a systematic
+        # repetition, not merely a loss of bit-reproducibility.  Cluster jobs
+        # are requeued on time limits, so this path is taken in practice.
+        "sampler_generator_state": sampler_generator.get_state(),
         "best_loss": best_loss,
         "best_iter": best_iter,
         "best_model_state": best_model_state,
@@ -243,12 +365,22 @@ def _load_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LambdaLR,
+    sampler_generator: torch.Generator,
 ) -> tuple[int, int, dict, float, int, dict]:
     payload = torch.load(checkpoint_path, map_location=DEVICE, weights_only=False)
     model.load_state_dict(payload["model_state"])
     optimizer.load_state_dict(payload["optimizer_state"])
     scheduler.load_state_dict(payload["scheduler_state"])
     _restore_rng_state(payload["rng_state"])
+    sampler_state = payload.get("sampler_generator_state")
+    if sampler_state is None:
+        logger.warning(
+            "checkpoint predates the sampler-generator state being stored; the collocation "
+            "sampler will restart its sequence from iteration 1 and replay batches already "
+            "trained on. Restart this run from scratch rather than resuming it."
+        )
+    else:
+        sampler_generator.set_state(sampler_state)
     return (
         int(payload["iter_done"]),
         int(payload["total_iters"]),
@@ -263,14 +395,93 @@ def _load_checkpoint(
 # Model construction
 # ---------------------------------------------------------------------------
 
-def build_model(K: float, B: float, T: float, epsilon: float, model_seed: int) -> ETCNN:
+def default_split_quadrature_bounds(
+    B: float, s_inf: float, T: float, comparison_volatility: float,
+    padding_diffusion_lengths: float = DEFAULT_SPLIT_PADDING_DIFFUSION_LENGTHS,
+) -> tuple[float, float]:
+    """Default (y_lo, y_hi) log-price quadrature support for --split-payoff.
+
+    Pads the evaluation window (B, s_infty), converted to log-price, by
+    ``padding_diffusion_lengths`` diffusion lengths
+    ``comparison_volatility*sqrt(T)`` on each side -- see
+    GaussianSemigroupExtensionField's own docstring for why the datum must be
+    supplied this far beyond the query window (never by zero-padding), and
+    DEFAULT_SPLIT_PADDING_DIFFUSION_LENGTHS's comment for the calibration
+    reference.
+    """
+    diffusion_length = comparison_volatility * math.sqrt(T)
+    padding = padding_diffusion_lengths * diffusion_length
+    return math.log(B) - padding, math.log(s_inf) + padding
+
+
+def build_model(
+    K: float, B: float, T: float, epsilon: float, model_seed: int,
+    smoothed_payoff: bool = False, eps0: float = DEFAULT_EPS0, grading: str = DEFAULT_GRADING,
+    black_scholes_payoff: bool = False, r: float = DEFAULT_R, sigma: float = DEFAULT_SIGMA,
+    analytic_residual: bool = False,
+    split_payoff: bool = False, s_inf: float = DEFAULT_S_INF,
+    comparison_volatility: float | None = None,
+    split_y_lo: float | None = None, split_y_hi: float | None = None,
+    split_n_quad: int = DEFAULT_SPLIT_N_QUAD,
+) -> ETCNN:
+    """Build the ETCNN ansatz U_theta = g1 * u_theta + g2.
+
+    ``g2`` is one of four mutually exclusive terminal-function modes,
+    exactly one of which is active at a time (see the module docstring):
+
+    - raw-payoff (default): :func:`make_corner_regularised_extension`.
+    - Chen-Mangasarian smoothed payoff, when ``smoothed_payoff`` is set:
+      :func:`make_corner_regularised_extension_with_smoothed_payoff`.
+      ``epsilon`` (corner-layer bandwidth) and ``eps0`` (Chen-Mangasarian
+      smoothing bandwidth) are independent parameters; ``eps0``/``grading``
+      are unused unless ``smoothed_payoff`` is ``True``.
+    - exact Black-Scholes European put price, when ``black_scholes_payoff``
+      is set: :func:`make_corner_regularised_extension_with_black_scholes_payoff`.
+      ``r``/``sigma`` are unused unless ``black_scholes_payoff`` is ``True``.
+    - split-semigroup profile (Proposition 7 / Example 7 of the note), when
+      ``split_payoff`` is set: :func:`make_corner_regularised_extension_split`.
+      ``comparison_volatility`` defaults to the contract's own ``sigma``
+      (the matched split, whose remainder forcing is bounded uniformly up to
+      the terminal slice); ``split_y_lo``/``split_y_hi`` default to
+      :func:`default_split_quadrature_bounds`; all are unused unless
+      ``split_payoff`` is ``True``. The returned ``g2`` exposes
+      ``black_scholes_residual(s, t, r, sigma)`` -- ``compute_loss`` uses
+      this to route the interior PDE residual through analytic derivatives
+      instead of autograd for this mode (see that function's docstring for
+      why: autograd through g2 here would differentiate the fixed-grid
+      quadrature convolution of ``GaussianSemigroupExtensionField``, which
+      amplifies its own discretisation error rather than being merely slow).
+    """
     torch.manual_seed(model_seed)
     resnet = ResNet()
 
     def g1(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         return barrier_composite_distance(s, t, B, T)
 
-    g2 = make_corner_regularised_extension(K, B, epsilon)
+    if smoothed_payoff:
+        g2 = make_corner_regularised_extension_with_smoothed_payoff(K, B, epsilon, T, eps0, grading=grading)
+    elif black_scholes_payoff:
+        # Same field either way; the class additionally exposes an analytic
+        # black_scholes_residual, whose presence makes compute_loss assemble
+        # the interior residual as F(g1*u_theta) + F(g2) instead of
+        # differentiating the full trial solution as one autograd graph.
+        # Control arm for the terminal-function comparison: the split mode was
+        # otherwise the only one trained through that route.
+        g2 = (BlackScholesCornerExtension(K, B, epsilon, r, sigma, T) if analytic_residual
+              else make_corner_regularised_extension_with_black_scholes_payoff(K, B, epsilon, r, sigma, T))
+    elif split_payoff:
+        resolved_comparison_volatility = comparison_volatility if comparison_volatility is not None else sigma
+        if split_y_lo is None or split_y_hi is None:
+            default_y_lo, default_y_hi = default_split_quadrature_bounds(
+                B, s_inf, T, resolved_comparison_volatility,
+            )
+            split_y_lo = split_y_lo if split_y_lo is not None else default_y_lo
+            split_y_hi = split_y_hi if split_y_hi is not None else default_y_hi
+        g2 = make_corner_regularised_extension_split(
+            K, B, epsilon, T, resolved_comparison_volatility, split_y_lo, split_y_hi, n_quad=split_n_quad,
+        )
+    else:
+        g2 = make_corner_regularised_extension(K, B, epsilon)
     normalizer = InputNormalization(K)
     return ETCNN(resnet=resnet, g1=g1, g2=g2, normalizer=normalizer)
 
@@ -288,13 +499,31 @@ def train_one_epsilon(
     checkpoint_path: Path,
     checkpoint_every: int,
     resume: bool,
+    smoothed_payoff: bool = False,
+    eps0: float = DEFAULT_EPS0,
+    grading: str = DEFAULT_GRADING,
+    black_scholes_payoff: bool = False,
+    analytic_residual: bool = False,
+    corner_exclusion_window: float | None = None,
+    split_payoff: bool = False,
+    comparison_volatility: float | None = None,
+    split_y_lo: float | None = None,
+    split_y_hi: float | None = None,
+    split_n_quad: int = DEFAULT_SPLIT_N_QUAD,
 ) -> tuple[ETCNN, dict, float, int]:
     """Train one ETCNN for one epsilon. Returns (best_model, history, best_loss, best_iter)."""
     label = f"eps={epsilon:g}"
     model_seed = derive_seed(seed, "model_init")
     sampler_seed = derive_seed(seed, "sampler")
 
-    model = build_model(K, B, T, epsilon, model_seed).to(DEVICE)
+    model = build_model(
+        K, B, T, epsilon, model_seed,
+        smoothed_payoff=smoothed_payoff, eps0=eps0, grading=grading,
+        black_scholes_payoff=black_scholes_payoff, r=r, sigma=sigma,
+        analytic_residual=analytic_residual,
+        split_payoff=split_payoff, s_inf=s_inf, comparison_volatility=comparison_volatility,
+        split_y_lo=split_y_lo, split_y_hi=split_y_hi, split_n_quad=split_n_quad,
+    ).to(DEVICE)
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(f"[{label}] model parameters: {n_params}")
 
@@ -311,7 +540,7 @@ def train_one_epsilon(
 
     if resume and checkpoint_path.exists():
         (iter_done, total_iters_saved, history, best_loss, best_iter, best_model_state) = _load_checkpoint(
-            checkpoint_path, model, optimizer, scheduler,
+            checkpoint_path, model, optimizer, scheduler, generator,
         )
         if total_iters_saved != total_iters:
             logger.warning(
@@ -325,7 +554,7 @@ def train_one_epsilon(
     t0 = time.time()
     for it in range(start_iter, total_iters + 1):
         optimizer.zero_grad()
-        s_f, t_f = sample_collocation(n_f, B, s_inf, T, generator)
+        s_f, t_f = sample_collocation(n_f, B, s_inf, T, generator, corner_exclusion_window)
         loss = compute_loss(model, s_f, t_f, r, sigma)
         loss.backward()
 
@@ -359,7 +588,7 @@ def train_one_epsilon(
         if checkpoint_every > 0 and it % checkpoint_every == 0 and it < total_iters:
             _save_checkpoint(
                 checkpoint_path, it, total_iters, model, optimizer, scheduler,
-                history, best_loss, best_iter, best_model_state, label,
+                history, best_loss, best_iter, best_model_state, label, generator,
             )
 
     elapsed_total = time.time() - t0
@@ -372,7 +601,7 @@ def train_one_epsilon(
     if total_iters > 0:
         _save_checkpoint(
             checkpoint_path, total_iters, total_iters, model, optimizer, scheduler,
-            history, best_loss, best_iter, best_model_state, label,
+            history, best_loss, best_iter, best_model_state, label, generator,
         )
 
     # Restore the best-loss state before returning (CLAUDE.md: the last iter
@@ -429,7 +658,7 @@ def evaluate_against_closed_form(
 # Figures
 # ---------------------------------------------------------------------------
 
-FORMULA_TEXT = (
+FORMULA_TEXT_RAW_PAYOFF = (
     r"$\mathcal{L}^{BS}V=\partial_tV+\frac{1}{2}\sigma^2s^2\partial_{ss}V+rs\partial_sV-rV$"
     "\n"
     r"$g_1(s,t)=(T-t)(s-B)$,  $g_2(s,t)=h_\varepsilon(s,t)=\zeta((s-B)/\varepsilon)\,(K-s)^+$"
@@ -438,7 +667,56 @@ FORMULA_TEXT = (
 )
 
 
-def plot_error_vs_epsilon(summaries: list[dict], out_path: Path) -> None:
+def formula_text_smoothed_payoff(eps0: float, grading: str) -> str:
+    """Formula textbox for the Chen-Mangasarian smoothed-payoff variant of g2.
+
+    Labels the figure with the actually-used payoff (raw vs. smoothed) so a
+    comparison across runs is not visually mistaken for a like-for-like one
+    (CLAUDE.md: "Label figures when you think comparison are unfair.").
+    """
+    eps_of_t = r"\varepsilon_0(T-t)/T" if grading == "time_graded" else r"\varepsilon_0"
+    return (
+        r"$\mathcal{L}^{BS}V=\partial_tV+\frac{1}{2}\sigma^2s^2\partial_{ss}V+rs\partial_sV-rV$"
+        "\n"
+        r"$g_1(s,t)=(T-t)(s-B)$,  $g_2(s,t)=\zeta((s-B)/\varepsilon)\,g_{\varepsilon_0}(s,t)$"
+        "\n"
+        r"$g_{\varepsilon_0}(s,t)=\frac{1}{2}\left(K-s+\sqrt{(K-s)^2+\varepsilon(t)^2}\right)$, "
+        rf"$\varepsilon(t)={eps_of_t}$, $\varepsilon_0={eps0:g}$ (grading={grading})"
+        "\n"
+        r"reference: $V_{DO}$ = Reiner-Rubinstein closed form (method of images, $\mathcal{L}^{BS}$-exact)"
+    )
+
+
+FORMULA_TEXT_BLACK_SCHOLES_PAYOFF = (
+    r"$\mathcal{L}^{BS}V=\partial_tV+\frac{1}{2}\sigma^2s^2\partial_{ss}V+rs\partial_sV-rV$"
+    "\n"
+    r"$g_1(s,t)=(T-t)(s-B)$,  $g_2(s,t)=\zeta((s-B)/\varepsilon)\,V^e(s,t)$"
+    "\n"
+    r"$V^e(s,t)=K e^{-r(T-t)}N(\tilde d_2)-sN(\tilde d_1)$ (exact Black-Scholes European put)"
+    "\n"
+    r"reference: $V_{DO}$ = Reiner-Rubinstein closed form (method of images, $\mathcal{L}^{BS}$-exact)"
+)
+
+
+def formula_text_split_payoff(comparison_volatility: float, n_quad: int) -> str:
+    """Formula textbox for the split-semigroup variant of g2 (Proposition 7 /
+    Example 7): labels the comparison diffusivity and quadrature resolution
+    actually used, since both change the achieved accuracy (CLAUDE.md:
+    "Label figures when you think comparison are unfair.")."""
+    return (
+        r"$\mathcal{L}^{BS}V=\partial_tV+\frac{1}{2}\sigma^2s^2\partial_{ss}V+rs\partial_sV-rV$"
+        "\n"
+        r"$g_1(s,t)=(T-t)(s-B)$,  $g_2(s,t)=\zeta((s-B)/\varepsilon)\,\pi(s,t)$,  "
+        r"$\pi(\cdot,t)=e^{(T-t)\nu_c\partial_{xx}}(K-e^{(\cdot)})^+$ at $x=\ln s$"
+        "\n"
+        rf"$\nu_c=\sigma_c^2/2$, $\sigma_c={comparison_volatility:g}$ (comparison volatility), "
+        rf"$n_{{\rm quad}}={n_quad:g}$ (fixed-grid quadrature, no caching across calls)"
+        "\n"
+        r"reference: $V_{DO}$ = Reiner-Rubinstein closed form (method of images, $\mathcal{L}^{BS}$-exact)"
+    )
+
+
+def plot_error_vs_epsilon(summaries: list[dict], out_path: Path, formula_text: str = FORMULA_TEXT_RAW_PAYOFF) -> None:
     epsilons = [s["epsilon"] for s in summaries]
     rel_l2_global = [s["rel_l2_global"] for s in summaries]
     rel_l2_corner = [s["rel_l2_corner"] for s in summaries]
@@ -451,10 +729,13 @@ def plot_error_vs_epsilon(summaries: list[dict], out_path: Path) -> None:
     ax.set_title("Down-and-out put: error vs. $\\varepsilon$", fontsize=11)
     legend = ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8)
     fig.subplots_adjust(right=0.62, bottom=0.30)
-    finalize_figure(fig, out_path, legends=[legend], formula=FORMULA_TEXT, axes=[ax])
+    finalize_figure(fig, out_path, legends=[legend], formula=formula_text, axes=[ax])
 
 
-def plot_price_surface(eval_result: dict, epsilon: float, K: float, B: float, out_path: Path) -> None:
+def plot_price_surface(
+    eval_result: dict, epsilon: float, K: float, B: float, out_path: Path,
+    formula_text: str = FORMULA_TEXT_RAW_PAYOFF,
+) -> None:
     s_grid = eval_result["s_grid"].numpy()
     t_grid = eval_result["t_grid"].numpy()
     learned = eval_result["learned"].numpy()
@@ -480,9 +761,12 @@ def plot_price_surface(eval_result: dict, epsilon: float, K: float, B: float, ou
         fig.colorbar(mesh, ax=ax, label=label)
     axes[0].set_ylabel("Underlying price $s$")
     fig.subplots_adjust(bottom=0.34)
-    finalize_figure(fig, out_path, formula=FORMULA_TEXT, axes=list(axes))
+    finalize_figure(fig, out_path, formula=formula_text, axes=list(axes))
 
-def plot_log_slice(eval_result: dict, epsilon: float, B: float, out_path: Path) -> None:
+def plot_log_slice(
+    eval_result: dict, epsilon: float, B: float, out_path: Path,
+    formula_text: str = FORMULA_TEXT_RAW_PAYOFF,
+) -> None:
     """Coupe V(s) à t fixé, échelle log : révèle les écarts invisibles en linéaire."""
     s_grid = eval_result["s_grid"].numpy()
     t_grid = eval_result["t_grid"].numpy()
@@ -502,7 +786,7 @@ def plot_log_slice(eval_result: dict, epsilon: float, B: float, out_path: Path) 
     axes[0].set_ylabel("$V(s,t)$  (log scale)")
     axes[0].legend(loc="lower left")
     fig.subplots_adjust(bottom=0.34)
-    finalize_figure(fig, out_path, formula=FORMULA_TEXT, axes=list(axes))
+    finalize_figure(fig, out_path, formula=formula_text, axes=list(axes))
 
 # ---------------------------------------------------------------------------
 # Summary I/O (per-epsilon, so --replot never needs to retrain)
@@ -549,6 +833,71 @@ def main() -> None:
                          help="ell^1 corner-window half-width used to report the localised "
                               "error metric (default: max of --epsilons, so the window covers "
                               "the coarsest regularisation tested).")
+    parser.add_argument("--smoothed-payoff", action="store_true",
+                         help="Use the Chen-Mangasarian smoothed put payoff "
+                              "(make_corner_regularised_extension_with_smoothed_payoff) instead "
+                              "of the raw (K-s)^+ payoff in g2. Default: raw payoff (unchanged).")
+    parser.add_argument("--eps0", type=float, default=DEFAULT_EPS0,
+                         help="Chen-Mangasarian smoothing bandwidth epsilon_0 (only used with "
+                              "--smoothed-payoff; independent of --epsilons, the corner-layer "
+                              "bandwidth).")
+    parser.add_argument("--grading", type=str, default=DEFAULT_GRADING,
+                         choices=["constant", "time_graded"],
+                         help="Time-dependence of the smoothing bandwidth epsilon_0(t) (only used "
+                              "with --smoothed-payoff): \"constant\" = epsilon_0 everywhere, "
+                              "\"time_graded\" = epsilon_0*(T-t)/T (0 exactly at t=T).")
+    parser.add_argument("--black-scholes-payoff", action="store_true",
+                         help="Use the exact Black-Scholes European put price "
+                              "(make_corner_regularised_extension_with_black_scholes_payoff) "
+                              "instead of the raw (K-s)^+ payoff in g2. Mutually exclusive with "
+                              "--smoothed-payoff. Default: raw payoff (unchanged).")
+    parser.add_argument("--exclude-corner-from-collocation", action="store_true",
+                         help="Reject interior collocation points falling in the ell^1 corner window "
+                              "(s-B)+(T-t) <= --corner-window, so the PDE residual is never enforced at the "
+                              "conflicting corner (B,T). The evaluation metrics already remove that window; "
+                              "this makes the training domain agree with them, isolating the treatment of the "
+                              "payoff singularity at s=K from that of the corner.")
+    parser.add_argument("--analytic-residual", action="store_true",
+                         help="With --black-scholes-payoff only: build g2 as BlackScholesCornerExtension, "
+                              "which exposes an analytic black_scholes_residual. compute_loss then assembles "
+                              "the interior residual as F(g1*u_theta) + F(g2) (the two-term route used by "
+                              "--split-payoff) instead of differentiating the full trial solution as one "
+                              "autograd graph. The FIELD is unchanged (bit-identical); only the loss "
+                              "assembly differs. Control arm removing the training-route confound from the "
+                              "terminal-function comparison: F(g2) is exactly 0 where zeta is constant, "
+                              "where the ordinary route injects autograd noise of order 1e-7 instead.")
+    parser.add_argument("--split-payoff", action="store_true",
+                         help="Use the split-semigroup terminal profile (Proposition 7 / Example 7 "
+                              "of the note; make_corner_regularised_extension_split) instead of the "
+                              "raw (K-s)^+ payoff in g2. Mutually exclusive with --smoothed-payoff "
+                              "and --black-scholes-payoff. The interior PDE residual for this mode "
+                              "is assembled from analytic derivatives (g2.black_scholes_residual), "
+                              "not autograd through g2 -- see compute_loss's docstring. WARNING: g2 "
+                              "here is a fixed-grid quadrature with no caching across calls (see "
+                              "GaussianSemigroupExtensionField's module docstring); every training "
+                              "iteration re-pays its full O(n_f x split_n_quad) cost. Default: raw "
+                              "payoff (unchanged).")
+    parser.add_argument("--comparison-volatility", type=float, default=None,
+                         help="sigma_c of the split-semigroup profile's comparison heat semigroup "
+                              "(only used with --split-payoff). Default: the contract's own --sigma "
+                              "(the matched split of Example 7, whose remainder forcing is bounded "
+                              "uniformly up to the terminal slice; a mismatched value reinstates an "
+                              "unbounded second-order channel -- see "
+                              "GaussianSemigroupExtensionField's tests).")
+    parser.add_argument("--split-y-lo", type=float, default=None,
+                         help="Lower end of the split-semigroup profile's log-price quadrature "
+                              "support (only used with --split-payoff). Default: "
+                              "default_split_quadrature_bounds(B, s_inf, T, comparison_volatility).")
+    parser.add_argument("--split-y-hi", type=float, default=None,
+                         help="Upper end of the split-semigroup profile's log-price quadrature "
+                              "support (only used with --split-payoff). Default: see --split-y-lo.")
+    parser.add_argument("--split-n-quad", type=int, default=DEFAULT_SPLIT_N_QUAD,
+                         help="Number of quadrature nodes for the split-semigroup profile (only "
+                              "used with --split-payoff). Controls an accuracy/cost tradeoff "
+                              "measured in test/pricing/test_barrier.py: the default trades "
+                              "training-time viability against the ~1e-6 pointwise accuracy that "
+                              "unit test targeted near maturity (which needed up to 1_000_000 "
+                              "there). Raise it if training with --split-payoff is unstable.")
     parser.add_argument("--iters", type=int, default=20_000, help="Training iterations per epsilon.")
     parser.add_argument("--n-f", type=int, default=4096, help="Interior PDE collocation points per step.")
     parser.add_argument("--log-every", type=int, default=None, help="Log interval (default: adaptive).")
@@ -587,6 +936,29 @@ def main() -> None:
         K, B, r, sigma, T = (meta["contract"][k] for k in ("K", "B", "r", "sigma", "T"))
         s_inf = meta["domain"]["s_inf"]
         corner_window = meta["hyperparameters"]["corner_window"]
+        analytic_residual = meta["hyperparameters"].get("analytic_residual", False)
+        # .get(..., default) keeps --replot working on runs recorded before
+        # --smoothed-payoff/--black-scholes-payoff/--split-payoff existed
+        # (absent key -> the raw-payoff default).
+        smoothed_payoff = meta["hyperparameters"].get("smoothed_payoff", False)
+        eps0 = meta["hyperparameters"].get("eps0", DEFAULT_EPS0)
+        grading = meta["hyperparameters"].get("grading", DEFAULT_GRADING)
+        black_scholes_payoff = meta["hyperparameters"].get("black_scholes_payoff", False)
+        split_payoff = meta["hyperparameters"].get("split_payoff", False)
+        comparison_volatility = meta["hyperparameters"].get("comparison_volatility", None)
+        split_y_lo = meta["hyperparameters"].get("split_y_lo", None)
+        split_y_hi = meta["hyperparameters"].get("split_y_hi", None)
+        split_n_quad = meta["hyperparameters"].get("split_n_quad", DEFAULT_SPLIT_N_QUAD)
+        if smoothed_payoff:
+            formula_text = formula_text_smoothed_payoff(eps0, grading)
+        elif black_scholes_payoff:
+            formula_text = FORMULA_TEXT_BLACK_SCHOLES_PAYOFF
+        elif split_payoff:
+            formula_text = formula_text_split_payoff(
+                comparison_volatility if comparison_volatility is not None else sigma, split_n_quad,
+            )
+        else:
+            formula_text = FORMULA_TEXT_RAW_PAYOFF
         if meta["hyperparameters"].get("dtype") == "float64":
             torch.set_default_dtype(torch.float64)
         (out_dir / "figures").mkdir(exist_ok=True)
@@ -597,15 +969,23 @@ def main() -> None:
             if not model_path.exists():
                 logger.warning(f"[eps={epsilon:g}] no saved model at {model_path}, skipping its price-surface plot.")
                 continue
-            model = build_model(K, B, T, epsilon, model_seed=0)  # seed irrelevant: weights are overwritten below
+            # seed irrelevant: weights are overwritten below
+            model = build_model(
+                K, B, T, epsilon, model_seed=0,
+                smoothed_payoff=smoothed_payoff, eps0=eps0, grading=grading,
+                black_scholes_payoff=black_scholes_payoff, r=r, sigma=sigma,
+                analytic_residual=analytic_residual,
+                split_payoff=split_payoff, s_inf=s_inf, comparison_volatility=comparison_volatility,
+                split_y_lo=split_y_lo, split_y_hi=split_y_hi, split_n_quad=split_n_quad,
+            )
             model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
             model.to(DEVICE).eval()
             eval_result = evaluate_against_closed_form(model, K, B, r, sigma, T, s_inf, corner_window)
-            plot_price_surface(eval_result, epsilon, K, B, out_dir / "figures" / f"price_surface_eps{epsilon:g}.png")
-            plot_log_slice(eval_result, epsilon, B, out_dir / "figures" / f"log_slice_eps{epsilon:g}.png")
+            plot_price_surface(eval_result, epsilon, K, B, out_dir / "figures" / f"price_surface_eps{epsilon:g}.png", formula_text=formula_text)
+            plot_log_slice(eval_result, epsilon, B, out_dir / "figures" / f"log_slice_eps{epsilon:g}.png", formula_text=formula_text)
             logger.info(f"[eps={epsilon:g}] price-surface figure rebuilt from {model_path}")
 
-        plot_error_vs_epsilon(summaries, out_dir / "figures" / "error_vs_epsilon.png")
+        plot_error_vs_epsilon(summaries, out_dir / "figures" / "error_vs_epsilon.png", formula_text=formula_text)
         logger.info(f"--replot: done ({len(summaries)} epsilon values)")
         return
 
@@ -622,13 +1002,61 @@ def main() -> None:
         print(f"ERROR: need 0 < B < K (reverse knock-out regime); got B={args.B}, K={args.K}.", file=sys.stderr)
         sys.exit(2)
 
+    if args.smoothed_payoff and args.eps0 <= 0.0:
+        print(f"ERROR: --eps0 must be > 0; got {args.eps0}.", file=sys.stderr)
+        sys.exit(2)
+
+    payoff_modes_requested = sum([args.smoothed_payoff, args.black_scholes_payoff, args.split_payoff])
+    if payoff_modes_requested > 1:
+        print(
+            "ERROR: --smoothed-payoff, --black-scholes-payoff and --split-payoff are mutually exclusive.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # ---- split-semigroup mode: resolve defaults now (not inside build_model)
+    # so the resolved values are logged and recorded in metadata.yaml exactly
+    # once, identically for every epsilon in the sweep.
+    comparison_volatility = args.comparison_volatility
+    split_y_lo = args.split_y_lo
+    split_y_hi = args.split_y_hi
+    if args.split_payoff:
+        comparison_volatility = comparison_volatility if comparison_volatility is not None else args.sigma
+        if split_y_lo is None or split_y_hi is None:
+            default_y_lo, default_y_hi = default_split_quadrature_bounds(
+                args.B, args.s_inf, args.T, comparison_volatility,
+            )
+            split_y_lo = split_y_lo if split_y_lo is not None else default_y_lo
+            split_y_hi = split_y_hi if split_y_hi is not None else default_y_hi
+
     corner_window = args.corner_window if args.corner_window is not None else max(args.epsilons)
+    if args.smoothed_payoff:
+        formula_text = formula_text_smoothed_payoff(args.eps0, args.grading)
+    elif args.black_scholes_payoff:
+        formula_text = FORMULA_TEXT_BLACK_SCHOLES_PAYOFF
+    elif args.split_payoff:
+        formula_text = formula_text_split_payoff(comparison_volatility, args.split_n_quad)
+    else:
+        formula_text = FORMULA_TEXT_RAW_PAYOFF
 
     # ---- output directory ----
     timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
     debug_prefix = "_debug_" if args.debug else ""
     eps_tag = "_".join(f"{e:g}" for e in sorted(args.epsilons))
-    out_dir = script_data_dir(__file__) / f"{debug_prefix}{timestamp}_iters{args.iters}_eps{eps_tag}_seed{args.seed}"
+    if args.smoothed_payoff:
+        payoff_tag = f"_smoothed_eps0{args.eps0:g}_{args.grading}"
+    elif args.black_scholes_payoff:
+        payoff_tag = "_blackscholes" + ("_analyticres" if args.analytic_residual else "")
+    elif args.split_payoff:
+        payoff_tag = f"_split_nuc{comparison_volatility:g}_nquad{args.split_n_quad}"
+    else:
+        payoff_tag = ""
+    # The corner-exclusion flag belongs in the directory name: it changes what
+    # the run IS, and metadata.yaml is not what one reads when listing data/.
+    corner_tag = "_nocorner" if args.exclude_corner_from_collocation else ""
+    out_dir = script_data_dir(__file__) / (
+        f"{debug_prefix}{timestamp}_iters{args.iters}_eps{eps_tag}_seed{args.seed}{payoff_tag}{corner_tag}"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -645,6 +1073,8 @@ def main() -> None:
     logger.info(f"  Command: {' '.join(sys.argv)}")
     logger.info(f"  Python: {sys.version.split()[0]}")
     logger.info(f"  PyTorch: {torch.__version__}")
+    logger.info(f"  Torch threads (effective): {torch.get_num_threads()}  "
+                f"(OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')})")
     logger.info(f"  CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         logger.info(f"  CUDA version: {torch.version.cuda}")
@@ -664,11 +1094,61 @@ def main() -> None:
         "the interior residual near the corner and may need more collocation "
         "density / iterations there to resolve well."
     )
+    if args.smoothed_payoff:
+        logger.info(
+            f"  Terminal payoff: Chen-Mangasarian smoothed (make_corner_regularised_extension_with_smoothed_payoff), "
+            f"eps0={args.eps0:g}, grading={args.grading} "
+            f"(independent of the corner-layer bandwidth epsilon above)."
+        )
+    elif args.black_scholes_payoff:
+        logger.info(
+            "  Terminal payoff: exact Black-Scholes European put price "
+            "(make_corner_regularised_extension_with_black_scholes_payoff)."
+        )
+    elif args.split_payoff:
+        logger.info(
+            "  Terminal payoff: split-semigroup profile (Proposition 7 / Example 7, "
+            "make_corner_regularised_extension_split)."
+        )
+        logger.info(
+            f"    comparison_volatility={comparison_volatility:g} "
+            f"({'matched to --sigma' if comparison_volatility == args.sigma else 'MISMATCHED from --sigma'}), "
+            f"log-price quadrature support ({split_y_lo:.6g}, {split_y_hi:.6g}), "
+            f"n_quad={args.split_n_quad}."
+        )
+        logger.info(
+            "    Interior PDE residual for this mode is assembled from g2's analytic "
+            "black_scholes_residual, not autograd through g2 (see compute_loss's docstring); "
+            "the two-term split costs one extra forward pass of the network manifold per "
+            "iteration, negligible next to the quadrature."
+        )
+        logger.info(
+            "    WARNING: GaussianSemigroupExtensionField recomputes its quadrature nodes and "
+            "the full (n_f x n_quad) convolution on every call, with no caching across training "
+            "iterations (verified: torch.linspace and the datum are re-evaluated every call, not "
+            "just once at construction). This is expected to dominate the per-iteration wall-clock "
+            "cost at n_f/n_quad of this size; if training is impractically slow, lower --split-n-quad "
+            "or --n-f before assuming a numerical problem."
+        )
+    else:
+        logger.info("  Terminal payoff: raw (K-s)^+ (make_corner_regularised_extension).")
 
     metadata = {
         "command": " ".join(sys.argv),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "contract": {"K": args.K, "B": args.B, "r": args.r, "sigma": args.sigma, "T": args.T},
+        # Recorded because two runs that differ only in these are NOT
+        # comparable: in float32 the order of the threaded reductions changes
+        # the last bits, and 20000 iterations amplify that into a different
+        # local minimum.  Two Black-Scholes runs of this pilot, same seed and
+        # same configuration but different thread counts, differed by a factor
+        # 1.98 on the relative L2 error of the Delta.  torch.get_num_threads()
+        # is the effective value, which OMP_NUM_THREADS may leave unset.
+        "environment": {
+            "torch_num_threads": torch.get_num_threads(),
+            "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
+            "git": get_git_metadata(find_repo_root(Path(__file__).resolve())),
+        },
         "domain": {"B": args.B, "s_inf": args.s_inf},
         "hyperparameters": {
             "epsilons": sorted(args.epsilons),
@@ -677,6 +1157,17 @@ def main() -> None:
             "seed": args.seed,
             "corner_window": corner_window,
             "dtype": args.dtype,
+            "smoothed_payoff": args.smoothed_payoff,
+            "eps0": args.eps0,
+            "grading": args.grading,
+            "black_scholes_payoff": args.black_scholes_payoff,
+            "analytic_residual": args.analytic_residual,
+            "corner_exclusion_window": (corner_window if args.exclude_corner_from_collocation else None),
+            "split_payoff": args.split_payoff,
+            "comparison_volatility": comparison_volatility,
+            "split_y_lo": split_y_lo,
+            "split_y_hi": split_y_hi,
+            "split_n_quad": args.split_n_quad,
         },
     }
     with open(out_dir / "metadata.yaml", "w") as f:
@@ -699,6 +1190,12 @@ def main() -> None:
             s_inf=args.s_inf, total_iters=args.iters, n_f=args.n_f, log_every=log_every,
             seed=args.seed, checkpoint_path=checkpoint_path,
             checkpoint_every=args.checkpoint_every, resume=args.resume,
+            smoothed_payoff=args.smoothed_payoff, eps0=args.eps0, grading=args.grading,
+            black_scholes_payoff=args.black_scholes_payoff,
+            analytic_residual=args.analytic_residual,
+            corner_exclusion_window=(corner_window if args.exclude_corner_from_collocation else None),
+            split_payoff=args.split_payoff, comparison_volatility=comparison_volatility,
+            split_y_lo=split_y_lo, split_y_hi=split_y_hi, split_n_quad=args.split_n_quad,
         )
 
         eval_result = evaluate_against_closed_form(
@@ -728,9 +1225,9 @@ def main() -> None:
         _write_summary(out_dir, epsilon, summary)
         summaries.append({**summary, **{k: eval_result[k] for k in ("s_grid", "t_grid", "learned", "reference")}})
 
-        plot_price_surface(eval_result, epsilon, args.K, args.B, out_dir / "figures" / f"price_surface_eps{epsilon:g}.png")
-        plot_log_slice(eval_result, epsilon, args.B, out_dir / "figures" / f"log_slice_eps{epsilon:g}.png")
-    plot_error_vs_epsilon(summaries, out_dir / "figures" / "error_vs_epsilon.png")
+        plot_price_surface(eval_result, epsilon, args.K, args.B, out_dir / "figures" / f"price_surface_eps{epsilon:g}.png", formula_text=formula_text)
+        plot_log_slice(eval_result, epsilon, args.B, out_dir / "figures" / f"log_slice_eps{epsilon:g}.png", formula_text=formula_text)
+    plot_error_vs_epsilon(summaries, out_dir / "figures" / "error_vs_epsilon.png", formula_text=formula_text)
 
     elapsed_total = time.time() - t_start
     logger.info("=" * 70)
