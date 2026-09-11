@@ -526,6 +526,15 @@ def train_one_epsilon(
     ).to(DEVICE)
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(f"[{label}] model parameters: {n_params}")
+    # Report the interior-residual route from the built g2 object itself (the
+    # capability test compute_loss performs), not from the CLI flags: this is
+    # the line to read to know which route a run actually trained through.
+    residual_route = (
+        "two-term analytic: F(g1*u_theta) by autograd + F(g2) from g2.black_scholes_residual"
+        if hasattr(model.g2, "black_scholes_residual")
+        else "ordinary: autograd through the full trial solution g1*u_theta + g2"
+    )
+    logger.info(f"[{label}] interior residual route (from g2={type(model.g2).__name__}): {residual_route}")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01, betas=(0.9, 0.999))
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, build_lr_lambda(total_iters))
@@ -904,6 +913,14 @@ def main() -> None:
     parser.add_argument("--checkpoint-every", type=int, default=2000, help="Checkpoint period in iterations (0 disables periodic checkpoints).")
     parser.add_argument("--resume", action="store_true", help="Resume each epsilon from its checkpoint if present.")
     parser.add_argument("--seed", type=int, default=0, help="Master seed (shared across all epsilons).")
+    parser.add_argument("--num-threads", type=int, default=None,
+                         help="Intra-op thread count passed to torch.set_num_threads before any tensor "
+                              "work. Runs that differ only in this value are NOT comparable in float32 "
+                              "(threaded reductions change the last bits; 20000 iterations amplify "
+                              "that into a different local minimum -- measured factor 1.98 on the "
+                              "Delta's relative L2 error between two otherwise identical runs). Set it "
+                              "explicitly and identically across every run of a comparison. Default: "
+                              "leave torch's own default (OMP_NUM_THREADS or the core count).")
     parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float64"])
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"])
     parser.add_argument("--debug", action="store_true",
@@ -913,6 +930,14 @@ def main() -> None:
     parser.add_argument("--replot", type=str, default=None, metavar="RUN_DIR",
                          help="Regenerate figures from a previous run's saved summaries, without retraining.")
     args = parser.parse_args()
+
+    # Pin the thread count before any tensor is created, so that every threaded
+    # reduction of the run uses the same partition (see --num-threads's help).
+    if args.num_threads is not None:
+        if args.num_threads < 1:
+            print(f"ERROR: --num-threads must be >= 1; got {args.num_threads}.", file=sys.stderr)
+            sys.exit(2)
+        torch.set_num_threads(args.num_threads)
 
     if args.dtype == "float64":
         torch.set_default_dtype(torch.float64)
@@ -1074,7 +1099,12 @@ def main() -> None:
     logger.info(f"  Python: {sys.version.split()[0]}")
     logger.info(f"  PyTorch: {torch.__version__}")
     logger.info(f"  Torch threads (effective): {torch.get_num_threads()}  "
-                f"(OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')})")
+                f"(--num-threads={args.num_threads}, OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')})")
+    if args.num_threads is None:
+        logger.warning(
+            "  --num-threads not given: the thread count is inherited from the environment. "
+            "Runs of one comparison must share it (float32 reductions are thread-count dependent)."
+        )
     logger.info(f"  CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         logger.info(f"  CUDA version: {torch.version.cuda}")
@@ -1145,6 +1175,7 @@ def main() -> None:
         # 1.98 on the relative L2 error of the Delta.  torch.get_num_threads()
         # is the effective value, which OMP_NUM_THREADS may leave unset.
         "environment": {
+            "num_threads_flag": args.num_threads,
             "torch_num_threads": torch.get_num_threads(),
             "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
             "git": get_git_metadata(find_repo_root(Path(__file__).resolve())),
