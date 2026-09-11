@@ -134,6 +134,15 @@ class ETCNN(nn.Module):
 
         return g1_val * u_nn + g2_val
 
+    @property
+    def g2(self) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+        """The terminal-function factor g2(s, t), for callers that must act on
+        it separately from the network (e.g. routing its PDE-residual
+        contribution through analytic derivatives instead of autograd, when
+        g2 is a quadratured extension -- see
+        ``forward_neural_manifold``, its counterpart for the g1*u_NN side)."""
+        return self._g2
+
     def forward_neural_manifold(self, x: torch.Tensor) -> torch.Tensor:
         """Return strictly the neural manifold component g1(s,t) · u_θ(s,t).
 

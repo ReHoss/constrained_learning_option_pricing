@@ -33,6 +33,19 @@ Sections 2 and 4:
 - :func:`make_corner_regularised_extension_with_smoothed_payoff` -- the same
   construction as :func:`make_corner_regularised_extension`, with the raw
   payoff replaced by :func:`mangasarian_smoothed_put_payoff`.
+- :func:`make_corner_regularised_extension_with_black_scholes_payoff` -- the
+  same construction again, with the raw payoff replaced by the exact
+  Black-Scholes European put price (paralleling the ``--g2 bs`` mode already
+  documented for the American-put ETCNN in ``documents/methodology/\
+architecture.md``).
+- :func:`make_corner_regularised_extension_split` -- the same corner cutoff
+  applied to the split-semigroup extension of Proposition 7 ("Split-generator
+  extension removes the floor") of the working note "On boundary-constrained
+  learning of partial differential equations", Example 7: the terminal payoff
+  smoothed by the heat semigroup of the Black-Scholes diffusion's principal
+  part, i.e. :func:`~learning_option_pricing.pde.real_line_extension_fields.\
+GaussianSemigroupExtensionField` evaluated on the log-price line and
+  substituted back to the price coordinate ``s``.
 - :func:`reiner_rubinstein_down_and_out_put` -- the exact closed-form price
   :math:`V_{DO}` (method of images / Reiner-Rubinstein 1991), the reference
   of Remark 6.
@@ -44,7 +57,10 @@ from typing import Callable
 
 import torch
 
-from learning_option_pricing.pricing.terminal import payoff_put
+from learning_option_pricing.pde.real_line_extension_fields import (
+    GaussianSemigroupExtensionField,
+)
+from learning_option_pricing.pricing.terminal import black_scholes_put, payoff_put
 
 _TAU_EPS = 1e-8  # epsilon floor to avoid division by zero when tau -> 0
 
@@ -52,6 +68,11 @@ _TAU_EPS = 1e-8  # epsilon floor to avoid division by zero when tau -> 0
 def _normal_cdf(x: torch.Tensor) -> torch.Tensor:
     """Cumulative distribution function of the standard normal distribution."""
     return 0.5 * torch.erfc(-x / math.sqrt(2.0))
+
+
+def _normal_pdf(x: torch.Tensor) -> torch.Tensor:
+    """Probability density function of the standard normal distribution."""
+    return torch.exp(-0.5 * x**2) / math.sqrt(2.0 * math.pi)
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +135,70 @@ def _smoothstep01(r: torch.Tensor) -> torch.Tensor:
     a = _bump(r)
     b = _bump(1.0 - r)
     return a / (a + b)
+
+
+def _bump_first_derivative(r: torch.Tensor) -> torch.Tensor:
+    r"""First derivative :math:`f'(r) = f(r)/r^2` of the bump :func:`_bump`, 0 for :math:`r\le 0`."""
+    safe = torch.where(r > 0, r, torch.ones_like(r))
+    return torch.where(r > 0, _bump(r) / safe**2, torch.zeros_like(r))
+
+
+def _bump_second_derivative(r: torch.Tensor) -> torch.Tensor:
+    r"""Second derivative :math:`f''(r) = f(r)(1-2r)/r^4` of the bump, 0 for :math:`r\le 0`.
+
+    From :math:`f'(r) = f(r)/r^2` (:func:`_bump_first_derivative`): :math:`f''(r)
+    = f'(r)/r^2 - 2f(r)/r^3 = f(r)/r^4 - 2f(r)/r^3 = f(r)(1-2r)/r^4`.
+    """
+    safe = torch.where(r > 0, r, torch.ones_like(r))
+    return torch.where(r > 0, _bump(r) * (1.0 - 2.0 * safe) / safe**4, torch.zeros_like(r))
+
+
+def _smoothstep01_value_and_derivatives(
+    r: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    r""":math:`(\zeta(r), \zeta'(r), \zeta''(r))` of the cutoff :func:`_smoothstep01`, in closed form.
+
+    With :math:`a=f(r)`, :math:`b=f(1-r)` (:math:`f` the bump of :func:`_bump`)
+    and :math:`\zeta=a/(a+b)`, the quotient rule gives
+
+    .. math::
+
+        \zeta' = \frac{a'b - ab'}{(a+b)^2},
+
+    and differentiating again -- the :math:`a'b'` cross-terms cancel
+    identically, since :math:`(a'b-ab')' = a''b + a'b' - a'b' - ab'' =
+    a''b - ab''` -- gives
+
+    .. math::
+
+        \zeta'' = \frac{(a''b-ab'')(a+b) - 2(a'b-ab')(a'+b')}{(a+b)^3}.
+
+    :math:`b(r)=f(1-r)` so :math:`b'(r)=-f'(1-r)` and :math:`b''(r)=f''(1-r)`
+    (two applications of the chain rule on the sign-flipped argument).
+    Verified against ``torch.autograd`` (double backward through
+    :func:`_smoothstep01`) to machine precision (:math:`<2\times10^{-15}`)
+    during development.
+    """
+    a = _bump(r)
+    b = _bump(1.0 - r)
+    a_prime = _bump_first_derivative(r)
+    b_prime = -_bump_first_derivative(1.0 - r)
+    a_double_prime = _bump_second_derivative(r)
+    b_double_prime = _bump_second_derivative(1.0 - r)
+
+    denominator = a + b
+    zeta = a / denominator
+
+    numerator_first_derivative = a_prime * b - a * b_prime
+    zeta_prime = numerator_first_derivative / denominator**2
+
+    numerator_second_derivative = a_double_prime * b - a * b_double_prime
+    zeta_double_prime = (
+        numerator_second_derivative * denominator
+        - 2.0 * numerator_first_derivative * (a_prime + b_prime)
+    ) / denominator**3
+
+    return zeta, zeta_prime, zeta_double_prime
 
 
 def make_corner_regularised_extension(
@@ -321,6 +406,471 @@ def make_corner_regularised_extension_with_smoothed_payoff(
     return h_eps
 
 
+def make_corner_regularised_extension_with_black_scholes_payoff(
+    K: float,
+    B: float,
+    epsilon: float,
+    r: float,
+    sigma: float,
+    T: float,
+) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+    r"""Corner-regularised extension using the exact Black-Scholes European put price.
+
+    Identical construction to :func:`make_corner_regularised_extension`,
+
+    .. math::
+
+        h_\varepsilon^{BS}(s,t) = \zeta\!\left(\frac{s-B}{\varepsilon}\right)
+            V^e(s,t),
+
+    except that the raw payoff :math:`g(s)=(K-s)^+` is replaced by the exact
+    European put price :math:`V^e(s,t)` of
+    :func:`~learning_option_pricing.pricing.terminal.black_scholes_put`, the
+    third choice of terminal function alongside the raw payoff
+    (:func:`make_corner_regularised_extension`) and the Chen-Mangasarian
+    smoothed payoff (:func:`make_corner_regularised_extension_with_smoothed_payoff`)
+    -- paralleling the ``--g2 bs`` mode already used for the American-put
+    ETCNN (``documents/methodology/architecture.md``). Unlike the raw payoff,
+    :math:`V^e` already solves :math:`\mathcal L^{BS}V^e=0` everywhere it is
+    smooth, so :math:`h_\varepsilon^{BS}` is :math:`C^\infty` in :math:`s` for
+    :math:`t<T` and its own extension-forcing term :math:`\mathcal P
+    h_\varepsilon^{BS}` should vanish away from the corner layer, unlike the
+    two other modes.
+
+    On :math:`\Sigma_T` (``t=T``), :math:`V^e(s,T) = (K-s)^+` only up to the
+    :math:`\tau`-floor :math:`\varepsilon_{\tau}=10^{-8}` internal to
+    :func:`black_scholes_put` (a numerical floor against division by zero,
+    not a deliberate smoothing bandwidth): the terminal-face match is exact
+    to machine precision but not bit-exact, unlike
+    :func:`make_corner_regularised_extension`.
+
+    Args:
+        K: Strike price.
+        B: Knock-out barrier, :math:`0 < B < K`.
+        epsilon: Bandwidth of the corner regularisation, :math:`\varepsilon > 0`.
+        r: Risk-free rate, forwarded to :func:`black_scholes_put`.
+        sigma: Volatility, forwarded to :func:`black_scholes_put`.
+        T: Maturity.
+
+    Returns:
+        A callable ``h_eps(s, t) -> Tensor`` broadcasting over ``s`` and ``t``.
+
+    Raises:
+        ValueError: If ``epsilon <= 0``, ``B >= K``, or ``T <= 0``.
+    """
+    if epsilon <= 0.0:
+        raise ValueError(f"epsilon must be > 0; got {epsilon}.")
+    if not (0.0 < B < K):
+        raise ValueError(f"the reverse knock-out regime requires 0 < B < K; got {B=}, {K=}.")
+    if T <= 0.0:
+        raise ValueError(f"T must be > 0; got {T}.")
+
+    def h_eps(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        weight = _smoothstep01((s - B) / epsilon)
+        european_put_price = black_scholes_put(s, K, r, sigma, T - t)
+        return weight * european_put_price
+
+    return h_eps
+
+
+class BlackScholesCornerExtension:
+    r"""Black-Scholes corner extension exposing its interior residual in closed form.
+
+    Same field as :func:`make_corner_regularised_extension_with_black_scholes_payoff`,
+
+    .. math::
+
+        h_\varepsilon^{BS}(s,t) = \zeta\!\left(\frac{s-B}{\varepsilon}\right) V^e(s,t),
+
+    but callable as an object that additionally exposes
+    ``black_scholes_residual(s, t, r, sigma)``.  The presence of that method is
+    what selects the two-term assembly of the interior residual in
+    ``pilot_down_and_out_put.compute_loss`` (the route introduced for the
+    split-semigroup extension): the loss is then built as
+    :math:`\mathcal F(g_1u_\theta) + \mathcal F(h_\varepsilon^{BS})`, the second
+    term analytic, instead of differentiating the full trial solution as one
+    autograd graph.
+
+    This exists to remove a confound in the comparison of terminal-function
+    modes: the split extension was the only mode trained through the two-term
+    route, so its measured advantage on the learned Greeks could not be
+    attributed to the extension rather than to the residual assembly.  With
+    this class the Black-Scholes mode can be trained through the same route.
+
+    **The residual in closed form.**  :math:`\zeta` depends on :math:`s` only,
+    and :math:`V^e` solves the operator exactly for :math:`\tau>0`, so
+    :math:`\mathcal L^{BS}V^e = 0` and the product rule leaves only the terms
+    carrying a derivative of the cutoff:
+
+    .. math::
+
+        \mathcal L^{BS}h_\varepsilon^{BS}
+            = \tfrac12\sigma^2s^2\big(\zeta''V^e + 2\zeta'\partial_sV^e\big)
+              + rs\,\zeta'V^e,
+
+    with :math:`\zeta'=\zeta_r'/\varepsilon` and
+    :math:`\zeta''=\zeta_r''/\varepsilon^2` (chain rule on
+    :math:`r=(s-B)/\varepsilon`), and
+    :math:`\partial_sV^e(s,t) = -N(-d_+)` the European put Delta.  It vanishes
+    identically for :math:`s-B>\varepsilon`, where :math:`\zeta'=\zeta''=0` --
+    exactly, not to a tolerance.
+
+    Args:
+        K: Strike.
+        B: Knock-out barrier, ``0 < B < K``.
+        epsilon: Corner-layer bandwidth, ``epsilon > 0``.
+        r: Risk-free rate, used by the field itself.
+        sigma: Volatility, used by the field itself.
+        T: Maturity.
+
+    Raises:
+        ValueError: If ``epsilon <= 0``, ``B >= K``, or ``T <= 0``.
+
+    Note:
+        The argument order matches its sibling builder
+        :func:`make_corner_regularised_extension_with_black_scholes_payoff`
+        (``K, B, epsilon, r, sigma, T``) so the two are interchangeable at a
+        call site.
+    """
+
+    def __init__(self, K: float, B: float, epsilon: float, r: float, sigma: float, T: float) -> None:
+        if epsilon <= 0.0:
+            raise ValueError(f"epsilon must be > 0; got {epsilon}.")
+        if not (0.0 < B < K):
+            raise ValueError(f"the reverse knock-out regime requires 0 < B < K; got {B=}, {K=}.")
+        if T <= 0.0:
+            raise ValueError(f"T must be > 0; got {T}.")
+        self.K, self.B, self.epsilon, self.T = K, B, epsilon, T
+        self.r, self.sigma = r, sigma
+
+    def __call__(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        weight = _smoothstep01((s - self.B) / self.epsilon)
+        return weight * black_scholes_put(s, self.K, self.r, self.sigma, self.T - t)
+
+    def _european_put_price_and_delta(
+        self, s: torch.Tensor, t: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        r""":math:`(V^e, \partial_sV^e)` with :math:`\partial_sV^e=-N(-d_+)`.
+
+        The same ``_TAU_EPS`` floor as the rest of this module guards
+        :math:`\tau\to0`; it is inert away from the terminal slice.
+        """
+        tau_safe = torch.clamp(self.T - t, min=_TAU_EPS)
+        sigma_sqrt_tau = self.sigma * torch.sqrt(tau_safe)
+        d_plus = (
+            torch.log(s / self.K) + (self.r + 0.5 * self.sigma**2) * tau_safe
+        ) / sigma_sqrt_tau
+        price = black_scholes_put(s, self.K, self.r, self.sigma, self.T - t)
+        return price, -_normal_cdf(-d_plus)
+
+    def black_scholes_residual(
+        self, s: torch.Tensor, t: torch.Tensor, r: float, sigma: float
+    ) -> torch.Tensor:
+        r""":math:`\mathcal L^{BS}h_\varepsilon^{BS}(s,t)`, closed form (see the class docstring).
+
+        Never autograd, never a finite difference.  ``h_eps`` does not depend
+        on any trainable parameter, so this is a parameter-independent forcing
+        term to be added to the residual of :math:`g_1u_\theta` computed
+        separately.
+
+        Args:
+            s: Underlying asset price tensor.
+            t: Time tensor, broadcastable with ``s``.
+            r: Risk-free rate (the contract's; matches this extension's own).
+            sigma: Volatility (the contract's; matches this extension's own).
+
+        Returns:
+            The residual, broadcast shape of ``s``/``t``.
+        """
+        ratio = (s - self.B) / self.epsilon
+        _, zeta_prime_ratio, zeta_double_prime_ratio = _smoothstep01_value_and_derivatives(ratio)
+        zeta_prime = zeta_prime_ratio / self.epsilon
+        zeta_double_prime = zeta_double_prime_ratio / self.epsilon**2
+
+        price, delta = self._european_put_price_and_delta(s, t)
+        return (
+            0.5 * sigma**2 * s**2 * (zeta_double_prime * price + 2.0 * zeta_prime * delta)
+            + r * s * zeta_prime * price
+        )
+
+
+# ---------------------------------------------------------------------------
+# Split-semigroup extension  (Proposition 7 / Example 7 of the working note)
+# ---------------------------------------------------------------------------
+
+class SplitSemigroupCornerExtension:
+    r"""Callable corner-regularised split-semigroup extension, with price derivatives.
+
+    ``instance(s, t)`` returns :math:`h_\varepsilon^{\mathrm{split}}(s,t)`,
+    exactly like the plain callables returned by the other three
+    ``make_corner_regularised_extension*`` variants -- this class exists
+    only so that ``first_price_derivative``/``second_price_derivative`` are
+    declared, typed attributes rather than attached dynamically to a
+    ``def``-created function (which a static type checker rejects for the
+    ``Callable[[Tensor, Tensor], Tensor]`` return type used elsewhere in
+    this module). Built by :func:`make_corner_regularised_extension_split`,
+    which documents the mathematical construction; not instantiated
+    directly elsewhere.
+    """
+
+    def __init__(
+        self,
+        K: float,
+        B: float,
+        epsilon: float,
+        split_field: GaussianSemigroupExtensionField,
+    ) -> None:
+        self.K = K
+        self.B = B
+        self.epsilon = epsilon
+        self.split_field = split_field
+
+    def _log_price_and_broadcast(
+        self, s: torch.Tensor, t: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Size]:
+        broadcast_shape = torch.broadcast_shapes(s.shape, t.shape)
+        s_broadcast = s.expand(broadcast_shape).reshape(-1)
+        t_broadcast = t.expand(broadcast_shape).reshape(-1)
+        # Explicit log-price substitution: GaussianSemigroupExtensionField
+        # lives on the log-price line x = ln(s), not on the price line s
+        # itself (see that class's docstring, part (c) of its own question).
+        return torch.log(s_broadcast), t_broadcast, broadcast_shape
+
+    def __call__(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        log_price, t_flat, broadcast_shape = self._log_price_and_broadcast(s, t)
+        value = self.split_field.field(log_price, t_flat).reshape(broadcast_shape)
+        weight = _smoothstep01((s - self.B) / self.epsilon)
+        return weight * value
+
+    def _profile_price_and_time_derivatives(
+        self, s: torch.Tensor, t: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        r"""``(pi, d_s pi, d_ss pi, d_t pi)``, chain-ruled from the field's own
+        analytic log-price/time derivatives -- never by autograd or a finite
+        difference through the quadratured field (see the class docstring).
+        ``d_t`` needs no chain rule: ``t`` does not transform under
+        ``x = ln(s)``, so the log-price partial derivative in ``t`` at fixed
+        ``x`` already equals the price-space partial derivative in ``t`` at
+        fixed ``s``.
+
+        Queries the field exactly once each for ``field``/``"dt"``/``"dx"``/
+        ``"dxx"`` (the four quantities the price-space derivatives below are
+        built from), regardless of how many of them the caller goes on to
+        use: each is an ``O(batch_size x n_quad)`` convolution with no
+        caching (see ``GaussianSemigroupExtensionField``'s module
+        docstring), so this is the minimum number of quadrature passes, not
+        four times that for four separately-called derivative methods.
+        """
+        log_price, t_flat, broadcast_shape = self._log_price_and_broadcast(s, t)
+        derivative = self.split_field.derivative_callables()
+        pi_value = self.split_field.field(log_price, t_flat).reshape(broadcast_shape)
+        d_t_pi = derivative["dt"](log_price, t_flat).reshape(broadcast_shape)
+        d_x_pi = derivative["dx"](log_price, t_flat).reshape(broadcast_shape)
+        d_xx_pi = derivative["dxx"](log_price, t_flat).reshape(broadcast_shape)
+
+        s_reshaped = s.expand(broadcast_shape)
+        d_s_pi = d_x_pi / s_reshaped
+        d_ss_pi = (d_xx_pi - d_x_pi) / s_reshaped**2
+        return pi_value, d_s_pi, d_ss_pi, d_t_pi
+
+    def first_price_derivative(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        r""":math:`\partial_s h_\varepsilon^{\mathrm{split}} = \zeta'\,\pi + \zeta\,\partial_s\pi`."""
+        pi_value, d_s_pi, _, _ = self._profile_price_and_time_derivatives(s, t)
+        r = (s - self.B) / self.epsilon
+        weight, zeta_prime, _ = _smoothstep01_value_and_derivatives(r)
+        d_s_zeta = zeta_prime / self.epsilon
+        return d_s_zeta * pi_value + weight * d_s_pi
+
+    def second_price_derivative(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        r""":math:`\partial_{ss} h_\varepsilon^{\mathrm{split}} = \zeta''\pi + 2\zeta'\partial_s\pi + \zeta\,\partial_{ss}\pi`."""
+        pi_value, d_s_pi, d_ss_pi, _ = self._profile_price_and_time_derivatives(s, t)
+        r = (s - self.B) / self.epsilon
+        weight, zeta_prime, zeta_double_prime = _smoothstep01_value_and_derivatives(r)
+        d_s_zeta = zeta_prime / self.epsilon
+        d_ss_zeta = zeta_double_prime / self.epsilon**2
+        return d_ss_zeta * pi_value + 2.0 * d_s_zeta * d_s_pi + weight * d_ss_pi
+
+    def first_time_derivative(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        r""":math:`\partial_t h_\varepsilon^{\mathrm{split}} = \zeta\,\partial_t\pi`
+        (:math:`\zeta` does not depend on ``t``, so no product-rule term here,
+        unlike the price derivatives above)."""
+        _, _, _, d_t_pi = self._profile_price_and_time_derivatives(s, t)
+        weight = _smoothstep01((s - self.B) / self.epsilon)
+        return weight * d_t_pi
+
+    def black_scholes_residual(
+        self, s: torch.Tensor, t: torch.Tensor, r: float, sigma: float
+    ) -> torch.Tensor:
+        r"""Full Black-Scholes PDE operator applied to :math:`h_\varepsilon^{\mathrm{split}}`:
+
+        .. math::
+
+            \mathcal L^{BS}h_\varepsilon^{\mathrm{split}}
+                = \partial_t h_\varepsilon^{\mathrm{split}}
+                  + \tfrac12\sigma^2 s^2\,\partial_{ss}h_\varepsilon^{\mathrm{split}}
+                  + r s\,\partial_s h_\varepsilon^{\mathrm{split}}
+                  - r\,h_\varepsilon^{\mathrm{split}},
+
+        assembled entirely from :meth:`_profile_price_and_time_derivatives`
+        and the corner-cutoff product rule -- never by autograd or a finite
+        difference through the quadratured field (see the class docstring).
+        ``h_eps`` does not depend on any trainable parameter, so this is a
+        parameter-independent forcing term: by linearity of
+        :math:`\mathcal L^{BS}`,
+        :math:`\mathcal L^{BS}(g_1 u_\theta + h_\varepsilon^{\mathrm{split}})
+        = \mathcal L^{BS}(g_1 u_\theta) + \mathcal L^{BS}(h_\varepsilon^{\mathrm{split}})`,
+        so a caller assembling the interior PDE residual of the full trial
+        solution should add this to the residual of :math:`g_1 u_\theta`
+        computed separately (by ordinary autograd on the smooth network
+        manifold alone -- see
+        :meth:`~learning_option_pricing.models.etcnn.ETCNN.forward_neural_manifold`),
+        rather than differentiate the full trial solution as one graph.
+
+        Args:
+            s: Underlying asset price tensor.
+            t: Time tensor, broadcastable with ``s``.
+            r: Risk-free rate.
+            sigma: Volatility (the contract's own, distinct from this
+                extension's ``comparison_volatility``; see
+                :func:`make_corner_regularised_extension_split`).
+
+        Returns:
+            :math:`\mathcal L^{BS}h_\varepsilon^{\mathrm{split}}(s,t)`, same
+            broadcast shape as ``s``/``t``.
+        """
+        pi_value, d_s_pi, d_ss_pi, d_t_pi = self._profile_price_and_time_derivatives(s, t)
+        r_arg = (s - self.B) / self.epsilon
+        weight, zeta_prime, zeta_double_prime = _smoothstep01_value_and_derivatives(r_arg)
+        d_s_zeta = zeta_prime / self.epsilon
+        d_ss_zeta = zeta_double_prime / self.epsilon**2
+
+        value = weight * pi_value
+        d_t = weight * d_t_pi
+        d_s = d_s_zeta * pi_value + weight * d_s_pi
+        d_ss = d_ss_zeta * pi_value + 2.0 * d_s_zeta * d_s_pi + weight * d_ss_pi
+
+        return d_t + 0.5 * sigma**2 * s**2 * d_ss + r * s * d_s - r * value
+
+
+def make_corner_regularised_extension_split(
+    K: float,
+    B: float,
+    epsilon: float,
+    T: float,
+    comparison_volatility: float,
+    y_lo: float,
+    y_hi: float,
+    n_quad: int = 8000,
+) -> SplitSemigroupCornerExtension:
+    r"""Corner-regularised extension using the split-semigroup terminal profile.
+
+    Identical corner cutoff to :func:`make_corner_regularised_extension`,
+
+    .. math::
+
+        h_{\varepsilon}^{\mathrm{split}}(s,t)
+            = \zeta\!\left(\frac{s-B}{\varepsilon}\right)\,
+              \bigl(e^{(T-t)\mathcal A_c} g\bigr)(\ln s),
+            \qquad g(x) = (K-e^x)^+,
+
+    except that the raw payoff is replaced by the split-semigroup profile of
+    Proposition 7 (Example 7 specialises it to Black-Scholes): the terminal
+    payoff advanced backward from :math:`T` by the heat semigroup of the
+    diffusion's principal part :math:`\mathcal A_c = \nu_c\,\partial_{xx}`
+    alone, leaving the drift-and-discount remainder :math:`\mathcal B` to be
+    supplied by the caller's own residual assembly -- exactly as the other
+    three ``make_corner_regularised_extension*`` variants only supply a
+    terminal-value function of ``(s, t)`` and leave the PDE operator to the
+    caller. This function performs no computation of its own beyond the
+    corner cutoff and the log-price substitution: the semigroup convolution,
+    its far-field behaviour, and the near-maturity quadrature floor are all
+    :class:`~learning_option_pricing.pde.real_line_extension_fields.\
+GaussianSemigroupExtensionField`'s (see that class's docstring for the
+    quadrature-floor caveat, exposed by its own ``quadrature_floor_report``
+    on the returned field).
+
+    ``comparison_volatility`` is :math:`\sigma_c` (equivalently
+    :math:`\nu_c=\sigma_c^2/2`), independent of the model's own volatility;
+    passing the model's own :math:`\sigma` gives the matched split of
+    Example 7, whose remainder forcing is bounded uniformly up to the
+    terminal slice (mis-matching it reinstates an unbounded second-order
+    channel -- see the referenced class's tests).
+
+    ``y_lo``/``y_hi`` are the fixed quadrature support of the underlying
+    field, in the **log-price** coordinate: they must cover the evaluation
+    window in ``s`` padded by several diffusion lengths
+    :math:`\sigma_c\sqrt T`, per the referenced class's own requirement.
+
+    Args:
+        K: Strike price.
+        B: Knock-out barrier, :math:`0 < B < K`.
+        epsilon: Bandwidth of the corner regularisation, :math:`\varepsilon > 0`.
+        T: Maturity.
+        comparison_volatility: :math:`\sigma_c` of the comparison heat
+            semigroup, forwarded to
+            :class:`~learning_option_pricing.pde.real_line_extension_fields.\
+GaussianSemigroupExtensionField`.
+        y_lo: Lower end of the log-price quadrature support.
+        y_hi: Upper end of the log-price quadrature support.
+        n_quad: Number of quadrature nodes.
+
+    Returns:
+        A :class:`SplitSemigroupCornerExtension`, callable as ``h_eps(s, t)
+        -> Tensor`` broadcasting over ``s`` and ``t``, exactly like the
+        plain callables returned by the other three
+        ``make_corner_regularised_extension*`` variants. It additionally
+        exposes, as declared methods/attributes rather than dynamically
+        attached ones (absent from the other three because their payoffs
+        are plain closed forms differentiable by autograd with no
+        cancellation risk, whereas the split-semigroup profile is a
+        quadratured convolution -- see the referenced class's module
+        docstring on why its second-order channel must not be assembled by
+        autograd or finite differences near the terminal slice):
+
+        - ``h_eps.first_price_derivative(s, t)``: :math:`\partial_s
+          h_\varepsilon^{\mathrm{split}}`, by the product rule on
+          :math:`\zeta` and the chain rule :math:`\partial_s\pi =
+          (1/s)\,\partial_x\pi` from
+          :meth:`GaussianSemigroupExtensionField.derivative_callables`'s
+          ``"dx"``.
+        - ``h_eps.second_price_derivative(s, t)``: :math:`\partial_{ss}
+          h_\varepsilon^{\mathrm{split}} = \zeta''\pi + 2\zeta'\partial_s\pi +
+          \zeta\,\partial_{ss}\pi`, with :math:`\partial_{ss}\pi =
+          (1/s^2)(\partial_{xx}\pi - \partial_x\pi)` from the same
+          derivative callables' ``"dxx"``/``"dx"`` -- never by autograd or a
+          finite difference through the quadratured field, which would
+          amplify the quadrature's own discretisation error by
+          :math:`1/h^2`.
+        - ``h_eps.split_field``: the underlying
+          :class:`GaussianSemigroupExtensionField`, for
+          ``h_eps.split_field.quadrature_floor_report()``.
+
+    Raises:
+        ValueError: If ``epsilon <= 0`` or ``B >= K`` (this function's own
+            checks); or if ``comparison_volatility <= 0`` or ``y_hi <= y_lo``
+            (raised by ``GaussianSemigroupExtensionField`` itself).
+    """
+    if epsilon <= 0.0:
+        raise ValueError(f"epsilon must be > 0; got {epsilon}.")
+    if not (0.0 < B < K):
+        raise ValueError(f"the reverse knock-out regime requires 0 < B < K; got {B=}, {K=}.")
+
+    def terminal_datum_on_the_log_price_line(x: torch.Tensor) -> torch.Tensor:
+        return payoff_put(torch.exp(x), K)
+
+    split_field = GaussianSemigroupExtensionField(
+        terminal_datum_on_the_log_price_line,
+        terminal_time=T,
+        comparison_volatility=comparison_volatility,
+        y_lo=y_lo,
+        y_hi=y_hi,
+        n_quad=n_quad,
+        name="barrier_split_semigroup",
+    )
+
+    return SplitSemigroupCornerExtension(K, B, epsilon, split_field)
+
+
 # ---------------------------------------------------------------------------
 # Closed-form reference: Reiner-Rubinstein / method of images  (Remark 6)
 # ---------------------------------------------------------------------------
@@ -354,6 +904,7 @@ def _truncated_put(
     K: float,
     B: float,
     r: float,
+    
     sigma: float,
     tau_safe: torch.Tensor,
 ) -> torch.Tensor:
@@ -467,3 +1018,153 @@ def reiner_rubinstein_down_and_out_put(
         - (B / s_safe) ** exponent * _truncated_put(s_reflected, K, B, r, sigma, tau_safe)
     )
     return torch.where(s > B, price, torch.zeros_like(price))
+
+
+# ---------------------------------------------------------------------------
+# Closed-form Gamma of the Reiner-Rubinstein price (d^2 V_DO / d s^2)
+# ---------------------------------------------------------------------------
+#
+# Derivation (mirrored, term for term, in a sympy script during development;
+# every closed form below was checked there against sympy's own symbolic
+# derivative by simplify-to-zero, i.e. exactly, not merely numerically):
+#
+#   Writing TP(x) = _truncated_put(x,K,B,r,sigma,tau), a direct term-by-term
+#   differentiation (put-style Delta identity dP(x,strike)/dx = N(d_+)-1 =
+#   -N(-d_+), applied once to the K-strike and once to the B-strike part of
+#   TP, plus the product rule on the remaining N(-d_-(x,B)) term) gives
+#
+#     TP'(x)  =  N(d_+(x,K)) - N(d_+(x,B))
+#                + (K-B) e^{-r tau} N'(d_-(x,B)) / (x sigma sqrt(tau)),
+#
+#     TP''(x) =  Gamma(x,K) - Gamma(x,B)
+#                - (K-B) e^{-r tau} N'(d_-(x,B)) / (x^2 sigma sqrt(tau))
+#                  * ( d_-(x,B) / (sigma sqrt(tau)) + 1 ),
+#
+#   with the ordinary vanilla Gamma building block Gamma(x,strike) =
+#   N'(d_+(x,strike)) / (x sigma sqrt(tau)) (the formula quoted in the task).
+#
+#   V_DO(s) = TP(s) - w(s) TP(x2(s)), w(s)=(B/s)^p, x2(s)=B^2/s,
+#   p = 2r/sigma^2-1 (the reflection prefactor and reflected spot -- Remark 6).
+#   Both w and x2 depend on s alone (not on x), so the reflected term is a
+#   product of two univariate compositions of s; the ordinary product rule
+#   and chain rule give
+#
+#     w'(s)  = -(p/s) w(s),         w''(s)  = (p(p+1)/s^2) w(s),
+#     x2'(s) = -B^2/s^2 = -x2(s)/s, x2''(s) = 2B^2/s^3 = 2 x2(s)/s^2,
+#
+#     R''(s) = w''(s) TP(x2) + 2 w'(s) TP'(x2) x2'(s)
+#              + w(s) TP''(x2) x2'(s)^2 + w(s) TP'(x2) x2''(s),
+#
+#   and the Gamma of the full price is V_DO''(s) = TP''(s) - R''(s).
+
+def _truncated_put_first_derivative(
+    x: torch.Tensor,
+    K: float,
+    B: float,
+    r: float,
+    sigma: float,
+    tau_safe: torch.Tensor,
+) -> torch.Tensor:
+    r""":math:`\mathrm d\,\mathrm{TP}(x)/\mathrm dx`, see the module-level derivation note."""
+    sigma_sqrt_tau = sigma * torch.sqrt(tau_safe)
+    d_plus_K = (torch.log(x / K) + (r + 0.5 * sigma**2) * tau_safe) / sigma_sqrt_tau
+    d_plus_B = (torch.log(x / B) + (r + 0.5 * sigma**2) * tau_safe) / sigma_sqrt_tau
+    d_minus_B = d_plus_B - sigma_sqrt_tau
+    return (
+        _normal_cdf(d_plus_K) - _normal_cdf(d_plus_B)
+        + (K - B) * torch.exp(-r * tau_safe) * _normal_pdf(d_minus_B) / (x * sigma_sqrt_tau)
+    )
+
+
+def _truncated_put_gamma(
+    x: torch.Tensor,
+    K: float,
+    B: float,
+    r: float,
+    sigma: float,
+    tau_safe: torch.Tensor,
+) -> torch.Tensor:
+    r""":math:`\mathrm d^2\,\mathrm{TP}(x)/\mathrm dx^2`, see the module-level derivation note."""
+    sigma_sqrt_tau = sigma * torch.sqrt(tau_safe)
+    d_plus_K = (torch.log(x / K) + (r + 0.5 * sigma**2) * tau_safe) / sigma_sqrt_tau
+    d_plus_B = (torch.log(x / B) + (r + 0.5 * sigma**2) * tau_safe) / sigma_sqrt_tau
+    d_minus_B = d_plus_B - sigma_sqrt_tau
+    gamma_K = _normal_pdf(d_plus_K) / (x * sigma_sqrt_tau)
+    gamma_B = _normal_pdf(d_plus_B) / (x * sigma_sqrt_tau)
+    return (
+        gamma_K - gamma_B
+        - (K - B) * torch.exp(-r * tau_safe) * _normal_pdf(d_minus_B) / (x**2 * sigma_sqrt_tau)
+        * (d_minus_B / sigma_sqrt_tau + 1.0)
+    )
+
+
+def reiner_rubinstein_down_and_out_put_gamma(
+    s: torch.Tensor,
+    K: float,
+    B: float,
+    r: float,
+    sigma: float,
+    tau: torch.Tensor,
+) -> torch.Tensor:
+    r"""Closed-form Gamma :math:`\partial_{ss}V_{DO}(s,t)` of the Reiner-Rubinstein price.
+
+    Since :math:`V_{DO}` is itself a combination of Black-Scholes-style put
+    terms (method of images, :func:`reiner_rubinstein_down_and_out_put`), its
+    Gamma is a combination of the corresponding vanilla Gammas
+    :math:`\Gamma(x,\mathrm{strike})=N'(d_+(x,\mathrm{strike}))/(x\sigma
+    \sqrt\tau)`, together with the extra terms generated by differentiating
+    the reflection prefactor :math:`(B/s)^{2\nu/\sigma^2}` and the reflected
+    spot :math:`B^2/s` through the chain and product rules (both are
+    functions of :math:`s` alone). Full derivation in the comment above this
+    function; every closed form used here was checked there against a
+    sympy symbolic derivative of the exact same expression the Python
+    :func:`reiner_rubinstein_down_and_out_put` code evaluates, and the
+    checks simplify to exactly zero (not merely numerically small).
+
+    Args:
+        s:     Underlying asset price tensor.  Values ``s <= B`` price at
+               exactly ``0.0`` (the price is identically zero there, hence
+               so is its second derivative).
+        K:     Strike price, with ``K > B`` (reverse knock-out regime).
+        B:     Knock-out barrier, :math:`0 < B < K`.
+        r:     Risk-free rate (also the cost-of-carry; no dividend).
+        sigma: Volatility.
+        tau:   Time to maturity :math:`T-t`, tensor broadcastable with ``s``.
+
+    Returns:
+        :math:`\partial_{ss}V_{DO}(s,t)`, same broadcast shape as ``s``/``tau``.
+
+    Raises:
+        ValueError: If ``B >= K`` (outside the regime this formula covers).
+    """
+    if not (0.0 < B < K):
+        raise ValueError(
+            f"reiner_rubinstein_down_and_out_put_gamma covers only the reverse "
+            f"knock-out regime 0 < B < K; got {B=}, {K=}."
+        )
+
+    tau_safe = torch.clamp(tau, min=_TAU_EPS)
+    s_safe = torch.clamp(s, min=B * (1.0 + 1e-6))
+    x2 = B**2 / s_safe
+
+    p = 2.0 * r / sigma**2 - 1.0  # exponent, matches reiner_rubinstein_down_and_out_put
+
+    w = (B / s_safe) ** p
+    w_prime = -(p / s_safe) * w
+    w_double_prime = (p * (p + 1.0) / s_safe**2) * w
+    x2_prime = -x2 / s_safe
+    x2_double_prime = 2.0 * x2 / s_safe**2
+
+    TP_at_x2 = _truncated_put(x2, K, B, r, sigma, tau_safe)
+    TP_prime_at_x2 = _truncated_put_first_derivative(x2, K, B, r, sigma, tau_safe)
+    TP_gamma_at_x2 = _truncated_put_gamma(x2, K, B, r, sigma, tau_safe)
+
+    reflected_term_gamma = (
+        w_double_prime * TP_at_x2
+        + 2.0 * w_prime * TP_prime_at_x2 * x2_prime
+        + w * TP_gamma_at_x2 * x2_prime**2
+        + w * TP_prime_at_x2 * x2_double_prime
+    )
+
+    gamma = _truncated_put_gamma(s_safe, K, B, r, sigma, tau_safe) - reflected_term_gamma
+    return torch.where(s > B, gamma, torch.zeros_like(gamma))
