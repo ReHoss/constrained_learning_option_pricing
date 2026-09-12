@@ -52,6 +52,7 @@ import logging
 import math
 import random
 import os
+import socket
 import sys
 import time
 from datetime import datetime, timezone
@@ -998,6 +999,12 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=None, help="Log interval (default: adaptive).")
     parser.add_argument("--checkpoint-every", type=int, default=2000, help="Checkpoint period in iterations (0 disables periodic checkpoints).")
     parser.add_argument("--resume", action="store_true", help="Resume each epsilon from its checkpoint if present.")
+    parser.add_argument("--out-dir", type=str, default=None,
+                         help="Output directory override. Default: a fresh timestamped directory under "
+                              "data/<script>/ derived from the configuration. Pass an EXISTING run "
+                              "directory together with --resume to continue that run from its checkpoint "
+                              "(e.g. after migrating it to another machine); its metadata.yaml is then "
+                              "kept and a 'resumes' entry (command, host, timestamp) is appended to it.")
     parser.add_argument("--seed", type=int, default=0, help="Master seed (shared across all epsilons).")
     parser.add_argument("--num-threads", type=int, default=None,
                          help="Intra-op thread count passed to torch.set_num_threads before any tensor "
@@ -1147,9 +1154,10 @@ def main() -> None:
     # The corner-exclusion flag belongs in the directory name: it changes what
     # the run IS, and metadata.yaml is not what one reads when listing data/.
     corner_tag = "_nocorner" if args.exclude_corner_from_collocation else ""
-    out_dir = script_data_dir(__file__) / (
+    out_dir = (Path(args.out_dir) if args.out_dir is not None else script_data_dir(__file__) / (
         f"{debug_prefix}{timestamp}_iters{args.iters}_eps{eps_tag}_seed{args.seed}{payoff_tag}{corner_tag}"
-    )
+    ))
+    resuming_existing_run = args.resume and (out_dir / "metadata.yaml").exists()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -1164,6 +1172,7 @@ def main() -> None:
     logger.info(f"  Output directory: {out_dir}")
     logger.info(f"  Log file (follow in real time): {out_dir / 'training.log'}")
     logger.info(f"  Command: {' '.join(sys.argv)}")
+    logger.info(f"  Host: {socket.gethostname()}")
     logger.info(f"  Python: {sys.version.split()[0]}")
     logger.info(f"  PyTorch: {torch.__version__}")
     logger.info(f"  Torch threads (effective): {torch.get_num_threads()}  "
@@ -1243,6 +1252,7 @@ def main() -> None:
         # 1.98 on the relative L2 error of the Delta.  torch.get_num_threads()
         # is the effective value, which OMP_NUM_THREADS may leave unset.
         "environment": {
+            "host": socket.gethostname(),
             "num_threads_flag": args.num_threads,
             "torch_num_threads": torch.get_num_threads(),
             "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
@@ -1269,6 +1279,25 @@ def main() -> None:
             "split_n_quad": args.split_n_quad,
         },
     }
+    if resuming_existing_run:
+        # The run's identity (original command, seeds, git commit, thread
+        # count) is the one recorded at its first launch; a resume only adds
+        # its own provenance so the continuation is traceable.
+        with open(out_dir / "metadata.yaml") as f:
+            metadata_on_disk = yaml.safe_load(f)
+        metadata_on_disk.setdefault("resumes", []).append({
+            "command": metadata["command"],
+            "timestamp": metadata["timestamp"],
+            "environment": metadata["environment"],
+        })
+        metadata = metadata_on_disk
+        logger.info(f"  --resume into an existing run directory: metadata.yaml kept, resume #{len(metadata['resumes'])} "
+                    f"recorded (host {socket.gethostname()}).")
+        if metadata["environment"].get("torch_num_threads") != torch.get_num_threads():
+            logger.warning(
+                f"  Resuming with {torch.get_num_threads()} torch threads while the run started with "
+                f"{metadata['environment'].get('torch_num_threads')}: float32 reductions may differ from here on."
+            )
     with open(out_dir / "metadata.yaml", "w") as f:
         yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
 
