@@ -1,0 +1,11 @@
+# republique (16 physical cores): 4 split resumes x 4 threads.
+# Migration of the 50000-iteration comparison off porte-d-orleans on 2026-09-12
+# (load average 118 on 20 physical cores from other users: splits slowed from 1.1 to
+# 3 s/iteration). Split runs are RESUMED from their iteration-26000 checkpoints in their
+# original run directories (--out-dir + --resume; the pilot keeps metadata.yaml and
+# records the resume); Black-Scholes runs had not started and are launched afresh.
+# 4 threads per job everywhere, as on porte-d-orleans.
+--epsilons 0.1 --iters 50000 --seed 0 --split-payoff --exclude-corner-from-collocation --out-dir data/pilot_down_and_out_put/20260912_071515_iters50000_eps0.1_seed0_split_nuc0.3_nquad8000_nocorner --resume
+--epsilons 0.1 --iters 50000 --seed 1 --split-payoff --exclude-corner-from-collocation --out-dir data/pilot_down_and_out_put/20260912_071515_iters50000_eps0.1_seed1_split_nuc0.3_nquad8000_nocorner --resume
+--epsilons 0.1 --iters 50000 --seed 2 --split-payoff --exclude-corner-from-collocation --out-dir data/pilot_down_and_out_put/20260912_071515_iters50000_eps0.1_seed2_split_nuc0.3_nquad8000_nocorner --resume
+--epsilons 0.1 --iters 50000 --seed 3 --split-payoff --exclude-corner-from-collocation --out-dir data/pilot_down_and_out_put/20260912_071515_iters50000_eps0.1_seed3_split_nuc0.3_nquad8000_nocorner --resume
