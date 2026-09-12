@@ -241,7 +241,9 @@ def plot_comparison(aggregated: dict, path: Path, iters: int, epsilon: float) ->
         f"$\\varepsilon={epsilon:g}$, corner window excluded from collocation",
         fontsize=10,
     )
-    fig.tight_layout()
+    # Explicit margins: the rotated two-line tick labels and the formula box
+    # below them need a reserved bottom band that tight_layout does not provide.
+    fig.subplots_adjust(left=0.08, right=0.99, top=0.82, bottom=0.42, wspace=0.32)
     finalize_figure(fig, path, formula=FORMULA_TEXT, axes=list(axes), formula_fontsize=6.5)
 
 
