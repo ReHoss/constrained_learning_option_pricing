@@ -832,6 +832,59 @@ def _write_summary(out_dir: Path, epsilon: float, payload: dict) -> None:
     logger.info(f"  Summary saved -> {path}")
 
 
+def read_run_metadata(run_dir: Path) -> dict:
+    """Read a run's ``metadata.yaml`` (written once per run by ``main``)."""
+    with open(run_dir / "metadata.yaml") as f:
+        return yaml.safe_load(f)
+
+
+def formula_text_for_run(meta: dict) -> str:
+    """The figure formula box matching the terminal-function mode recorded in
+    a run's metadata. ``.get(..., default)`` keeps runs recorded before a mode
+    existed readable (absent key -> the raw-payoff default)."""
+    hyper = meta["hyperparameters"]
+    if hyper.get("smoothed_payoff", False):
+        return formula_text_smoothed_payoff(hyper.get("eps0", DEFAULT_EPS0), hyper.get("grading", DEFAULT_GRADING))
+    if hyper.get("black_scholes_payoff", False):
+        return FORMULA_TEXT_BLACK_SCHOLES_PAYOFF
+    if hyper.get("split_payoff", False):
+        comparison_volatility = hyper.get("comparison_volatility", None)
+        return formula_text_split_payoff(
+            comparison_volatility if comparison_volatility is not None else meta["contract"]["sigma"],
+            hyper.get("split_n_quad", DEFAULT_SPLIT_N_QUAD),
+        )
+    return FORMULA_TEXT_RAW_PAYOFF
+
+
+def load_trained_model(run_dir: Path, epsilon: float, meta: dict | None = None) -> ETCNN:
+    """Rebuild the trial solution of a finished run from its metadata and load
+    the saved final weights ``models/model_eps<EPSILON>.pt`` (evaluation mode).
+
+    The terminal-function mode, its parameters and the contract are taken from
+    ``metadata.yaml`` so that the rebuilt ``g1``/``g2`` are those the run was
+    trained with; the model seed is irrelevant because the weights are
+    overwritten. Used by ``--replot`` and by the aggregation scripts, which
+    must never retrain or re-derive anything from the run's command line.
+    """
+    meta = meta if meta is not None else read_run_metadata(run_dir)
+    hyper = meta["hyperparameters"]
+    K, B, r, sigma, T = (meta["contract"][k] for k in ("K", "B", "r", "sigma", "T"))
+    model = build_model(
+        K, B, T, epsilon, model_seed=0,
+        smoothed_payoff=hyper.get("smoothed_payoff", False),
+        eps0=hyper.get("eps0", DEFAULT_EPS0), grading=hyper.get("grading", DEFAULT_GRADING),
+        black_scholes_payoff=hyper.get("black_scholes_payoff", False), r=r, sigma=sigma,
+        analytic_residual=hyper.get("analytic_residual", False),
+        split_payoff=hyper.get("split_payoff", False), s_inf=meta["domain"]["s_inf"],
+        comparison_volatility=hyper.get("comparison_volatility", None),
+        split_y_lo=hyper.get("split_y_lo", None), split_y_hi=hyper.get("split_y_hi", None),
+        split_n_quad=hyper.get("split_n_quad", DEFAULT_SPLIT_N_QUAD),
+    )
+    model_path = run_dir / "models" / f"model_eps{epsilon:g}.pt"
+    model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
+    return model.to(DEVICE).eval()
+
+
 EVALUATION_METRIC_KEYS = (
     "rel_l2_global", "rel_l2_corner", "rel_l2_outside_corner",
     "max_abs_error_global", "max_abs_error_corner", "max_abs_error_outside_corner",
@@ -989,34 +1042,11 @@ def main() -> None:
         if not summaries:
             logger.error(f"No summary_eps*.yaml found in {out_dir}")
             sys.exit(1)
-        with open(out_dir / "metadata.yaml") as f:
-            meta = yaml.safe_load(f)
+        meta = read_run_metadata(out_dir)
         K, B, r, sigma, T = (meta["contract"][k] for k in ("K", "B", "r", "sigma", "T"))
         s_inf = meta["domain"]["s_inf"]
         corner_window = meta["hyperparameters"]["corner_window"]
-        analytic_residual = meta["hyperparameters"].get("analytic_residual", False)
-        # .get(..., default) keeps --replot working on runs recorded before
-        # --smoothed-payoff/--black-scholes-payoff/--split-payoff existed
-        # (absent key -> the raw-payoff default).
-        smoothed_payoff = meta["hyperparameters"].get("smoothed_payoff", False)
-        eps0 = meta["hyperparameters"].get("eps0", DEFAULT_EPS0)
-        grading = meta["hyperparameters"].get("grading", DEFAULT_GRADING)
-        black_scholes_payoff = meta["hyperparameters"].get("black_scholes_payoff", False)
-        split_payoff = meta["hyperparameters"].get("split_payoff", False)
-        comparison_volatility = meta["hyperparameters"].get("comparison_volatility", None)
-        split_y_lo = meta["hyperparameters"].get("split_y_lo", None)
-        split_y_hi = meta["hyperparameters"].get("split_y_hi", None)
-        split_n_quad = meta["hyperparameters"].get("split_n_quad", DEFAULT_SPLIT_N_QUAD)
-        if smoothed_payoff:
-            formula_text = formula_text_smoothed_payoff(eps0, grading)
-        elif black_scholes_payoff:
-            formula_text = FORMULA_TEXT_BLACK_SCHOLES_PAYOFF
-        elif split_payoff:
-            formula_text = formula_text_split_payoff(
-                comparison_volatility if comparison_volatility is not None else sigma, split_n_quad,
-            )
-        else:
-            formula_text = FORMULA_TEXT_RAW_PAYOFF
+        formula_text = formula_text_for_run(meta)
         if meta["hyperparameters"].get("dtype") == "float64":
             torch.set_default_dtype(torch.float64)
         (out_dir / "figures").mkdir(exist_ok=True)
@@ -1027,17 +1057,7 @@ def main() -> None:
             if not model_path.exists():
                 logger.warning(f"[eps={epsilon:g}] no saved model at {model_path}, skipping its price-surface plot.")
                 continue
-            # seed irrelevant: weights are overwritten below
-            model = build_model(
-                K, B, T, epsilon, model_seed=0,
-                smoothed_payoff=smoothed_payoff, eps0=eps0, grading=grading,
-                black_scholes_payoff=black_scholes_payoff, r=r, sigma=sigma,
-                analytic_residual=analytic_residual,
-                split_payoff=split_payoff, s_inf=s_inf, comparison_volatility=comparison_volatility,
-                split_y_lo=split_y_lo, split_y_hi=split_y_hi, split_n_quad=split_n_quad,
-            )
-            model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
-            model.to(DEVICE).eval()
+            model = load_trained_model(out_dir, epsilon, meta)
             eval_result = evaluate_against_closed_form(model, K, B, r, sigma, T, s_inf, corner_window)
             # Refresh the saved metrics from the saved model: the evaluation
             # grid is deterministic, so this reproduces the training-time
