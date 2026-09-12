@@ -631,10 +631,23 @@ def evaluate_against_closed_form(
     n_s: int = 300, n_t: int = 100,
 ) -> dict:
     """Relative L2 error of the trained price against the closed form, on a
-    dense (s, t) grid, both globally and restricted to the corner window
-    {|s-B| + (T-t) <= corner_window} (the note's ell^1 corner-distance,
-    Definition 5's ``N_epsilon`` shape, evaluated at a fixed window size so
-    epsilon values are compared on the same window).
+    dense (s, t) grid, on three regions:
+
+    - ``global``: the whole grid (B, s_inf) x (0, T), corner window INCLUDED.
+      Because the reference is of order K-B inside the window while the
+      barrier condition forces the trial solution to 0 on s=B, this metric is
+      dominated by the corner discontinuity whenever the window is not
+      negligible; it is kept for continuity with earlier runs, not as the
+      comparison metric.
+    - ``corner``: restricted to the window {|s-B| + (T-t) <= corner_window}
+      (the note's ell^1 corner-distance, Definition 5's ``N_epsilon`` shape,
+      at a fixed window size so epsilon values are compared on the same
+      window). A diagnostic of the corner treatment only: with
+      --exclude-corner-from-collocation the residual is never enforced there.
+    - ``outside_corner``: the complement of the window, i.e. exactly the
+      region where the PDE residual is enforced when the corner is excluded
+      from collocation. This is the metric on which terminal-function modes
+      are compared.
     """
     s_grid = torch.linspace(B + 1e-4, s_inf, n_s, dtype=torch.float64)
     t_grid = torch.linspace(0.0, T - 1e-4, n_t, dtype=torch.float64)
@@ -654,11 +667,17 @@ def evaluate_against_closed_form(
         den = torch.linalg.vector_norm(ref[mask])
         return float(num / den) if den > 0 else float("nan")
 
+    outside_corner_mask = ~corner_mask
     return {
         "rel_l2_global": _rel_l2(error, reference, torch.ones_like(corner_mask, dtype=torch.bool)),
         "rel_l2_corner": _rel_l2(error, reference, corner_mask),
+        "rel_l2_outside_corner": _rel_l2(error, reference, outside_corner_mask),
         "max_abs_error_global": float(error.abs().max()),
         "max_abs_error_corner": float(error[corner_mask].abs().max()) if corner_mask.any() else float("nan"),
+        "max_abs_error_outside_corner": (
+            float(error[outside_corner_mask].abs().max()) if outside_corner_mask.any() else float("nan")
+        ),
+        "corner_window_grid_fraction": float(corner_mask.double().mean()),
         "s_grid": s_grid, "t_grid": t_grid, "learned": learned, "reference": reference,
     }
 
@@ -813,6 +832,19 @@ def _write_summary(out_dir: Path, epsilon: float, payload: dict) -> None:
     logger.info(f"  Summary saved -> {path}")
 
 
+EVALUATION_METRIC_KEYS = (
+    "rel_l2_global", "rel_l2_corner", "rel_l2_outside_corner",
+    "max_abs_error_global", "max_abs_error_corner", "max_abs_error_outside_corner",
+    "corner_window_grid_fraction",
+)
+
+
+def _evaluation_metrics(eval_result: dict) -> dict:
+    """The scalar evaluation metrics of ``evaluate_against_closed_form``, as
+    written to ``summary_eps<EPSILON>.yaml`` (tensors excluded)."""
+    return {key: eval_result[key] for key in EVALUATION_METRIC_KEYS}
+
+
 def _read_summaries(out_dir: Path) -> list[dict]:
     summaries = []
     for path in sorted(out_dir.glob("summary_eps*.yaml")):
@@ -863,9 +895,10 @@ def main() -> None:
     parser.add_argument("--exclude-corner-from-collocation", action="store_true",
                          help="Reject interior collocation points falling in the ell^1 corner window "
                               "(s-B)+(T-t) <= --corner-window, so the PDE residual is never enforced at the "
-                              "conflicting corner (B,T). The evaluation metrics already remove that window; "
-                              "this makes the training domain agree with them, isolating the treatment of the "
-                              "payoff singularity at s=K from that of the corner.")
+                              "conflicting corner (B,T). The evaluation then reports rel_l2_outside_corner on "
+                              "exactly the region where the residual is enforced (rel_l2_global still "
+                              "includes the window and rel_l2_corner is the window alone), isolating the "
+                              "treatment of the payoff singularity at s=K from that of the corner.")
     parser.add_argument("--analytic-residual", action="store_true",
                          help="With --black-scholes-payoff only: build g2 as BlackScholesCornerExtension, "
                               "which exposes an analytic black_scholes_residual. compute_loss then assembles "
@@ -1006,6 +1039,21 @@ def main() -> None:
             model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
             model.to(DEVICE).eval()
             eval_result = evaluate_against_closed_form(model, K, B, r, sigma, T, s_inf, corner_window)
+            # Refresh the saved metrics from the saved model: the evaluation
+            # grid is deterministic, so this reproduces the training-time
+            # values and fills in metrics added after the run was trained
+            # (e.g. rel_l2_outside_corner) without retraining.
+            refreshed = _evaluation_metrics(eval_result)
+            changed = {k: (summary.get(k), v) for k, v in refreshed.items()
+                       if summary.get(k) is None or abs(summary[k] - v) > 1e-12 * max(1.0, abs(v))}
+            summary.update(refreshed)
+            _write_summary(out_dir, epsilon, summary)
+            logger.info(
+                f"[eps={epsilon:g}] evaluation refreshed from {model_path}: "
+                f"rel_l2_outside_corner={eval_result['rel_l2_outside_corner']:.4e}  "
+                f"rel_l2_global={eval_result['rel_l2_global']:.4e}  rel_l2_corner={eval_result['rel_l2_corner']:.4e}"
+                + (f"  (summary keys added/changed: {sorted(changed)})" if changed else "  (summary unchanged)")
+            )
             plot_price_surface(eval_result, epsilon, K, B, out_dir / "figures" / f"price_surface_eps{epsilon:g}.png", formula_text=formula_text)
             plot_log_slice(eval_result, epsilon, B, out_dir / "figures" / f"log_slice_eps{epsilon:g}.png", formula_text=formula_text)
             logger.info(f"[eps={epsilon:g}] price-surface figure rebuilt from {model_path}")
@@ -1233,10 +1281,13 @@ def main() -> None:
             model, args.K, args.B, args.r, args.sigma, args.T, args.s_inf, corner_window,
         )
         logger.info(
-            f"[eps={epsilon:g}] vs closed form: rel_l2_global={eval_result['rel_l2_global']:.4e}  "
+            f"[eps={epsilon:g}] vs closed form: rel_l2_outside_corner={eval_result['rel_l2_outside_corner']:.4e}  "
+            f"rel_l2_global={eval_result['rel_l2_global']:.4e}  "
             f"rel_l2_corner={eval_result['rel_l2_corner']:.4e}  "
+            f"max_abs_outside_corner={eval_result['max_abs_error_outside_corner']:.4e}  "
             f"max_abs_global={eval_result['max_abs_error_global']:.4e}  "
-            f"max_abs_corner={eval_result['max_abs_error_corner']:.4e}"
+            f"max_abs_corner={eval_result['max_abs_error_corner']:.4e}  "
+            f"(corner window = {100 * eval_result['corner_window_grid_fraction']:.2f}% of the evaluation grid)"
         )
 
         model_path = out_dir / "models" / f"model_eps{epsilon:g}.pt"
@@ -1247,10 +1298,7 @@ def main() -> None:
             "epsilon": epsilon,
             "best_loss": best_loss,
             "best_iter": best_iter,
-            "rel_l2_global": eval_result["rel_l2_global"],
-            "rel_l2_corner": eval_result["rel_l2_corner"],
-            "max_abs_error_global": eval_result["max_abs_error_global"],
-            "max_abs_error_corner": eval_result["max_abs_error_corner"],
+            **_evaluation_metrics(eval_result),
             "final_history_loss": history["loss"][-1] if history["loss"] else None,
         }
         _write_summary(out_dir, epsilon, summary)
@@ -1267,6 +1315,7 @@ def main() -> None:
     for s in summaries:
         logger.info(
             f"  eps={s['epsilon']:<7g} best_loss={s['best_loss']:.4e}@{s['best_iter']:<6d} "
+            f"rel_l2_outside_corner={s['rel_l2_outside_corner']:.4e}  "
             f"rel_l2_global={s['rel_l2_global']:.4e}  rel_l2_corner={s['rel_l2_corner']:.4e}"
         )
     logger.info(f"Total wall-clock time: {elapsed_total:.1f}s ({elapsed_total/len(summaries):.1f}s/epsilon)")
