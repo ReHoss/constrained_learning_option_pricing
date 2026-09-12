@@ -106,6 +106,12 @@ def finalize_figure(fig, path, *, legends=(), formula=None, axes=(), dpi=140,
     legs = [lg for lg in legends if lg is not None]
     formula_art = formula_box(fig, formula, fontsize=formula_fontsize) if formula else None
     extra = legs + ([formula_art] if formula_art is not None else [])
+    # Passing bbox_extra_artists REPLACES matplotlib's default list (which
+    # holds the figure's suptitle), so the suptitle must be re-added or the
+    # tight bounding box crops it away.
+    suptitle = getattr(fig, "_suptitle", None)
+    if suptitle is not None:
+        extra = extra + [suptitle]
     check_layout(fig, fname, legends=legs, formula=formula_art, axes=axes)
     fig.savefig(path, dpi=dpi, bbox_inches="tight", bbox_extra_artists=extra)
     plt.close(fig)
