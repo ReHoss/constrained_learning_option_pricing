@@ -1,0 +1,15 @@
+# republique (AVX2, bit-identical to porte-d-orleans): the ten Black-Scholes runs of the
+# 50000-iteration comparison, launched after the four resumed splits finish so that the
+# whole comparison is trained on AVX2 kernels with 4 threads, like the 20000-iteration
+# batch. The copies started on the Sandy Bridge hosts (auteuil, chapelle, pouchet) are
+# kept as a hardware replicate, not as the canonical runs.
+--epsilons 0.1 --iters 50000 --seed 0 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation
+--epsilons 0.1 --iters 50000 --seed 1 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation
+--epsilons 0.1 --iters 50000 --seed 2 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation
+--epsilons 0.1 --iters 50000 --seed 3 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation
+--epsilons 0.1 --iters 50000 --seed 4 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation
+--epsilons 0.1 --iters 50000 --seed 0 --black-scholes-payoff --exclude-corner-from-collocation
+--epsilons 0.1 --iters 50000 --seed 1 --black-scholes-payoff --exclude-corner-from-collocation
+--epsilons 0.1 --iters 50000 --seed 2 --black-scholes-payoff --exclude-corner-from-collocation
+--epsilons 0.1 --iters 50000 --seed 3 --black-scholes-payoff --exclude-corner-from-collocation
+--epsilons 0.1 --iters 50000 --seed 4 --black-scholes-payoff --exclude-corner-from-collocation

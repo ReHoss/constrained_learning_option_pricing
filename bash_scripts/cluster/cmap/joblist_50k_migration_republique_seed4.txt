@@ -1,0 +1,5 @@
+# republique: split seed 4 resumed from its iteration-26000 checkpoint (moved off porte-pouchet,
+# whose Westmere CPU has no AVX2: torch selects different float32 kernels there, measured
+# 8.6e-5 weight difference after 300 iterations against orleans/republique, which are
+# bit-identical to each other). Runs as a 5th job next to the 4 other splits.
+--epsilons 0.1 --iters 50000 --seed 4 --split-payoff --exclude-corner-from-collocation --out-dir data/pilot_down_and_out_put/20260912_071515_iters50000_eps0.1_seed4_split_nuc0.3_nquad8000_nocorner --resume

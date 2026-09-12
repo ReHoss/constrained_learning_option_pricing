@@ -1,0 +1,4 @@
+# porte-de-la-chapelle: Black-Scholes ordinary-route seed 3, relaunched after its first
+# attempt died at start-up with "trap invalid opcode in libtorch_cpu.so" (Sandy Bridge CPU,
+# no AVX2). Hardware-replicate copy only.
+--epsilons 0.1 --iters 50000 --seed 3 --black-scholes-payoff --exclude-corner-from-collocation
