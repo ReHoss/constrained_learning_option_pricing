@@ -337,3 +337,63 @@ Chen-Mangasarian family ($13.8$ per cent, $2.8$ standard deviations) is
 been set aside. The dispersion estimate comes from the raw mode, the only
 multi-seed series available, and calibrates an order of magnitude rather than
 substituting for replication of the modes actually compared.
+
+## 11. Evaluation metrics and model-based diagnostics for the corner-excluded comparison
+
+Let $\Omega = (B, s_\infty) \times (0, T)$ be the evaluation domain, discretised by the pilot on a
+uniform $300 \times 100$ grid, and let $V_{DO}$ denote the Reiner-Rubinstein closed form. For a
+region $R \subset \Omega$ the relative $L^2$ error of the trained trial solution $\Phi_\theta = g_1 u_\theta + g_2$ is
+
+$$
+\mathrm{rel}_{L^2}(R) = \frac{\|\Phi_\theta - V_{DO}\|_{L^2(R)}}{\|V_{DO}\|_{L^2(R)}} .
+$$
+
+Three regions are reported by `evaluate_against_closed_form` (`summary_eps<EPSILON>.yaml` keys in
+parentheses), with $N_w = \{(s,t) : |s-B| + (T-t) \le w\}$ the $\ell^1$ corner window and $w$ the
+value of `--corner-window` (default: the largest $\varepsilon$ of the sweep):
+
+- $R = \Omega$ (`rel_l2_global`) --- the corner window **included**. Inside $N_w$ the closed form
+  is of order $K - B$ while the barrier factor $g_1$ forces $\Phi_\theta = 0$ on $s = B$, so this
+  metric is dominated by the corner discontinuity whenever $N_w$ is not negligible. Kept for
+  continuity with earlier runs only.
+- $R = N_w$ (`rel_l2_corner`) --- the window alone. With `--exclude-corner-from-collocation` the
+  residual is never enforced there; the value ($0.55$--$0.62$ on every run of the 20000-iteration
+  comparison) is a diagnostic of the corner treatment, not of the training.
+- $R = \Omega \setminus N_w$ (`rel_l2_outside_corner`) --- the complement, i.e. exactly the region
+  where the residual is enforced when the corner is excluded. This is the comparison metric.
+  It is recomputed from the saved model by `--replot` (the evaluation grid is deterministic:
+  existing values are reproduced to $10^{-7}$ relative across machines).
+
+Two diagnostics are computed by `aggregate_terminal_function_comparison.py` from the saved
+models (no retraining), with $\tau = T - t$:
+
+**Window-shape sweep.** $\mathrm{rel}_{L^2}(\Omega \setminus N)$ for three families of excluded
+window $N$, plotted against the excluded area fraction $|N \cap \Omega| / |\Omega|$ rather than
+against the family parameter, so that the three shapes share one abscissa:
+
+$$
+N_w = \{ |s-B| + \tau \le w \}, \quad
+N_c = \{ |s-B| \le c\, B \sigma \sqrt{\tau} \}, \quad
+N_d = \{ \tau\,(s-B) \le d \},
+$$
+
+with $w \in \{0.1, 0.2, 0.3, 0.5\}$, $c \in \{0, 1, 2, 3\}$, $d \in \{0.005, 0.02, 0.05, 0.1\}$.
+If the error were concentrated at the corner, the curves would decrease with the excluded
+area; measured on the 20000-iteration comparison (5 seeds per configuration, `data/aggregate_terminal_function_comparison/20260912_124805_iters20000_eps0.1_nocorner/model_based_diagnostics/`),
+the across-seed medians are flat or **increasing** with the excluded area for all three shapes
+and all three configurations (lozenge, Black-Scholes ordinary route: $0.169, 0.156, 0.158, 0.172$
+for $w = 0.1, 0.2, 0.3, 0.5$; parabola: $0.220, 0.207, 0.202, 0.249$ for $c = 0, 1, 2, 3$;
+hyperbola: $0.164, 0.158, 0.169, 0.197$ for $d = 0.005, 0.02, 0.05, 0.1$). The error of these runs
+is therefore not localised at the corner: it is spread over the interior, and the relative
+metric rises as the regions where $\|V_{DO}\|$ is concentrated are removed from the denominator.
+
+**Network contribution in a band.** In $\mathcal{B} = \{ b_{lo} < |s-B| < b_{hi} \}$ (all $t$;
+default $b_{lo} = 0.1$, $b_{hi} = 0.3$), the discrete norms
+$\|\Phi_\theta - V_{DO}\|_{L^2(\mathcal{B})}$ and $\|h_\varepsilon - V_{DO}\|_{L^2(\mathcal{B})}$
+are compared, where $h_\varepsilon = g_2$ is the terminal-function extension alone. A ratio close
+to $1$ would mean the network adds nothing in the band. Measured (median over 5 seeds):
+$\|h_\varepsilon - V_{DO}\| = 4.37 \times 10^{-2}$ (Black-Scholes modes) and $4.31 \times 10^{-2}$
+(split), $\|\Phi_\theta - V_{DO}\| = 4.8$--$5.8 \times 10^{-3}$, ratio $0.11$--$0.13$ (range over
+seeds $0.097$--$0.181$), against $\|V_{DO}\|_{L^2(\mathcal{B})} = 6.17 \times 10^{-2}$. The network
+reduces the extension's error in the band by a factor of $5.5$ to $10$; the remaining error is
+$7$--$13$ per cent of $\|V_{DO}\|$ in the band.
