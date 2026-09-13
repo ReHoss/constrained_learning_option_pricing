@@ -500,3 +500,60 @@ and the bound equals $4.1\times10^{-8}$ for the Black-Scholes terminal function 
 $1.6\times10^{-6}$ for the split-semigroup profile -- four to six orders of magnitude below the
 measured error floor of section 11, so the far-field condition removes the far-field
 component at no measurable cost in truncation error.
+
+## 13. The corner-layer floor is the terminal-trace defect of the ansatz (predicted, then measured)
+
+For every terminal-function mode, $g_1(s,T) = 0$ and $g_2(s,T) = \zeta\big(\tfrac{s-B}{\varepsilon}\big)(K-s)^+$
+(the Black-Scholes put price, the split profile and the raw payoff all equal $(K-s)^+$ at $t = T$).
+The terminal trace of the trial solution is therefore
+
+$$
+\Phi_\theta(s,T) = \zeta\!\left(\frac{s-B}{\varepsilon}\right)(K-s)^+ ,
+\qquad
+\delta(s) = \Phi_\theta(s,T) - (K-s)^+ = -\Big(1-\zeta\!\left(\tfrac{s-B}{\varepsilon}\right)\Big)(K-s)^+ ,
+$$
+
+a defect supported on $[B, B+\varepsilon]$, equal to $-(K-B)$ at $s = B^+$, and independent of
+$\theta$: the network cannot change it. It is forced by the exactness of the barrier condition
+($\zeta(0) = 0$) together with the incompatibility of the data at the corner
+($V_{DO}(B,t) = 0$ for $t < T$ while $V_{DO}(s,T) \to K-B \neq 0$ as $s \to B^+$).
+
+**Proposition (predicted floor).** Let $w$ solve $\mathcal L^{BS}w = 0$ in $(B,\infty)\times(0,T)$,
+$w(B,\cdot) = 0$, $w(\cdot,T) = \delta$, i.e. $w$ is the price of the down-and-out claim with
+payoff $\delta$. If $\Phi_\theta$ had zero interior residual, exact barrier and far-field data,
+then $\Phi_\theta - V_{DO} = w$ (uniqueness in the class of bounded solutions, section 12). By the
+reflection principle for the log-price diffusion absorbed at $b = \ln B$,
+
+$$
+w(s,\tau) = e^{-r\tau}\int_b^{\ln(B+\varepsilon)}
+\Big[p(\tau;x_0,x) - e^{2\nu(b-x_0)/\sigma^2}\,p(\tau;2b-x_0,x)\Big]\,\delta(e^x)\,dx ,
+\qquad x_0 = \ln s,\ \nu = r - \tfrac{\sigma^2}{2},
+$$
+
+with $p(\tau;x_0,\cdot)$ the Gaussian density of mean $x_0+\nu\tau$ and variance $\sigma^2\tau$.
+*Proof.* The integrand is the transition density of the killed process (the same identity, with
+the payoff $(K-s)^+$ in place of $\delta$, is the Reiner-Rubinstein formula of
+`reiner_rubinstein_down_and_out_put`; the script checks it numerically to $8\times10^{-9}$). $\square$
+
+**Measured** (`experiments/python_scripts/exp_barrier_option/diagnostic_scripts/predict_corner_layer_floor.py`,
+output `data/predict_corner_layer_floor/20260913_214751_20260913_172225_iters50000_eps0.1_nocorner/`): relative $L^2$ error per band of $s$, corner window removed, 50000 iterations, medians over 5 seeds.
+
+| Band of $s$ | Predicted floor $w$ alone | Measured, Black-Scholes ordinary | Measured, Black-Scholes two-term | Measured, split |
+|---|---|---|---|---|
+| $[0.6, 0.7]$ | $0.210$ | $0.204$ | $0.216$ | $0.205$ |
+| $[0.7, 1]$ | $0.085$ | $0.077$ | $0.083$ | $0.075$ |
+| $[1, 2]$ | $0.047$ | $0.059$ | $0.051$ | $0.049$ |
+| $[2, s_\infty]$ | $0.013$ | $13$ | $33$ | $57$ |
+| outside corner | $0.112$ | $0.122$ | $0.124$ | $0.127$ |
+
+On the three bands $s \le 2$ the predicted floor accounts for the measured error to within
+$10$ per cent, for the three terminal functions alike, and the remainder
+$\|(\Phi_\theta - V_{DO}) - w\|/\|V_{DO}\|$ is $0.03$--$0.05$ on $[0.6, 0.7]$ and $0.007$--$0.03$
+elsewhere (at 20000 iterations the remainder was $0.04$--$0.07$ and $0.02$--$0.13$). The far
+band $[2, s_\infty]$ is the separate, unconstrained far-field component of section 12, not
+explained by $\delta$. Conclusion (measured): the error floor of the corner-excluded runs on
+the training domain is the propagated terminal-trace defect $-(1-\zeta)(K-s)^+$ of the
+$\zeta$-switched ansatz -- a property of the ansatz, identical for every terminal function
+that equals the payoff at $t = T$, and unreachable by training. Its size is set by $\varepsilon$
+(the support of $\delta$) and by $K - B$ (its amplitude); the corner exclusion window does not
+change it, since $w$ is determined by the data, not by where the residual is enforced.
