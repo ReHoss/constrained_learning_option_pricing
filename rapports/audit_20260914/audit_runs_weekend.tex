@@ -1,0 +1,385 @@
+% Audit des runs du week-end du 12--14 septembre 2026 (down-and-out put,
+% comparaison des fonctions terminales, coin exclu). Lecture et vérification
+% uniquement : aucun entraînement, aucun diagnostic nouveau, aucune
+% modification du code. Compilable tel quel (pdfLaTeX).
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[french]{babel}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage[hyphens]{url}
+\usepackage[colorlinks=true,allcolors=blue!55!black]{hyperref}
+\urlstyle{tt}
+\sloppy
+\setlength{\emergencystretch}{3em}
+
+\newcommand{\epscoin}{\varepsilon_{\mathrm{coin}}}
+\newcommand{\epsliss}{\varepsilon_{\mathrm{liss}}}
+\newcommand{\etabli}{\textbf{[ÉTABLI]}}
+\newcommand{\mesure}{\textbf{[MESURÉ]}}
+\newcommand{\LBS}{\mathcal L^{BS}}
+\newcommand{\VDO}{V_{DO}}
+\newcommand{\code}[1]{\texttt{#1}}
+\DeclareUrlCommand\codepath{\urlstyle{tt}}
+
+\title{Audit des runs du 12--14 septembre 2026\\
+\large Down-and-out put, comparaison des fonctions terminales à coin exclu}
+\author{}
+\date{14 septembre 2026}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Périmètre.} Lecture du code à l'état \code{HEAD = 66ee604}
+(branche \code{barrier-option}), des fichiers \code{metadata.yaml},
+\code{summary\_eps0.1.yaml} et \code{training.log} des runs, et des artefacts
+d'agrégation déjà produits. Aucun entraînement, aucun diagnostic nouveau,
+aucune modification du code. Les numéros de ligne renvoient aux fichiers à
+\code{HEAD} sauf mention d'un commit. Le pilote est
+\codepath{experiments/python_scripts/exp_barrier_option/pilot_down_and_out_put.py},
+noté \code{pilot.py} ci-après ; les scripts de diagnostic sont sous
+\codepath{experiments/python_scripts/exp_barrier_option/diagnostic_scripts/}.
+Contrat commun à tous les runs cités : $K=1$, $B=0.6$, $r=0.03$, $\sigma=0.3$,
+$T=1$, $s_\infty=3$, $\epscoin=0.1$. Notation : $\Phi_\theta=g_1u_\theta+g_2$
+(prix appris complet), $\zeta$ le plateau $C^\infty$ de la Définition 5,
+$\tau=T-t$.
+
+\section{Géométrie de l'exclusion}
+\label{sec:exclusion}
+
+\paragraph{Code.} L'exclusion est implémentée dans \code{pilot.py},
+fonction \code{sample\_collocation} (lignes 183--234). La condition codée,
+ligne 219, est
+\begin{center}
+\codepath{inside_corner = (s_raw - B) + (T - t_raw) <= corner_exclusion_window}
+\end{center}
+appliquée aux tirages uniformes \code{s\_raw} $\sim\mathcal U(B,s_\infty)$ et
+\code{t\_raw} $\sim\mathcal U(0,T)$ (lignes 214--215) ; les points retenus par
+la condition sont retirés puis \emph{redessinés} (lignes 223--224), au plus
+\codepath{_CORNER_REJECTION_MAX_PASSES} $=50$ passes (ligne 102). La valeur
+de la fenêtre est fixée ligne 1173 :
+\codepath{corner_window = args.corner_window if ... else max(args.epsilons)}, soit
+$w=0.1$ pour tous les runs audités (\code{corner\_window: 0.1} dans chaque
+\code{metadata.yaml}). L'exclusion n'est active que sous
+\codepath{--exclude-corner-from-collocation} (ligne 1372 :
+\codepath{corner_exclusion_window=(corner_window if args.exclude_corner_from_collocation else None)}).
+Le masque d'évaluation (\codepath{evaluate_against_closed_form}, ligne 696) est
+\codepath{corner_mask = (ss - B).abs() + (T - tt) <= corner_window}, identique à
+la condition d'échantillonnage puisque $s>B$ sur la grille.
+
+\paragraph{Géométrie.} \etabli\ La région exclue est
+\[
+N_w=\{(s,t)\in(B,s_\infty)\times(0,T):\ (s-B)+(T-t)\le w\},\qquad w=0.1,
+\]
+le triangle rectangle de sommets $(B,T)$, $(B+w,T)$ et $(B,T-w)$. Elle est
+\textbf{bornée en temps} : $(s,t)\in N_w$ impose $T-t\le w-(s-B)\le w$, donc
+$t\in[T-w,T]=[0.9,1]$. Ce n'est \textbf{pas} une bande en $s$ valable pour
+tout $t$ : un point de la couche $[B,B+\epscoin]$ avec $\tau>w-(s-B)$ est
+échantillonné et le résidu y est imposé.
+
+\paragraph{Aires.} \etabli\ $|N_w|=w^2/2=5\times10^{-3}$ ;
+$|(B,s_\infty)\times(0,T)|=(s_\infty-B)\,T=2.4$ ; fraction exclue du domaine
+$=5\times10^{-3}/2.4=2.083\times10^{-3}$, soit $0.208$ pour cent.
+\mesure\ Sur la grille d'évaluation du pilote ($300\times100$, $s$ de
+$B+10^{-4}$ à $s_\infty$, $t$ de $0$ à $T-10^{-4}$) la fraction de noeuds
+dans $N_w$ vaut \codepath{corner_window_grid_fraction} $=2.433\times10^{-3}$
+(\code{summary\_eps0.1.yaml} de chaque run 50k), l'écart avec la valeur
+continue provenant de la discrétisation (le triangle touche deux bords de la
+grille). Bande $[B,B+\epscoin]\times[0,T]$ : aire $\epscoin T=0.1$ ; fraction
+de la bande recouverte par $N_w$ : $5\times10^{-3}/0.1=5$ pour cent. Les
+$95$ pour cent restants de la bande sont échantillonnés.
+
+\section{Métriques du rapport \code{strike\_g2}}
+\label{sec:metriques}
+
+\paragraph{Métriques du rapport.} Le rapport
+\codepath{rapports/strike_g2/strike_g2.tex} (daté du 1\up{er} septembre 2026)
+utilise deux quantités au strike $s=K=1$.
+
+\begin{enumerate}
+\item \etabli\ (\S5 du rapport, table « Valeurs exactes du Gamma en $s=K$ »)
+  La dérivée seconde en $s$ du facteur non trivial de $g_2$ \emph{seul}, en
+  forme close, sans réseau, à $t\in\{0,0.2,0.3,0.5,0.7,0.8,0.9,0.95,0.99,0.999\}$,
+  contre $\partial_{ss}\VDO(K,t)$ (\codepath{reiner_rubinstein_down_and_out_put_gamma},
+  \codepath{learning_option_pricing/pricing/barrier.py}). Code :
+  \codepath{compare_payoff_modes_at_strike.py}, \codepath{render_exact_gamma_at_strike_table}
+  (ligne 930).
+\item \mesure\ (\S5, « Score global ») La courbure ponctuelle du prix appris
+  complet, $\partial_{ss}\Phi_\theta(K,t)$, par différence seconde centrée de
+  pas $h=10^{-4}$ en double précision sur le modèle entraîné gelé
+  (\codepath{_pointwise_second_difference}, lignes 473--484 :
+  $(\Phi_\theta(K+h,t)-2\Phi_\theta(K,t)+\Phi_\theta(K-h,t))/h^2$), pour $t$
+  sur la grille \codepath{torch.linspace(0.0, T - 1e-4, 60)} (ligne 1604), contre
+  $\partial_{ss}\VDO(K,t)$ ; score
+  $\mathrm{MAE}=\frac1{60}\sum_{t}\big|\partial_{ss}\Phi_\theta(K,t)-\partial_{ss}\VDO(K,t)\big|$
+  (\codepath{render_mean_abs_error_summary}, lignes 691--707, avec
+  \code{t\_max = T - 1e-4}). Le rapport écrit cette quantité
+  « MAE $|\Phi_\theta(K,t)-\partial_{ss}\VDO(K,t)|$ sur $t\in[0,1)$ » (lignes
+  250--251 du \code{.tex}) : le symbole $\Phi_\theta$ y désigne en fait
+  $\partial_{ss}\Phi_\theta$ (le code ne compare que des dérivées secondes),
+  et l'intervalle est la grille de $60$ points ci-dessus, dont le dernier
+  point est $t=T-10^{-4}$.
+\end{enumerate}
+
+\paragraph{Fenêtre d'exclusion.} \etabli\ La fenêtre $N_w$ n'intervient
+dans aucune des deux métriques : elles sont ponctuelles en $s=K$, où
+$\zeta((K-B)/\epscoin)=\zeta(4)=1$ exactement. La seule exclusion présente
+dans ce script est celle de l'analyse 1 (erreur $L^2$ relative globale contre
+la même erreur restreinte à \code{ss >= B + margin}, ligne 224, marge $0.1$) :
+une \emph{bande en $s$ pour tout $t$}, distincte du triangle $N_w$ de la
+section~\ref{sec:exclusion}. Les runs du rapport n'excluaient rien à
+l'entraînement (pas de clé \codepath{corner_exclusion_window} dans leur
+\code{metadata.yaml}, drapeau inexistant dans le code de l'époque, cf.
+section~\ref{sec:differences}).
+
+\paragraph{Reproduction du chiffre du rapport.} \mesure\ La métrique 2,
+appliquée avec les mêmes fonctions (\codepath{_pointwise_second_difference},
+$h=10^{-4}$, même grille de $60$ points, même référence) au run du rapport
+\codepath{20260825_014738_iters20000_eps0.1_seed0_blackscholes}, donne
+$\mathrm{MAE}=0.21648$ ; le rapport indique $0.216$. Les modèles des runs 50k
+sont reconstruits par \codepath{pilot.load_trained_model} (le chargeur du script
+de diagnostic ne connaît ni le mode split ni la route à deux termes).
+Valeurs par run dans
+\codepath{rapports/audit_20260914/data/strike_g2_metric_on_50k_runs.yaml}.
+
+\paragraph{Même métrique sur les runs 50k du week-end.} \mesure\ Runs
+canoniques (\code{republique}, section~\ref{sec:differences}), $5$ graines
+par mode ; médiane sur les graines, [min, max] entre crochets.
+
+\begin{center}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Mode & MAE, $60$ points & MAE, $59$ points (sans $t=T-10^{-4}$) \\
+\midrule
+Rapport : Black-Scholes, graine $0$, $20\,000$ it. & $0.2165$ & $0.2199$ \\
+\midrule
+Black-Scholes, route ordinaire & $0.107$ [$0.081$, $0.136$] & $0.109$ [$0.083$, $0.139$] \\
+Black-Scholes, route à deux termes & $0.122$ [$0.100$, $0.140$] & $0.124$ [$0.102$, $0.142$] \\
+Split-semigroupe & $164.57$ [$164.55$, $164.59$] & $0.122$ [$0.103$, $0.138$] \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Le point $t=T-10^{-4}$ ($\tau=10^{-4}$) est en dessous du plancher
+de résolution de la quadrature du mode split ($1.178\times10^{-4}$, message
+d'avertissement de \codepath{GaussianSemigroupExtensionField} émis à
+l'évaluation) : $g_2$ y renvoie la donnée terminale $(K-s)^+$, dont la
+différence seconde centrée en $s=K$ vaut $1/h=10^4$ exactement (cf. annexe B
+du rapport pour le même phénomène sur le mode brut), d'où $10^4/60\simeq167$
+sur la MAE à $60$ points. La métrique du rapport n'est donc pas définie pour
+le mode split en ce point ; la colonne à $59$ points est la seule comparable
+entre les trois modes.
+
+\medskip
+\noindent Courbure ponctuelle $\partial_{ss}\Phi_\theta(K,t)$ aux noeuds de la
+grille les plus proches des temps de la table du rapport (médiane sur les
+graines ; [min, max]) :
+
+\begin{center}
+\small
+\begin{tabular}{@{}rrrrr@{}}
+\toprule
+$t$ (noeud) & $\partial_{ss}\VDO(K,t)$ & BS ordinaire & BS deux termes & Split \\
+\midrule
+$0$      & $-0.3415$ & $-0.339$ [$-0.409$, $-0.319$] & $-0.335$ [$-0.402$, $-0.283$] & $-0.334$ [$-0.428$, $-0.332$] \\
+$0.2034$ & $-0.1180$ & $-0.159$ [$-0.179$, $-0.064$] & $-0.162$ [$-0.195$, $-0.157$] & $-0.174$ [$-0.211$, $-0.164$] \\
+$0.3051$ & $+0.0895$ & $+0.005$ [$-0.031$, $+0.028$] & $-0.012$ [$-0.025$, $+0.005$] & $-0.003$ [$-0.039$, $+0.020$] \\
+$0.5084$ & $+0.8343$ & $+0.638$ [$+0.613$, $+0.721$] & $+0.635$ [$+0.594$, $+0.670$] & $+0.633$ [$+0.602$, $+0.671$] \\
+$0.6948$ & $+2.0395$ & $+1.812$ [$+1.707$, $+1.836$] & $+1.777$ [$+1.737$, $+1.836$] & $+1.764$ [$+1.736$, $+1.825$] \\
+$0.8982$ & $+4.1548$ & $+4.171$ [$+4.098$, $+4.190$] & $+4.160$ [$+4.154$, $+4.204$] & $+4.159$ [$+4.152$, $+4.206$] \\
+$0.9830$ & $+10.1795$ & $+10.177$ [$+10.168$, $+10.192$] & $+10.184$ [$+10.178$, $+10.206$] & $+10.185$ [$+10.175$, $+10.201$] \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Lecture directe, sans interprétation : à $t\ge0.9$ les trois modes
+égalent la référence à $10^{-2}$ relatif près, comme le mode Black-Scholes du
+rapport (Prop.\,3 du rapport) ; à $t\le0.7$ l'écart à la référence
+($0.2$ à $0.3$ en valeur absolue) est le même pour les trois modes et
+excède l'écart entre modes.
+
+\section{Différences entre les runs du rapport et ceux du week-end}
+\label{sec:differences}
+
+Runs du rapport : les quatre répertoires
+\codepath{20260825_014738_iters20000_eps0.1_seed0*} (brut, Chen-Mangasarian
+constant et time-graded à $\epsliss=0.05$, Black-Scholes), \code{metadata.yaml}
+lus sur le home CMAP et sur leur copie locale. Runs du week-end : les quinze
+répertoires \code{*\_iters50000\_eps0.1\_seed\{0..4\}\_\{split\_nuc0.3\_nquad8000,
+blackscholes\_analyticres, blackscholes\}\_nocorner} retenus par l'agrégation
+\codepath{data/aggregate_terminal_function_comparison/20260913_172225_iters50000_eps0.1_nocorner}
+(filtre \code{-{}-hosts republique}).
+
+\paragraph{Identiques (vérifié).} Contrat et $s_\infty$ (\code{contract},
+\code{domain.s\_inf: 3.0} des deux côtés) ; $\epscoin=0.1$ (\code{epsilons:
+[0.1]}) ; architecture (\code{ResNet()} sans argument, \code{pilot.py}
+ligne 465 à \code{HEAD} et ligne 268 au commit \code{7c885f3} ;
+\codepath{learning_option_pricing/models/resnet.py} lignes 61--63 : $n=50$,
+$M=4$, $L=2$, inchangé depuis \code{915fc3e} du 9 avril ; $20\,601$ paramètres
+dans les deux \code{training.log}) ; optimiseur (Adam, \code{lr=0.01},
+\code{betas=(0.9, 0.999)}, ligne 552 / ligne 301 de \code{7c885f3}) et
+calendrier de pas (\code{gamma = 0.85}, décroissance tous les $2\,000$ pas
+jusqu'à $10\,000$ puis tous les $5\,000$, \code{build\_lr\_lambda}, inchangé) ;
+$n_f=4096$ points de collocation par pas, tirage uniforme ; \code{dtype:
+float32} ; fenêtre d'évaluation $w=0.1$ ; condition far-field : aucune des
+deux séries n'en impose (le drapeau \code{-{}-far-field-dirichlet} n'existe qu'à
+partir de \code{d83158a}, postérieur aux quinze runs ; les runs lancés avec ce
+drapeau le 13 septembre à 21h11 ne font pas partie de cet audit).
+
+\paragraph{Différences.}
+\begin{center}
+\small
+\begin{tabular}{@{}p{0.27\linewidth}p{0.33\linewidth}p{0.34\linewidth}@{}}
+\toprule
+Paramètre & Valeur rapport & Valeur week-end \\
+\midrule
+Itérations & $20\,000$ & $50\,000$ \\
+Graines & $0$ (une par mode) & $0,1,2,3,4$ (cinq par mode) \\
+Modes de $g_2$ comparés & brut ; Chen-Mangasarian constant $\epsliss=0.05$ ; Chen-Mangasarian time-graded $\epsliss=0.05$ ; Black-Scholes & Black-Scholes route ordinaire ; Black-Scholes route à deux termes (\codepath{analytic_residual: true}) ; split-semigroupe ($\nu_c=\sigma^2_c/2$, $\sigma_c=0.3$, $n_{\mathrm{quad}}=8000$) \\
+$\epsliss$ & $0.05$ (modes Chen-Mangasarian) & sans objet (aucun mode Chen-Mangasarian) \\
+Exclusion du coin à l'entraînement & aucune (clé \codepath{corner_exclusion_window} absente ; drapeau inexistant) & triangle $N_{0.1}$ par rejet-redessin (\codepath{corner_exclusion_window: 0.1}) \\
+Route du résidu (mode Black-Scholes) & ordinaire uniquement & ordinaire et deux termes (route effective loguée : ligne « interior residual route (from g2=...) ») \\
+Nombre de threads torch & non enregistré (aucune ligne de threads dans \code{training.log}, pas de clé \code{environment}) & $4$ (\code{-{}-num-threads 4} dans la commande ; \codepath{torch_num_threads: 4}) \\
+Machine & hôte CMAP Linux non identifié (Python $3.11.13$, \code{torch 2.6.0+cpu} ; clé \code{host} inexistante) & \code{republique} (Haswell, AVX2) ; les cinq splits ont commencé sur \code{porte-d-orleans} (journal \codepath{launch_both_20260911.log}, hôte non enregistré dans \code{metadata.yaml} à cette date) et ont été repris depuis le checkpoint de l'itération $26\,000$ sur \code{republique} (clé \code{resumes}, deux reprises pour la graine $4$, toutes deux depuis l'itération $26\,000$ d'après \code{training.log}) \\
+Commit & aucun enregistré ; code non contenu dans un commit : \codepath{--black-scholes-payoff} et \code{-{}-smoothed-payoff} sont absents des commits \code{7c885f3} (21/08) et \code{4f0233a} (23/08) et n'apparaissent qu'à \code{4a0af78} (11/09) & splits : \code{efbb9a8} (départ) puis \code{ca3a630} (reprise) ; Black-Scholes : \code{5e3c6f5} ; \code{dirty: true} dans les trois cas, dû exclusivement à des fichiers non suivis (aucune entrée modifiée dans \code{status\_porcelain}) ; le diff \code{efbb9a8..5e3c6f5} du pilote ne touche que \code{main}, \codepath{evaluate_against_closed_form}, \code{\_write\_summary} et un import \\
+Métriques enregistrées & \code{rel\_l2\_global}, \code{rel\_l2\_corner} & idem plus \codepath{rel_l2_outside_corner}, \codepath{max_abs_error_outside_corner}, \codepath{corner_window_grid_fraction} (ajoutées par \code{-{}-replot} après entraînement) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Non tranchable depuis les artefacts : le nombre de threads et
+l'hôte des runs du rapport, donc leur comparabilité bit à bit avec les runs
+du week-end (mesuré le 12 septembre sur $300$ itérations : poids identiques
+entre \code{porte-d-orleans} et \code{republique}, écart $8.6\times10^{-5}$ avec
+\code{porte-d-auteuil}, $1.8\times10^{-3}$ avec le Mac).
+
+\section{Erreurs avérées}
+\label{sec:erreurs}
+
+\subsection*{(a) Bugs de calcul}
+
+\begin{enumerate}
+\item \textbf{Plancher $\tau\ge10^{-8}$ dans la trace terminale du mode
+  Black-Scholes.} \codepath{learning_option_pricing/pricing/terminal.py} : la
+  constante \code{\_TAU\_EPS = 1e-8} (ligne 26) est appliquée par
+  \code{\_d\_tilde\_1} / \code{\_d\_tilde\_2} (lignes 131, 139 à
+  \code{66ee604\string^}), si bien que \code{black\_scholes\_put} évaluait à
+  $t=T$ le prix $V^e(s,10^{-8})$ et non $(K-s)^+$. \mesure\ Écart maximal
+  $1.197\times10^{-5}$ en $s=K$, égal à la valeur temps à la monnaie
+  $K\sigma\sqrt{10^{-8}}/\sqrt{2\pi}=1.1968\times10^{-5}$ ; nul à la précision
+  flottante loin de $K$. Résultats affectés : la ligne « Black-Scholes (deux
+  routes) : trace terminale $1.071\times10^{-4}$, exacte à $10^{-5}$ près » de
+  \codepath{rapports/selection_g2_strike/selection_g2_strike.tex}
+  (\S« La condition terminale ») ; la métrique du rapport \code{strike\_g2}
+  n'est pas affectée (sa grille s'arrête à $t=T-10^{-4}$, où le plancher est
+  inerte). Conclusion des rapports inchangée (l'écart est trois à quatre
+  ordres de grandeur sous les erreurs comparées). Le clamp s'activait sans
+  journalisation, contrairement à la règle du projet. État à \code{HEAD} :
+  corrigé par \code{66ee604} (payoff exact en $\tau=0$, activation journalisée).
+\item \textbf{Drapeau \code{-{}-analytic-residual} inerte avant le
+  11 septembre.} \code{pilot.py} lignes 271--277 (\code{HEAD}, introduites par
+  \code{4a0af78}) : le choix de route testait
+  \codepath{isinstance(g2, SplitSemigroupCornerExtension)}, de sorte que
+  \codepath{BlackScholesCornerExtension} passait par la route ordinaire et que le
+  drapeau était sans effet ; le commentaire rapporte une vérification (« loss
+  identique à 5 chiffres significatifs sur 300 itérations avec et sans »). Le
+  code antérieur n'étant dans aucun commit, cette vérification n'est pas
+  reproductible ici. Résultats affectés : le run
+  \codepath{20260907_194310_iters20000_eps0.1_seed0_blackscholes_analyticres}
+  (\codepath{analytic_residual: true} dans \code{metadata.yaml}, entraîné le
+  7 septembre, donc avec le code d'avant \code{4a0af78} ; aucune ligne
+  « interior residual route » dans son \code{training.log}), qui est la ligne
+  « Black-Scholes (ORACLE), two-term residual » du rapport de sélection et sa
+  « configuration retenue » (\S Reproductibilité). Ce run a été entraîné par
+  la route ordinaire. Les runs du week-end ne sont pas affectés (route
+  effective loguée depuis \code{0763373} :
+  \code{BlackScholesCornerExtension ... two-term analytic}). Voir (c)~1 pour la
+  conclusion.
+\item \textbf{Lanceur \code{run\_joblist.sh} : un job en échec supprime la
+  ligne de fin.} \codepath{bash_scripts/cluster/cmap/run_joblist.sh} ligne 11
+  (\code{set -euo pipefail}) : lorsqu'un job sort avec un code non nul
+  (\code{Illegal instruction}, journaux
+  \codepath{launch_50k_migration_chapelle.log} et
+  \codepath{launch_50k_migration_pouchet.log}), \code{xargs} renvoie un code
+  non nul et le script s'arrête avant \code{echo "ALL JOBS FINISHED"}, ce qui
+  a bloqué la relance chaînée (\codepath{launch_50k_migration_chapelle_seed3.log},
+  resté en attente). Résultat affecté : le réplicat matériel sur hôtes sans
+  AVX2 compte $8$ runs sur $10$. Les runs canoniques ne sont pas affectés.
+\end{enumerate}
+
+\subsection*{(b) Écarts entre le code et la note de méthodologie ou les textes}
+
+\begin{enumerate}
+\item \textbf{« Les métriques d'évaluation retirent déjà la fenêtre ».}
+  \code{pilot.py} lignes 189--192 (\code{HEAD}) : la docstring de
+  \code{sample\_collocation} décrit le masque d'exclusion comme « the same mask
+  the evaluation metrics remove » ; l'aide du drapeau au commit \code{4a0af78}
+  affirmait de même « The evaluation metrics already remove that window ».
+  Or \code{rel\_l2\_global} (ligne 705) est calculée sur toute la grille,
+  fenêtre incluse ; seule \codepath{rel_l2_outside_corner}, ajoutée par
+  \code{b97ee9a} (12/09), la retire. Résultat affecté : la première lecture
+  des runs 20k (tableau transmis le 12 septembre au matin sur
+  \code{rel\_l2\_global}) ; corrigée le même jour par \code{-{}-replot}. La
+  docstring des lignes 189--192 reste inexacte à \code{HEAD} pour
+  \code{rel\_l2\_global}.
+\item \textbf{Notation de la MAE dans \code{strike\_g2.tex}} (lignes
+  250--251) : « $|\Phi_\theta(K,t)-\partial_{ss}\VDO(K,t)|$ sur $t\in[0,1)$ »
+  pour une quantité qui est
+  $|\partial_{ss}\Phi_\theta(K,t)-\partial_{ss}\VDO(K,t)|$ sur la grille de
+  $60$ points $[0,T-10^{-4}]$ (code cité en section~\ref{sec:metriques}).
+  Aucun chiffre affecté.
+\item \textbf{Section 11.1 de \codepath{documents/methodology/barrier_option.md}}
+  : au commit \code{e938dc7} le texte contenait des fragments corrompus par
+  une expansion de shell (\code{/bin/zsh.117\$}, etc.) à la place de valeurs
+  numériques ; réécrit à \code{2779ab8}. Aucune valeur de résultat
+  n'était fausse dans les artefacts ; le texte l'était pendant un commit.
+\end{enumerate}
+
+\subsection*{(c) Interprétations trop fortes de mesures correctes}
+
+\begin{enumerate}
+\item \textbf{Comparaison « route ordinaire / route à deux termes » du
+  rapport de sélection.} Les deux runs comparés sont
+  \codepath{20260825_014738_..._blackscholes} (Python $3.11.13$,
+  \code{torch 2.6.0+cpu} : hôte CMAP) et
+  \codepath{20260907_194310_..._blackscholes_analyticres} (Python $3.12.13$,
+  \code{torch 2.6.0} : Mac). Indépendamment de (a)~2, ils diffèrent par la
+  machine (et un nombre de threads non enregistré), ce qui suffit à produire
+  des minima différents à $20\,000$ itérations (facteur $1.98$ sur l'erreur du
+  Delta mesuré entre deux nombres de threads, commentaire \code{pilot.py}
+  lignes 1294--1299 ; $1.8\times10^{-3}$ sur les poids après $300$ itérations
+  entre Mac et cluster). Les écarts entre ces deux lignes de la table du
+  rapport (prix $4.77\times10^{-2}$ contre $6.46\times10^{-2}$, meilleure loss
+  $6.56\times10^{-4}$ contre $2.41\times10^{-3}$) ne sont donc attribuables ni
+  à la route (inerte) ni à autre chose qu'à la machine. La phrase « pour lever
+  le confondant, l'extension Black-Scholes a été dotée du même mécanisme »
+  (\S« Deux routes ») décrit une intention non réalisée par ce run. Conclusion
+  du rapport : le choix du mode Black-Scholes contre les modes Chen-Mangasarian
+  et brut n'est pas affecté (les deux lignes Black-Scholes sont les deux
+  meilleures sur le prix quel que soit l'étiquetage) ; toute affirmation sur
+  l'effet de la route est sans support.
+\item \textbf{Attribution du plancher d'erreur au bord $s_\infty$}
+  (note de méthodologie, section 11.1 telle que rédigée le 13 septembre, et
+  échanges du 12--13 septembre). Le balayage des formes de fenêtre
+  (\codepath{model_based_diagnostics/window_shape_sweep.yaml}) mesurait
+  correctement que l'erreur relative ne décroît pas avec l'aire exclue ; la
+  conclusion « l'erreur est diffuse dans l'intérieur, candidat : le bord
+  $s_\infty$ » allait au-delà de la mesure. Le calcul de la section 13 de la
+  même note (défaut de trace terminale $-(1-\zeta)(K-s)^+$ propagé par le
+  principe de réflexion) prédit l'erreur mesurée à $10$ pour cent près sur
+  $[B,2]$ sans faire intervenir $s_\infty$ ; la composante far-field est
+  réelle mais confinée à $[2,s_\infty]$. Le lot de quinze runs
+  \code{-{}-far-field-dirichlet} lancé le 13 septembre l'a été sur la base de
+  l'attribution trop forte. La phrase a été remplacée à \code{2779ab8} par un
+  renvoi à la section 11.2.
+\end{enumerate}
+
+\noindent Aucune catégorie n'est vide.
+
+\end{document}
