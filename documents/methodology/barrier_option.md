@@ -400,35 +400,34 @@ $7$--$13$ per cent of $\|V_{DO}\|$ in the band.
 
 ### 11.1 Measured at 50000 iterations (canonical runs on `republique`, 5 seeds per configuration)
 
-Aggregation: `data/aggregate_terminal_function_comparison/20260913_172225_iters50000_eps0.1_nocorner/` (`table.md`, `budget_comparison.md`, `model_based_diagnostics/`).
-The 50000-iteration runs were trained on AVX2 hosts only (`porte-d-orleans` up to iteration
-26000 for the split runs, `republique` afterwards; a 300-iteration control gives bit-identical
-weights on the two hosts, whereas the Sandy Bridge hosts differ by .6 \times 10^{-5}$ after 300
-iterations), with 4 threads per run, as recorded in each `metadata.yaml`.
+Aggregation: `data/aggregate_terminal_function_comparison/20260913_172225_iters50000_eps0.1_nocorner/`
+(`table.md`, `budget_comparison.md`, `model_based_diagnostics/`). The 50000-iteration runs were
+trained on AVX2 hosts only (`porte-d-orleans` up to iteration 26000 for the split runs,
+`republique` afterwards; a 300-iteration control gives bit-identical weights on the two hosts,
+whereas the Sandy Bridge hosts differ by $8.6 \times 10^{-5}$ after 300 iterations), with 4 threads
+per run, as recorded in each `metadata.yaml`.
 
-| Configuration | best loss,  \to 50000$ | $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$,  \to 50000$ | ratio |
+| Configuration | best loss, $20000 \to 50000$ | $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$, $20000 \to 50000$ | ratio |
 |---|---|---|---|
-| Black-Scholes, ordinary route | .0 \times 10^{-4} \to 3.7 \times 10^{-5}$ | /bin/zsh.169 \to 0.122$ | /bin/zsh.72$ |
-| Black-Scholes, two-term route | .1 \times 10^{-4} \to 1.7 \times 10^{-5}$ | /bin/zsh.148 \to 0.124$ | /bin/zsh.83$ |
-| Split-semigroup | .3 \times 10^{-4} \to 1.3 \times 10^{-5}$ | /bin/zsh.134 \to 0.127$ | /bin/zsh.95$ |
+| Black-Scholes, ordinary route | $4.0 \times 10^{-4} \to 3.7 \times 10^{-5}$ | $0.169 \to 0.122$ | $0.72$ |
+| Black-Scholes, two-term route | $5.1 \times 10^{-4} \to 1.7 \times 10^{-5}$ | $0.148 \to 0.124$ | $0.83$ |
+| Split-semigroup | $1.3 \times 10^{-4} \to 1.3 \times 10^{-5}$ | $0.134 \to 0.127$ | $0.95$ |
 
-The interior residual decreases by a factor of $ to $ while the error on the training domain
-decreases by at most a factor of .4$ and settles at /bin/zsh.12569X-/bin/zsh.13$ for the three configurations
-(across-seed ranges /bin/zsh.083569X-/bin/zsh.311$, overlapping). The best loss is again attained in the last
-$ per cent of the iterations (569X-$). The Greeks at the strike
+The interior residual decreases by a factor of $10$ to $30$ while the error on the training domain
+decreases by at most a factor of $1.4$ and settles at $0.12$--$0.13$ for the three configurations
+(across-seed ranges $0.083$--$0.311$, overlapping). The best loss is again attained in the last
+$10$ per cent of the iterations ($46551$--$49923$). The Greeks at the strike
 (`data/evaluate_greeks_no_corner/`, `--iters 50000 --hosts republique`) improve only near
-maturity: at  = 0.9$ the relative Gamma error falls from /bin/zsh.8569X-.0 \times 10^{-2}$ to
-.1569X-.2 \times 10^{-3}$, while at  = 0.5$ it stays at /bin/zsh.24569X-/bin/zsh.25$ and the Delta error at
-/bin/zsh.08$ (unchanged from 20000 iterations). The residual error is therefore a floor that the
-interior residual does not penalise, not a lack of iterations; the far-field boundary
- = s_\infty$, where no condition is imposed (Remark 2), is the candidate to examine next
-(empirical observation; the attribution is a conjecture).
+maturity: at $t = 0.9$ the relative Gamma error falls from $0.8$--$1.0 \times 10^{-2}$ to
+$1.1$--$4.2 \times 10^{-3}$, while at $t = 0.5$ it stays at $0.24$--$0.25$ and the Delta error at
+$0.08$ (unchanged from 20000 iterations). The residual error is therefore a floor that the
+interior residual does not penalise, not a lack of iterations; section 11.2 localises it.
 
 Hardware replicate: the ten Black-Scholes runs launched in parallel on the non-AVX2 hosts
 (`porte-d-auteuil`, `porte-de-la-chapelle`, `porte-pouchet`; two of them died at start-up with
 `Illegal instruction` in `libtorch_cpu.so`) give, on the 8 surviving runs, medians of
-$\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$ of /bin/zsh.117$ (ordinary route,  = 4$) and /bin/zsh.151$
-(two-term route,  = 4$) against /bin/zsh.122$ and /bin/zsh.124$ on `republique`: the host effect is of the
+$\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$ of $0.117$ (ordinary route, $n = 4$) and $0.151$
+(two-term route, $n = 4$) against $0.122$ and $0.124$ on `republique`: the host effect is of the
 same order as the across-seed dispersion and does not change the conclusion.
 
 ### 11.2 Error per band of the underlying price (50000 iterations, corner window removed)
