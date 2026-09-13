@@ -71,6 +71,7 @@ from learning_option_pricing.models.resnet import ResNet  # noqa: E402
 from learning_option_pricing.pricing.barrier import (  # noqa: E402
     SplitSemigroupCornerExtension,
     barrier_composite_distance,
+    barrier_composite_distance_with_far_field,
     make_corner_regularised_extension,
     make_corner_regularised_extension_split,
     make_corner_regularised_extension_with_black_scholes_payoff,
@@ -424,8 +425,15 @@ def build_model(
     comparison_volatility: float | None = None,
     split_y_lo: float | None = None, split_y_hi: float | None = None,
     split_n_quad: int = DEFAULT_SPLIT_N_QUAD,
+    far_field_dirichlet: bool = False,
 ) -> ETCNN:
     """Build the ETCNN ansatz U_theta = g1 * u_theta + g2.
+
+    ``far_field_dirichlet`` replaces ``g1 = (T-t)(s-B)`` by
+    :func:`barrier_composite_distance_with_far_field`, which also vanishes on
+    the far segment ``s = s_inf`` of the truncated training domain, so that
+    the trial solution equals ``g2(s_inf, t)`` there (Dirichlet condition; see
+    that function's docstring for why the truncated problem needs one).
 
     ``g2`` is one of four mutually exclusive terminal-function modes,
     exactly one of which is active at a time (see the module docstring):
@@ -457,6 +465,8 @@ def build_model(
     resnet = ResNet()
 
     def g1(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        if far_field_dirichlet:
+            return barrier_composite_distance_with_far_field(s, t, B, T, s_inf)
         return barrier_composite_distance(s, t, B, T)
 
     if smoothed_payoff:
@@ -511,6 +521,7 @@ def train_one_epsilon(
     split_y_lo: float | None = None,
     split_y_hi: float | None = None,
     split_n_quad: int = DEFAULT_SPLIT_N_QUAD,
+    far_field_dirichlet: bool = False,
 ) -> tuple[ETCNN, dict, float, int]:
     """Train one ETCNN for one epsilon. Returns (best_model, history, best_loss, best_iter)."""
     label = f"eps={epsilon:g}"
@@ -524,6 +535,7 @@ def train_one_epsilon(
         analytic_residual=analytic_residual,
         split_payoff=split_payoff, s_inf=s_inf, comparison_volatility=comparison_volatility,
         split_y_lo=split_y_lo, split_y_hi=split_y_hi, split_n_quad=split_n_quad,
+        far_field_dirichlet=far_field_dirichlet,
     ).to(DEVICE)
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(f"[{label}] model parameters: {n_params}")
@@ -624,6 +636,26 @@ def train_one_epsilon(
 # ---------------------------------------------------------------------------
 # Evaluation against the closed form
 # ---------------------------------------------------------------------------
+
+def far_field_truncation_error_bound(model, K: float, B: float, r: float, sigma: float, T: float,
+                                     s_inf: float, n_t: int = 1001) -> dict:
+    """sup_t |g2(s_inf, t) - V_DO(s_inf, t)| on a fine t grid: by the weak maximum
+    principle for the Black-Scholes operator (zeroth-order coefficient -r <= 0),
+    the solution of the truncated problem with the Dirichlet datum g2(s_inf, .)
+    on the far segment differs from the exact price by at most this number on
+    the whole truncated domain. Evaluated in float64 from the closed form."""
+    t = torch.linspace(0.0, T, n_t, dtype=torch.float64)
+    s = torch.full_like(t, s_inf)
+    reference = reiner_rubinstein_down_and_out_put(s, K, B, r, sigma, T - t)
+    with torch.no_grad():
+        datum = model.g2(s.to(DEVICE).to(torch.get_default_dtype()),
+                         t.to(DEVICE).to(torch.get_default_dtype())).double().cpu()
+    return {
+        "bound": float((datum - reference).abs().max()),
+        "sup_reference": float(reference.abs().max()),
+        "sup_datum": float(datum.abs().max()),
+    }
+
 
 def evaluate_against_closed_form(
     model: torch.nn.Module,
@@ -880,6 +912,7 @@ def load_trained_model(run_dir: Path, epsilon: float, meta: dict | None = None) 
         comparison_volatility=hyper.get("comparison_volatility", None),
         split_y_lo=hyper.get("split_y_lo", None), split_y_hi=hyper.get("split_y_hi", None),
         split_n_quad=hyper.get("split_n_quad", DEFAULT_SPLIT_N_QUAD),
+        far_field_dirichlet=hyper.get("far_field_dirichlet", False),
     )
     model_path = run_dir / "models" / f"model_eps{epsilon:g}.pt"
     model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
@@ -946,6 +979,14 @@ def main() -> None:
                               "(make_corner_regularised_extension_with_black_scholes_payoff) "
                               "instead of the raw (K-s)^+ payoff in g2. Mutually exclusive with "
                               "--smoothed-payoff. Default: raw payoff (unchanged).")
+    parser.add_argument("--far-field-dirichlet", action="store_true",
+                         help="Hard-enforce a Dirichlet condition on the far segment s = --s-inf of the "
+                              "truncated training domain: g1 = (T-t)(s-B)(s_inf-s)/(s_inf-B) vanishes "
+                              "there, so the trial solution equals g2(s_inf, t). Without it the truncated "
+                              "problem is not well posed (any solution of the homogeneous PDE vanishing on "
+                              "s=B and t=T with arbitrary far trace has zero interior residual). The "
+                              "truncation-error bound max_t |g2(s_inf,t) - V_DO(s_inf,t)| (weak maximum "
+                              "principle) is logged and recorded. Directory tag _farfield.")
     parser.add_argument("--exclude-corner-from-collocation", action="store_true",
                          help="Reject interior collocation points falling in the ell^1 corner window "
                               "(s-B)+(T-t) <= --corner-window, so the PDE residual is never enforced at the "
@@ -1154,8 +1195,9 @@ def main() -> None:
     # The corner-exclusion flag belongs in the directory name: it changes what
     # the run IS, and metadata.yaml is not what one reads when listing data/.
     corner_tag = "_nocorner" if args.exclude_corner_from_collocation else ""
+    far_field_tag = "_farfield" if args.far_field_dirichlet else ""
     out_dir = (Path(args.out_dir) if args.out_dir is not None else script_data_dir(__file__) / (
-        f"{debug_prefix}{timestamp}_iters{args.iters}_eps{eps_tag}_seed{args.seed}{payoff_tag}{corner_tag}"
+        f"{debug_prefix}{timestamp}_iters{args.iters}_eps{eps_tag}_seed{args.seed}{payoff_tag}{corner_tag}{far_field_tag}"
     ))
     resuming_existing_run = args.resume and (out_dir / "metadata.yaml").exists()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1188,7 +1230,12 @@ def main() -> None:
         logger.info(f"  GPU: {torch.cuda.get_device_name(0)}  ({torch.cuda.get_device_properties(0).total_memory / 2**30:.1f} GiB)")
     logger.info(f"  Device (requested): {args.device}  (resolved: {DEVICE})")
     logger.info(f"  Contract: K={args.K}, B={args.B}, r={args.r}, sigma={args.sigma}, T={args.T}")
-    logger.info(f"  Domain: s in ({args.B}, {args.s_inf})  [no hard far-field condition, Remark 2 -- see methodology doc]")
+    if args.far_field_dirichlet:
+        logger.info(f"  Domain: s in ({args.B}, {args.s_inf})  [hard Dirichlet on s = s_inf via "
+                    "g1 = (T-t)(s-B)(s_inf-s)/(s_inf-B): the trial solution equals g2(s_inf, t) there]")
+    else:
+        logger.info(f"  Domain: s in ({args.B}, {args.s_inf})  [NO far-field condition: the truncated problem "
+                    "is not well posed without one, see --far-field-dirichlet; Remark 2 of the methodology doc]")
     logger.info(f"  Epsilons swept: {sorted(args.epsilons)}")
     logger.info(f"  Corner window (evaluation only): {corner_window:g}")
     logger.info(f"  Iterations per epsilon: {args.iters}, n_f={args.n_f}")
@@ -1272,6 +1319,7 @@ def main() -> None:
             "black_scholes_payoff": args.black_scholes_payoff,
             "analytic_residual": args.analytic_residual,
             "corner_exclusion_window": (corner_window if args.exclude_corner_from_collocation else None),
+            "far_field_dirichlet": args.far_field_dirichlet,
             "split_payoff": args.split_payoff,
             "comparison_volatility": comparison_volatility,
             "split_y_lo": split_y_lo,
@@ -1324,7 +1372,17 @@ def main() -> None:
             corner_exclusion_window=(corner_window if args.exclude_corner_from_collocation else None),
             split_payoff=args.split_payoff, comparison_volatility=comparison_volatility,
             split_y_lo=split_y_lo, split_y_hi=split_y_hi, split_n_quad=args.split_n_quad,
+            far_field_dirichlet=args.far_field_dirichlet,
         )
+        truncation_bound = None
+        if args.far_field_dirichlet:
+            truncation_bound = far_field_truncation_error_bound(model, args.K, args.B, args.r, args.sigma, args.T, args.s_inf)
+            logger.info(
+                f"[eps={epsilon:g}] far-field truncation-error bound (weak maximum principle): "
+                f"sup_t |g2(s_inf,t) - V_DO(s_inf,t)| = {truncation_bound['bound']:.3e}  "
+                f"(sup_t |V_DO(s_inf,t)| = {truncation_bound['sup_reference']:.3e}, "
+                f"sup_t |g2(s_inf,t)| = {truncation_bound['sup_datum']:.3e}, s_inf={args.s_inf:g})"
+            )
 
         eval_result = evaluate_against_closed_form(
             model, args.K, args.B, args.r, args.sigma, args.T, args.s_inf, corner_window,
@@ -1349,6 +1407,7 @@ def main() -> None:
             "best_iter": best_iter,
             **_evaluation_metrics(eval_result),
             "final_history_loss": history["loss"][-1] if history["loss"] else None,
+            **({"far_field_truncation_error_bound": truncation_bound["bound"]} if truncation_bound else {}),
         }
         _write_summary(out_dir, epsilon, summary)
         summaries.append({**summary, **{k: eval_result[k] for k in ("s_grid", "t_grid", "learned", "reference")}})
