@@ -1,0 +1,236 @@
+reproduction_of_report_runs:
+  black_scholes:
+    price_rel_l2_outside_layer: 0.09360086280186024
+    delta_rel_l2_outside_layer: 0.2780591625973818
+    gamma_rel_l2_outside_layer_margin0.01: 0.530726489603045
+    gamma_rel_l2_outside_layer_margin0.2: 0.24609928182093507
+    terminal_trace_rel_l2_delta0.05: 0.0
+    min_price_outside_layer: -0.0032551906310587437
+    price_rel_l2_domain: 0.13773592064029488
+    delta_rel_l2_domain: 0.3494832038050428
+    gamma_rel_l2_domain_margin0.01: 0.7916366509807982
+    gamma_rel_l2_domain_margin0.2: 0.8526446725119247
+    corner_share_of_squared_error: 0.5155955348239146
+  black_scholes_two_term:
+    price_rel_l2_outside_layer: 0.08424717977105221
+    delta_rel_l2_outside_layer: 0.14016846090991034
+    gamma_rel_l2_outside_layer_margin0.01: 0.44555595170195716
+    gamma_rel_l2_outside_layer_margin0.2: 0.27710996117415404
+    terminal_trace_rel_l2_delta0.05: 0.0
+    min_price_outside_layer: -0.011043104662633021
+    price_rel_l2_domain: 0.09921971079081919
+    delta_rel_l2_domain: 0.3035247320336983
+    gamma_rel_l2_domain_margin0.01: 0.9078597369086221
+    gamma_rel_l2_domain_margin0.2: 0.8770855348735849
+    corner_share_of_squared_error: 0.6557512418661879
+  split:
+    price_rel_l2_outside_layer: 0.12481605059878502
+    delta_rel_l2_outside_layer: 0.24080991732909765
+    gamma_rel_l2_outside_layer_margin0.01: 0.5201953039494861
+    gamma_rel_l2_outside_layer_margin0.2: 0.1898474798236624
+    terminal_trace_rel_l2_delta0.05: 0.0
+    min_price_outside_layer: -0.0068130189616678605
+    price_rel_l2_domain: 0.14523781853719178
+    delta_rel_l2_domain: 0.3171017398773922
+    gamma_rel_l2_domain_margin0.01: 0.7389183303087075
+    gamma_rel_l2_domain_margin0.2: 0.6379233463034898
+    corner_share_of_squared_error: 0.4812316061442692
+runs_50k:
+  blackscholes:
+    0:
+      price_rel_l2_outside_layer: 0.06963042658665806
+      delta_rel_l2_outside_layer: 0.19234547724569256
+      gamma_rel_l2_outside_layer_margin0.01: 0.3763092354873269
+      gamma_rel_l2_outside_layer_margin0.2: 0.15078860055334972
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -2.4732175174882744e-05
+      price_rel_l2_domain: 0.09965584042110116
+      delta_rel_l2_domain: 0.27720455866135857
+      gamma_rel_l2_domain_margin0.01: 0.502684330927187
+      gamma_rel_l2_domain_margin0.2: 0.24331834386549028
+      corner_share_of_squared_error: 0.6384850682120291
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260913_045605_iters50000_eps0.1_seed0_blackscholes_nocorner
+    1:
+      price_rel_l2_outside_layer: 0.06378461172511124
+      delta_rel_l2_outside_layer: 0.14043928405456502
+      gamma_rel_l2_outside_layer_margin0.01: 0.2637203119150266
+      gamma_rel_l2_outside_layer_margin0.2: 0.11868176912213625
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -0.00037251120607504696
+      price_rel_l2_domain: 0.08228169099093617
+      delta_rel_l2_domain: 0.23896709218796847
+      gamma_rel_l2_domain_margin0.01: 0.38039041034094995
+      gamma_rel_l2_domain_margin0.2: 0.21543377354848098
+      corner_share_of_squared_error: 0.7049070200358944
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260913_045608_iters50000_eps0.1_seed1_blackscholes_nocorner
+    2:
+      price_rel_l2_outside_layer: 0.07502211319874069
+      delta_rel_l2_outside_layer: 0.2048045757556917
+      gamma_rel_l2_outside_layer_margin0.01: 0.39592194173760153
+      gamma_rel_l2_outside_layer_margin0.2: 0.14521096732474895
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -0.0004369701123923325
+      price_rel_l2_domain: 0.10622934725462145
+      delta_rel_l2_domain: 0.28854677413226176
+      gamma_rel_l2_domain_margin0.01: 0.5263182981670301
+      gamma_rel_l2_domain_margin0.2: 0.20752611432332954
+      corner_share_of_squared_error: 0.6164719059979236
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260913_045956_iters50000_eps0.1_seed2_blackscholes_nocorner
+    3:
+      price_rel_l2_outside_layer: 0.08901558214283344
+      delta_rel_l2_outside_layer: 0.23859396605597638
+      gamma_rel_l2_outside_layer_margin0.01: 0.4490383869803332
+      gamma_rel_l2_outside_layer_margin0.2: 0.18458572691894495
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -0.00031434269533121677
+      price_rel_l2_domain: 0.12553872092564292
+      delta_rel_l2_domain: 0.31800533672393
+      gamma_rel_l2_domain_margin0.01: 0.610532839490213
+      gamma_rel_l2_domain_margin0.2: 0.2878416166406484
+      corner_share_of_squared_error: 0.5581198866809697
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260913_053330_iters50000_eps0.1_seed3_blackscholes_nocorner
+    4:
+      price_rel_l2_outside_layer: 0.08156662281029431
+      delta_rel_l2_outside_layer: 0.2261234862505907
+      gamma_rel_l2_outside_layer_margin0.01: 0.4226790489158436
+      gamma_rel_l2_outside_layer_margin0.2: 0.16021980616150439
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: 0.0
+      price_rel_l2_domain: 0.11652272331963556
+      delta_rel_l2_domain: 0.30771562841887345
+      gamma_rel_l2_domain_margin0.01: 0.5967640732737093
+      gamma_rel_l2_domain_margin0.2: 0.3673215514512075
+      corner_share_of_squared_error: 0.5878843931132698
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260913_055542_iters50000_eps0.1_seed4_blackscholes_nocorner
+  blackscholes_analyticres:
+    0:
+      price_rel_l2_outside_layer: 0.07792420897755555
+      delta_rel_l2_outside_layer: 0.20947912950531947
+      gamma_rel_l2_outside_layer_margin0.01: 0.40661832096095135
+      gamma_rel_l2_outside_layer_margin0.2: 0.14896245383052137
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -0.00036096849210025337
+      price_rel_l2_domain: 0.11011865446853632
+      delta_rel_l2_domain: 0.29393424634985055
+      gamma_rel_l2_domain_margin0.01: 0.5394966941331734
+      gamma_rel_l2_domain_margin0.2: 0.2229164400002919
+      corner_share_of_squared_error: 0.6105541168674619
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260913_035016_iters50000_eps0.1_seed0_blackscholes_analyticres_nocorner
+    1:
+      price_rel_l2_outside_layer: 0.09090941535407383
+      delta_rel_l2_outside_layer: 0.24033395032720842
+      gamma_rel_l2_outside_layer_margin0.01: 0.46105304429583854
+      gamma_rel_l2_outside_layer_margin0.2: 0.18669479468200764
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -0.004139218784103918
+      price_rel_l2_domain: 0.1268627802141858
+      delta_rel_l2_domain: 0.3198374297151195
+      gamma_rel_l2_domain_margin0.01: 0.6232184442033812
+      gamma_rel_l2_domain_margin0.2: 0.2867605823426028
+      corner_share_of_squared_error: 0.5542689205390097
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260913_035016_iters50000_eps0.1_seed1_blackscholes_analyticres_nocorner
+    2:
+      price_rel_l2_outside_layer: 0.08494069049060884
+      delta_rel_l2_outside_layer: 0.22828325962414914
+      gamma_rel_l2_outside_layer_margin0.01: 0.4477542269535769
+      gamma_rel_l2_outside_layer_margin0.2: 0.1546120826762054
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -0.00022843944127528724
+      price_rel_l2_domain: 0.1176943910104092
+      delta_rel_l2_domain: 0.30410160180680107
+      gamma_rel_l2_domain_margin0.01: 0.5697521166616395
+      gamma_rel_l2_domain_margin0.2: 0.2564505586334915
+      corner_share_of_squared_error: 0.5795409189728344
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260913_035016_iters50000_eps0.1_seed2_blackscholes_analyticres_nocorner
+    3:
+      price_rel_l2_outside_layer: 0.08145983800874311
+      delta_rel_l2_outside_layer: 0.21614592898046697
+      gamma_rel_l2_outside_layer_margin0.01: 0.410872706939196
+      gamma_rel_l2_outside_layer_margin0.2: 0.15588251835479874
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -0.000124223921806302
+      price_rel_l2_domain: 0.11380221576714593
+      delta_rel_l2_domain: 0.29875116940854096
+      gamma_rel_l2_domain_margin0.01: 0.5585728218290448
+      gamma_rel_l2_domain_margin0.2: 0.24289179273125197
+      corner_share_of_squared_error: 0.5941662795796447
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260913_035015_iters50000_eps0.1_seed3_blackscholes_analyticres_nocorner
+    4:
+      price_rel_l2_outside_layer: 0.06495933571709754
+      delta_rel_l2_outside_layer: 0.1750855745836195
+      gamma_rel_l2_outside_layer_margin0.01: 0.3351898693074227
+      gamma_rel_l2_outside_layer_margin0.2: 0.12028454859745416
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -0.00013340325668922132
+      price_rel_l2_domain: 0.09203522598836919
+      delta_rel_l2_domain: 0.264859983812936
+      gamma_rel_l2_domain_margin0.01: 0.4592498718515726
+      gamma_rel_l2_domain_margin0.2: 0.18654628637716478
+      corner_share_of_squared_error: 0.6677156821475284
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260913_045022_iters50000_eps0.1_seed4_blackscholes_analyticres_nocorner
+  split:
+    0:
+      price_rel_l2_outside_layer: 0.08143942252101818
+      delta_rel_l2_outside_layer: 0.23524630065305338
+      gamma_rel_l2_outside_layer_margin0.01: 0.43843378061011384
+      gamma_rel_l2_outside_layer_margin0.2: 0.19206962233883554
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -0.00010358100765267503
+      price_rel_l2_domain: 0.12225884982913988
+      delta_rel_l2_domain: 0.3205335930450156
+      gamma_rel_l2_domain_margin0.01: 0.6589661718979205
+      gamma_rel_l2_domain_margin0.2: 0.35638988191201826
+      corner_share_of_squared_error: 0.5765144171859795
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260912_071515_iters50000_eps0.1_seed0_split_nuc0.3_nquad8000_nocorner
+    1:
+      price_rel_l2_outside_layer: 0.06852754991792577
+      delta_rel_l2_outside_layer: 0.18625579230620087
+      gamma_rel_l2_outside_layer_margin0.01: 0.3593365238565934
+      gamma_rel_l2_outside_layer_margin0.2: 0.12805199409863385
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -9.202675126320902e-05
+      price_rel_l2_domain: 0.09738729849569196
+      delta_rel_l2_domain: 0.27472755936210796
+      gamma_rel_l2_domain_margin0.01: 0.4847842553807163
+      gamma_rel_l2_domain_margin0.2: 0.1921708391520978
+      corner_share_of_squared_error: 0.656664482602387
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260912_071515_iters50000_eps0.1_seed1_split_nuc0.3_nquad8000_nocorner
+    2:
+      price_rel_l2_outside_layer: 0.06784198262834276
+      delta_rel_l2_outside_layer: 0.16615686169057925
+      gamma_rel_l2_outside_layer_margin0.01: 0.31727734769859484
+      gamma_rel_l2_outside_layer_margin0.2: 0.12621687621806202
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -4.407461950590175e-06
+      price_rel_l2_domain: 0.09187834866571393
+      delta_rel_l2_domain: 0.25999141118087893
+      gamma_rel_l2_domain_margin0.01: 0.4389395924786877
+      gamma_rel_l2_domain_margin0.2: 0.19192204840900784
+      corner_share_of_squared_error: 0.6638637551890549
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260912_071515_iters50000_eps0.1_seed2_split_nuc0.3_nquad8000_nocorner
+    3:
+      price_rel_l2_outside_layer: 0.07352572585948353
+      delta_rel_l2_outside_layer: 0.1986885170991407
+      gamma_rel_l2_outside_layer_margin0.01: 0.3776819083266553
+      gamma_rel_l2_outside_layer_margin0.2: 0.1453557092593702
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -2.5171367740804947e-05
+      price_rel_l2_domain: 0.10560541689904922
+      delta_rel_l2_domain: 0.2883212283362025
+      gamma_rel_l2_domain_margin0.01: 0.5361620665822184
+      gamma_rel_l2_domain_margin0.2: 0.2247754330941996
+      corner_share_of_squared_error: 0.6218054824287547
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260912_071515_iters50000_eps0.1_seed3_split_nuc0.3_nquad8000_nocorner
+    4:
+      price_rel_l2_outside_layer: 0.11213203885039771
+      delta_rel_l2_outside_layer: 0.2867151208573283
+      gamma_rel_l2_outside_layer_margin0.01: 0.5554025006623301
+      gamma_rel_l2_outside_layer_margin0.2: 0.24651546790735662
+      terminal_trace_rel_l2_delta0.05: 0.0
+      min_price_outside_layer: -0.0042690533660973305
+      price_rel_l2_domain: 0.15678207884016432
+      delta_rel_l2_domain: 0.3788834263708362
+      gamma_rel_l2_domain_margin0.01: 0.77811062809348
+      gamma_rel_l2_domain_margin0.2: 0.34522477976373594
+      corner_share_of_squared_error: 0.4914750032640465
+      run_dir: /Users/salma.ouaissi/constrained_learning_option_pricing/data/pilot_down_and_out_put/20260912_071515_iters50000_eps0.1_seed4_split_nuc0.3_nquad8000_nocorner
