@@ -464,8 +464,36 @@ def band_network_contribution_for_run(grid: dict, band_lo: float, band_hi: float
     }
 
 
+def s_band_errors_for_run(grid: dict, s_band_edges: list[float]) -> dict:
+    """Error of the trained solution per band of the underlying price,
+    ``s_band_edges[i] <= s < s_band_edges[i+1]`` (all t), with the ell^1
+    corner window of the run removed (as in rel_l2_outside_corner). Both the
+    relative and the absolute discrete L2 errors are reported, with the norm
+    of the closed form on the band, because the relative error is meaningless
+    where the closed form is close to zero (far field)."""
+    ss, tt = grid["ss"], grid["tt"]
+    corner = (ss - grid["B"]).abs() + (grid["T"] - tt) <= grid["corner_window"]
+    error, reference = grid["learned"] - grid["reference"], grid["reference"]
+    cell_area = grid["cell_area"]
+    result = {}
+    edges = list(s_band_edges)
+    edges[-1] = max(edges[-1], float(grid["s_grid"].max()))  # closed last band up to s_inf
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        band = (ss >= lo) & (ss < hi) & ~corner if hi < edges[-1] else (ss >= lo) & (ss <= hi) & ~corner
+        numerator = _grid_l2_norm(error, band, cell_area)
+        denominator = _grid_l2_norm(reference, band, cell_area)
+        result[f"[{lo:g}, {hi:g}]"] = {
+            "rel_l2": numerator / denominator if denominator > 0 else float("nan"),
+            "abs_l2_error": numerator,
+            "l2_reference": denominator,
+            "max_abs_error": float(error[band].abs().max()) if band.any() else float("nan"),
+            "n_grid_points": int(band.sum()),
+        }
+    return result
+
+
 def model_based_diagnostics(runs: dict[str, dict[int, dict]], epsilon: float, band_lo: float, band_hi: float,
-                            out_dir: Path) -> tuple[dict, dict]:
+                            out_dir: Path, s_band_edges: list[float] | None = None) -> tuple[dict, dict, dict]:
     """Evaluate every run's saved model once and derive both diagnostics.
     The per-run grids are saved under ``evaluation_grids/`` so that figures
     can be patched later without re-evaluating the models."""
@@ -473,16 +501,19 @@ def model_based_diagnostics(runs: dict[str, dict[int, dict]], epsilon: float, ba
     grids_dir.mkdir(exist_ok=True)
     sweep: dict = {}
     band: dict = {}
+    s_bands: dict = {}
     for configuration in CONFIGURATION_LABELS:
         if configuration not in runs:
             continue
-        sweep[configuration], band[configuration] = {}, {}
+        sweep[configuration], band[configuration], s_bands[configuration] = {}, {}, {}
         for seed in sorted(runs[configuration]):
             run_dir = Path(runs[configuration][seed]["run_dir"])
             grid = evaluate_run_on_grid(run_dir, epsilon)
             torch.save({k: v for k, v in grid.items() if k not in ("ss", "tt")}, grids_dir / f"{run_dir.name}.pt")
             sweep[configuration][seed] = window_shape_sweep_for_run(grid)
             band[configuration][seed] = band_network_contribution_for_run(grid, band_lo, band_hi)
+            if s_band_edges:
+                s_bands[configuration][seed] = s_band_errors_for_run(grid, s_band_edges)
             lozenge_at_window = sweep[configuration][seed]["lozenge"].get(grid["corner_window"])
             consistency = ""
             if lozenge_at_window is not None:
@@ -495,7 +526,28 @@ def model_based_diagnostics(runs: dict[str, dict[int, dict]], epsilon: float, ba
                 f"||h_eps-V||={b['l2_extension_minus_reference']:.4e}  ratio={b['ratio_trial_over_extension']:.3f}"
                 f"{consistency}"
             )
-    return sweep, band
+    return sweep, band, s_bands
+
+
+def write_s_band_markdown(s_bands: dict, path: Path, s_band_edges: list[float]) -> None:
+    lines = ["# Error per band of the underlying price (from the saved models, corner window removed)", "",
+             "Bands in s, all t, ell^1 corner window of each run removed. Median over seeds [min, max].",
+             "rel_l2 = ||Phi_theta - V_DO|| / ||V_DO|| on the band; abs_l2 and ||V_DO|| are the discrete L2 norms "
+             "(cell-area weighted) so that a band where V_DO is small is not misread from its relative error.", ""]
+    any_config = next(iter(s_bands.values()))
+    band_names = list(next(iter(any_config.values())).keys())
+    for key, title in (("rel_l2", "Relative L2 error"), ("abs_l2_error", "Absolute L2 error"),
+                       ("l2_reference", "||V_DO|| on the band (same for every run)"), ("max_abs_error", "Max abs error")):
+        lines += [f"## {title}", "", "| Configuration | " + " | ".join(band_names) + " |",
+                  "|---|" + "|".join("---" for _ in band_names) + "|"]
+        for configuration, per_seed in s_bands.items():
+            cells = []
+            for name in band_names:
+                values = [v[name][key] for v in per_seed.values()]
+                cells.append(f"{statistics.median(values):.3e} [{min(values):.3e}, {max(values):.3e}]")
+            lines.append(f"| {CONFIGURATION_LABELS[configuration].replace(chr(10), ' ')} | " + " | ".join(cells) + " |")
+        lines.append("")
+    path.write_text("\n".join(lines) + "\n")
 
 
 def _median_over_seeds(per_seed: dict, extract) -> float | None:
@@ -646,6 +698,9 @@ def main() -> None:
                         help="Lower bound of the band |s-B| for the network-contribution diagnostic.")
     parser.add_argument("--band-hi", type=float, default=0.3,
                         help="Upper bound of the band |s-B| for the network-contribution diagnostic.")
+    parser.add_argument("--s-band-edges", nargs="+", type=float, default=None,
+                        help="Edges of bands in s for the per-band error diagnostic (all t, corner window "
+                             "removed), e.g. 0.6 1 2 3; the last edge is extended to s_inf. Default: off.")
     args = parser.parse_args()
 
     base_dir = Path(args.base_dir) if args.base_dir is not None else script_data_dir(PILOT_SCRIPT_PATH)
@@ -714,7 +769,20 @@ def main() -> None:
     diagnostics_dir = out_dir / "model_based_diagnostics"
     diagnostics_dir.mkdir(exist_ok=True)
     (diagnostics_dir / "figures").mkdir(exist_ok=True)
-    sweep, band = model_based_diagnostics(runs, args.epsilon, args.band_lo, args.band_hi, diagnostics_dir)
+    sweep, band, s_bands = model_based_diagnostics(runs, args.epsilon, args.band_lo, args.band_hi, diagnostics_dir,
+                                                   s_band_edges=args.s_band_edges)
+    if args.s_band_edges:
+        with open(diagnostics_dir / "s_band_errors.yaml", "w") as f:
+            yaml.dump({"s_band_edges": args.s_band_edges, "per_configuration_per_seed": s_bands},
+                      f, default_flow_style=False, sort_keys=False)
+        write_s_band_markdown(s_bands, diagnostics_dir / "s_band_errors.md", args.s_band_edges)
+        logger.info(f"  Per-s-band errors saved -> {diagnostics_dir / 's_band_errors.md'}")
+        for configuration, per_seed in s_bands.items():
+            for name in next(iter(per_seed.values())):
+                rel = statistics.median(v[name]["rel_l2"] for v in per_seed.values())
+                absolute = statistics.median(v[name]["abs_l2_error"] for v in per_seed.values())
+                ref = next(iter(per_seed.values()))[name]["l2_reference"]
+                logger.info(f"  {configuration:<26s} s in {name:<12s} rel_l2={rel:.3e}  abs_l2={absolute:.3e}  ||V_DO||={ref:.3e}")
     with open(diagnostics_dir / "window_shape_sweep.yaml", "w") as f:
         yaml.dump({"families": {k: {"label": v["label"], "parameters": v["parameters"]}
                                 for k, v in WINDOW_FAMILIES.items()},
