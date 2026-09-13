@@ -21,6 +21,7 @@ import torch
 
 from learning_option_pricing.pricing.barrier import (
     barrier_composite_distance,
+    barrier_composite_distance_with_far_field,
     make_corner_regularised_extension,
     make_corner_regularised_extension_split,
     make_corner_regularised_extension_with_black_scholes_payoff,
@@ -60,6 +61,37 @@ class TestBarrierCompositeDistance:
         ss, tt = torch.meshgrid(s, t, indexing="ij")
         d = barrier_composite_distance(ss, tt, self.B, self.T)
         assert torch.all(d > 0.0)
+
+
+class TestBarrierCompositeDistanceWithFarField:
+    B, T, S_INF = 0.6, 1.0, 3.0
+
+    def _d(self, s, t):
+        return barrier_composite_distance_with_far_field(s, t, self.B, self.T, self.S_INF)
+
+    def test_vanishes_on_the_three_faces(self) -> None:
+        """d = 0 on t = T, on s = B and on s = s_inf."""
+        s = torch.linspace(self.B, self.S_INF, 101)
+        assert torch.allclose(self._d(s, torch.full_like(s, self.T)), torch.zeros_like(s))
+        t = torch.linspace(0.0, self.T, 101)
+        assert torch.allclose(self._d(torch.full_like(t, self.B), t), torch.zeros_like(t))
+        assert torch.allclose(self._d(torch.full_like(t, self.S_INF), t), torch.zeros_like(t))
+
+    def test_positive_in_the_interior(self) -> None:
+        s = torch.linspace(self.B + 0.01, self.S_INF - 0.01, 51)
+        t = torch.linspace(0.0, self.T - 0.01, 51)
+        ss, tt = torch.meshgrid(s, t, indexing="ij")
+        assert torch.all(self._d(ss, tt) > 0.0)
+
+    def test_matches_untruncated_factor_near_the_barrier(self) -> None:
+        """The normalisation makes the factor equal to (T-t)(s-B) to first order at s = B."""
+        s = torch.tensor([self.B + 1e-4]); t = torch.tensor([0.3])
+        untruncated = barrier_composite_distance(s, t, self.B, self.T)
+        assert torch.allclose(self._d(s, t), untruncated, rtol=1e-3)
+
+    def test_rejects_s_inf_below_barrier(self) -> None:
+        with pytest.raises(ValueError):
+            barrier_composite_distance_with_far_field(torch.tensor([1.0]), torch.tensor([0.0]), self.B, self.T, self.B)
 
 
 # ---------------------------------------------------------------------------

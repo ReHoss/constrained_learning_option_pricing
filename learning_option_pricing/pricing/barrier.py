@@ -22,6 +22,8 @@ exactly.  This module supplies the three code-level counterparts of the note's
 Sections 2 and 4:
 
 - :func:`barrier_composite_distance` -- the composite distance
+- :func:`barrier_composite_distance_with_far_field` -- the same with the
+  far segment ``s = s_inf`` of the truncated domain added (Dirichlet there)
   :math:`d_{\partial_p Q} = (T-t)(s-B)` of Definition 4, vanishing exactly on
   :math:`\Sigma_T \cup \Sigma_B`.
 - :func:`make_corner_regularised_extension` -- a corner-regularised extension
@@ -104,6 +106,57 @@ def barrier_composite_distance(
         :math:`d_{\partial_p Q}(s,t)`, broadcast shape of ``s`` and ``t``.
     """
     return (T - t) * (s - B)
+
+
+def barrier_composite_distance_with_far_field(
+    s: torch.Tensor,
+    t: torch.Tensor,
+    B: float,
+    T: float,
+    s_inf: float,
+) -> torch.Tensor:
+    r"""Composite distance of the TRUNCATED domain, :math:`(T-t)(s-B)\,\frac{s_\infty-s}{s_\infty-B}`.
+
+    :func:`barrier_composite_distance` is the composite distance of the
+    natural domain :math:`(B,\infty)\times(0,T)`, on which no boundary value is
+    required at infinity (uniqueness holds in the class of bounded solutions).
+    Training, however, samples the truncated domain
+    :math:`Q_{s_\infty}=(B,s_\infty)\times(0,T)`, whose far segment
+    :math:`\{s=s_\infty\}` belongs to the parabolic boundary: without a
+    condition there the truncated problem is not well posed -- any solution
+    :math:`w` of :math:`\mathcal L^{BS}w=0` vanishing on :math:`s=B` and
+    :math:`t=T` with arbitrary trace on :math:`s=s_\infty` has zero interior
+    residual, so the interior loss cannot see it. This factor vanishes on the
+    three faces :math:`s=B`, :math:`t=T` and :math:`s=s_\infty`, so the trial
+    solution :math:`g_1u_\theta+g_2` takes the value :math:`g_2(s_\infty,t)`
+    on the far segment: a Dirichlet condition with the datum supplied by the
+    terminal-function extension. The normalisation :math:`1/(s_\infty-B)`
+    keeps the factor of the same order as the untruncated one near the
+    barrier (:math:`(s_\infty-s)/(s_\infty-B)\to1` as :math:`s\to B`).
+
+    Truncation error (weak maximum principle for the Black-Scholes operator,
+    zeroth-order coefficient :math:`-r\le0`): the difference between the
+    solution of the truncated problem with far datum :math:`\varphi(t)` and
+    the exact price is bounded on the whole domain by
+    :math:`\sup_t|\varphi(t)-V_{DO}(s_\infty,t)|`. The pilot logs this
+    bound with :math:`\varphi=g_2(s_\infty,\cdot)`.
+
+    Args:
+        s: Underlying asset price, any shape.
+        t: Time, broadcastable with ``s``.
+        B: Knock-out barrier.
+        T: Maturity.
+        s_inf: Truncation price :math:`s_\infty>B`.
+
+    Returns:
+        The factor, broadcast shape of ``s`` and ``t``.
+
+    Raises:
+        ValueError: If ``s_inf <= B``.
+    """
+    if not s_inf > B:
+        raise ValueError(f"barrier_composite_distance_with_far_field needs s_inf > B; got {s_inf=}, {B=}.")
+    return (T - t) * (s - B) * (s_inf - s) / (s_inf - B)
 
 
 # ---------------------------------------------------------------------------
