@@ -57,20 +57,20 @@ $\tau=T-t$.
 fonction \code{sample\_collocation} (lignes 183--234). La condition codée,
 ligne 219, est
 \begin{center}
-\codepath{inside_corner = (s_raw - B) + (T - t_raw) <= corner_exclusion_window}
+\code{inside\_corner = (s\_raw - B) + (T - t\_raw) <= corner\_exclusion\_window}
 \end{center}
 appliquée aux tirages uniformes \code{s\_raw} $\sim\mathcal U(B,s_\infty)$ et
 \code{t\_raw} $\sim\mathcal U(0,T)$ (lignes 214--215) ; les points retenus par
 la condition sont retirés puis \emph{redessinés} (lignes 223--224), au plus
 \codepath{_CORNER_REJECTION_MAX_PASSES} $=50$ passes (ligne 102). La valeur
 de la fenêtre est fixée ligne 1173 :
-\codepath{corner_window = args.corner_window if ... else max(args.epsilons)}, soit
+\code{corner\_window = args.corner\_window if ... else max(args.epsilons)}, soit
 $w=0.1$ pour tous les runs audités (\code{corner\_window: 0.1} dans chaque
 \code{metadata.yaml}). L'exclusion n'est active que sous
 \codepath{--exclude-corner-from-collocation} (ligne 1372 :
-\codepath{corner_exclusion_window=(corner_window if args.exclude_corner_from_collocation else None)}).
+\code{corner\_exclusion\_window=(corner\_window if args.exclude\_corner\_from\_collocation else None)}).
 Le masque d'évaluation (\codepath{evaluate_against_closed_form}, ligne 696) est
-\codepath{corner_mask = (ss - B).abs() + (T - tt) <= corner_window}, identique à
+\code{corner\_mask = (ss - B).abs() + (T - tt) <= corner\_window}, identique à
 la condition d'échantillonnage puisque $s>B$ sur la grille.
 
 \paragraph{Géométrie.} \etabli\ La région exclue est
@@ -115,7 +115,7 @@ utilise deux quantités au strike $s=K=1$.
   pas $h=10^{-4}$ en double précision sur le modèle entraîné gelé
   (\codepath{_pointwise_second_difference}, lignes 473--484 :
   $(\Phi_\theta(K+h,t)-2\Phi_\theta(K,t)+\Phi_\theta(K-h,t))/h^2$), pour $t$
-  sur la grille \codepath{torch.linspace(0.0, T - 1e-4, 60)} (ligne 1604), contre
+  sur la grille \code{torch.linspace(0.0, T - 1e-4, 60)} (ligne 1604), contre
   $\partial_{ss}\VDO(K,t)$ ; score
   $\mathrm{MAE}=\frac1{60}\sum_{t}\big|\partial_{ss}\Phi_\theta(K,t)-\partial_{ss}\VDO(K,t)\big|$
   (\codepath{render_mean_abs_error_summary}, lignes 691--707, avec
@@ -241,11 +241,11 @@ Paramètre & Valeur rapport & Valeur week-end \\
 \midrule
 Itérations & $20\,000$ & $50\,000$ \\
 Graines & $0$ (une par mode) & $0,1,2,3,4$ (cinq par mode) \\
-Modes de $g_2$ comparés & brut ; Chen-Mangasarian constant $\epsliss=0.05$ ; Chen-Mangasarian time-graded $\epsliss=0.05$ ; Black-Scholes & Black-Scholes route ordinaire ; Black-Scholes route à deux termes (\codepath{analytic_residual: true}) ; split-semigroupe ($\nu_c=\sigma^2_c/2$, $\sigma_c=0.3$, $n_{\mathrm{quad}}=8000$) \\
+Modes de $g_2$ comparés & brut ; Chen-Mangasarian constant $\epsliss=0.05$ ; Chen-Mangasarian time-graded $\epsliss=0.05$ ; Black-Scholes & Black-Scholes route ordinaire ; Black-Scholes route à deux termes (\code{analytic\_residual: true}) ; split-semigroupe ($\nu_c=\sigma^2_c/2$, $\sigma_c=0.3$, $n_{\mathrm{quad}}=8000$) \\
 $\epsliss$ & $0.05$ (modes Chen-Mangasarian) & sans objet (aucun mode Chen-Mangasarian) \\
-Exclusion du coin à l'entraînement & aucune (clé \codepath{corner_exclusion_window} absente ; drapeau inexistant) & triangle $N_{0.1}$ par rejet-redessin (\codepath{corner_exclusion_window: 0.1}) \\
+Exclusion du coin à l'entraînement & aucune (clé \codepath{corner_exclusion_window} absente ; drapeau inexistant) & triangle $N_{0.1}$ par rejet-redessin (\code{corner\_exclusion\_window: 0.1}) \\
 Route du résidu (mode Black-Scholes) & ordinaire uniquement & ordinaire et deux termes (route effective loguée : ligne « interior residual route (from g2=...) ») \\
-Nombre de threads torch & non enregistré (aucune ligne de threads dans \code{training.log}, pas de clé \code{environment}) & $4$ (\code{-{}-num-threads 4} dans la commande ; \codepath{torch_num_threads: 4}) \\
+Nombre de threads torch & non enregistré (aucune ligne de threads dans \code{training.log}, pas de clé \code{environment}) & $4$ (\code{-{}-num-threads 4} dans la commande ; \code{torch\_num\_threads: 4}) \\
 Machine & hôte CMAP Linux non identifié (Python $3.11.13$, \code{torch 2.6.0+cpu} ; clé \code{host} inexistante) & \code{republique} (Haswell, AVX2) ; les cinq splits ont commencé sur \code{porte-d-orleans} (journal \codepath{launch_both_20260911.log}, hôte non enregistré dans \code{metadata.yaml} à cette date) et ont été repris depuis le checkpoint de l'itération $26\,000$ sur \code{republique} (clé \code{resumes}, deux reprises pour la graine $4$, toutes deux depuis l'itération $26\,000$ d'après \code{training.log}) \\
 Commit & aucun enregistré ; code non contenu dans un commit : \codepath{--black-scholes-payoff} et \code{-{}-smoothed-payoff} sont absents des commits \code{7c885f3} (21/08) et \code{4f0233a} (23/08) et n'apparaissent qu'à \code{4a0af78} (11/09) & splits : \code{efbb9a8} (départ) puis \code{ca3a630} (reprise) ; Black-Scholes : \code{5e3c6f5} ; \code{dirty: true} dans les trois cas, dû exclusivement à des fichiers non suivis (aucune entrée modifiée dans \code{status\_porcelain}) ; le diff \code{efbb9a8..5e3c6f5} du pilote ne touche que \code{main}, \codepath{evaluate_against_closed_form}, \code{\_write\_summary} et un import \\
 Métriques enregistrées & \code{rel\_l2\_global}, \code{rel\_l2\_corner} & idem plus \codepath{rel_l2_outside_corner}, \codepath{max_abs_error_outside_corner}, \codepath{corner_window_grid_fraction} (ajoutées par \code{-{}-replot} après entraînement) \\
@@ -285,14 +285,14 @@ entre \code{porte-d-orleans} et \code{republique}, écart $8.6\times10^{-5}$ ave
 \item \textbf{Drapeau \code{-{}-analytic-residual} inerte avant le
   11 septembre.} \code{pilot.py} lignes 271--277 (\code{HEAD}, introduites par
   \code{4a0af78}) : le choix de route testait
-  \codepath{isinstance(g2, SplitSemigroupCornerExtension)}, de sorte que
+  \code{isinstance(g2, SplitSemigroupCornerExtension)}, de sorte que
   \codepath{BlackScholesCornerExtension} passait par la route ordinaire et que le
   drapeau était sans effet ; le commentaire rapporte une vérification (« loss
   identique à 5 chiffres significatifs sur 300 itérations avec et sans »). Le
   code antérieur n'étant dans aucun commit, cette vérification n'est pas
   reproductible ici. Résultats affectés : le run
   \codepath{20260907_194310_iters20000_eps0.1_seed0_blackscholes_analyticres}
-  (\codepath{analytic_residual: true} dans \code{metadata.yaml}, entraîné le
+  (\code{analytic\_residual: true} dans \code{metadata.yaml}, entraîné le
   7 septembre, donc avec le code d'avant \code{4a0af78} ; aucune ligne
   « interior residual route » dans son \code{training.log}), qui est la ligne
   « Black-Scholes (ORACLE), two-term residual » du rapport de sélection et sa
