@@ -18,12 +18,34 @@ continuation values at intermediate exercise dates.
 """
 from __future__ import annotations
 
+import logging
 import math
 
 import torch
 
 
 _TAU_EPS = 1e-8  # epsilon floor to avoid division by zero when tau -> 0
+
+logger = logging.getLogger(__name__)
+_tau_floor_activation_count = 0
+
+
+def _report_tau_floor_activation(tau: torch.Tensor, where: str) -> None:
+    """Report the tau floor when it changes a returned value (0 < tau < _TAU_EPS):
+    WARNING on first activation, DEBUG afterwards, as the project's clamp rule
+    requires. tau == 0 exactly is not reported: the caller returns the exact
+    limit there and discards the clamped branch."""
+    global _tau_floor_activation_count
+    binding = (tau > 0) & (tau < _TAU_EPS)
+    if not bool(binding.any()):
+        return
+    _tau_floor_activation_count += 1
+    message = (
+        f"{where}: tau floor {_TAU_EPS:g} bound at {int(binding.sum())} point(s) "
+        f"(smallest raw tau {float(tau[binding].min()):.3e}); the value returned there is the "
+        f"closed form at tau={_TAU_EPS:g}, off by at most K*sigma*sqrt({_TAU_EPS:g})/sqrt(2*pi)."
+    )
+    (logger.warning if _tau_floor_activation_count == 1 else logger.debug)(message)
 _SQRT_2PI = math.sqrt(2.0 * math.pi)
 
 
@@ -173,7 +195,18 @@ def black_scholes_put(
     """
     dt1 = _d_tilde_1(s, tau, K, r, sigma)
     dt2 = _d_tilde_2(s, tau, K, r, sigma)
-    return K * torch.exp(-r * tau) * _normal_cdf(dt2) - s * _normal_cdf(dt1)
+    price = K * torch.exp(-r * tau) * _normal_cdf(dt2) - s * _normal_cdf(dt1)
+    # At tau = 0 exactly the closed form is undefined (division by sigma*sqrt(tau))
+    # and its uniform limit is the payoff, so the payoff is returned there: the
+    # terminal trace is then exact, not the price at tau = _TAU_EPS (whose
+    # at-the-money time value K*sigma*sqrt(_TAU_EPS)/sqrt(2*pi) = 1.2e-5 for
+    # K=1, sigma=0.3 was what the floor used to return). The clamped branch is
+    # still evaluated (finite, no NaN) and discarded by torch.where, so the
+    # gradient is safe. The floor can only change a value for 0 < tau < _TAU_EPS,
+    # which is reported.
+    _report_tau_floor_activation(torch.as_tensor(tau), "black_scholes_put")
+    payoff = torch.clamp(K - s, min=0.0)
+    return torch.where(torch.as_tensor(tau) > 0, price, payoff)
 
 
 # ---------------------------------------------------------------------------

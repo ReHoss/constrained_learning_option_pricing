@@ -62,7 +62,7 @@ import torch
 from learning_option_pricing.pde.real_line_extension_fields import (
     GaussianSemigroupExtensionField,
 )
-from learning_option_pricing.pricing.terminal import black_scholes_put, payoff_put
+from learning_option_pricing.pricing.terminal import black_scholes_put, payoff_put, _report_tau_floor_activation
 
 _TAU_EPS = 1e-8  # epsilon floor to avoid division by zero when tau -> 0
 
@@ -614,7 +614,12 @@ class BlackScholesCornerExtension:
             torch.log(s / self.K) + (self.r + 0.5 * self.sigma**2) * tau_safe
         ) / sigma_sqrt_tau
         price = black_scholes_put(s, self.K, self.r, self.sigma, self.T - t)
-        return price, -_normal_cdf(-d_plus)
+        # At tau = 0 the price is the payoff exactly (see black_scholes_put), whose
+        # derivative is -1_{s<K}; the closed-form Delta at tau = _TAU_EPS would
+        # differ from it only in an O(sqrt(_TAU_EPS)) neighbourhood of s = K.
+        delta = torch.where(torch.as_tensor(self.T - t) > 0, -_normal_cdf(-d_plus),
+                            -(s < self.K).to(price.dtype))
+        return price, delta
 
     def black_scholes_residual(
         self, s: torch.Tensor, t: torch.Tensor, r: float, sigma: float
@@ -1070,6 +1075,12 @@ def reiner_rubinstein_down_and_out_put(
         _truncated_put(s_safe, K, B, r, sigma, tau_safe)
         - (B / s_safe) ** exponent * _truncated_put(s_reflected, K, B, r, sigma, tau_safe)
     )
+    # tau = 0 exactly: the closed form is undefined there and its limit is the
+    # knocked-out payoff (K-s)^+ 1_{s>B}; return it exactly rather than the
+    # price at tau = _TAU_EPS (see black_scholes_put for the same fix and the
+    # size of the defect the floor used to introduce, 1.2e-5 at the strike).
+    _report_tau_floor_activation(torch.as_tensor(tau), "reiner_rubinstein_down_and_out_put")
+    price = torch.where(torch.as_tensor(tau) > 0, price, torch.clamp(K - s, min=0.0))
     return torch.where(s > B, price, torch.zeros_like(price))
 
 

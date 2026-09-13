@@ -20,6 +20,8 @@ import pytest
 import torch
 
 from learning_option_pricing.pricing.barrier import (
+    BlackScholesCornerExtension,
+    _smoothstep01,
     barrier_composite_distance,
     barrier_composite_distance_with_far_field,
     make_corner_regularised_extension,
@@ -831,3 +833,47 @@ class TestReinerRubinsteinDownAndOutPutGamma:
             tau_single = torch.tensor([self.T], dtype=torch.float64)
             g_single = float(reiner_rubinstein_down_and_out_put_gamma(s_single, self.K, self.B, self.r, self.sigma, tau_single))
             assert abs(g_single - float(g_batch[i])) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Exact terminal trace at tau = 0 (the tau floor must not leak into t = T)
+# ---------------------------------------------------------------------------
+
+class TestExactTerminalTrace:
+    """At t = T the closed forms are undefined (division by sigma*sqrt(tau)); their
+    uniform limit is the payoff and the code must return it exactly, not the price
+    at tau = _TAU_EPS (at-the-money time value K*sigma*sqrt(1e-8)/sqrt(2*pi) = 1.2e-5
+    for K=1, sigma=0.3, which is what the floor used to return)."""
+    K, B, r, sigma, T, eps = 1.0, 0.6, 0.03, 0.3, 1.0, 0.1
+
+    def _s(self):
+        return torch.linspace(self.B + 0.05, 3.0, 1181, dtype=torch.float64)
+
+    def test_black_scholes_extensions_equal_zeta_times_payoff_at_maturity(self) -> None:
+        s = self._s(); t = torch.full_like(s, self.T)
+        expected = _smoothstep01((s - self.B) / self.eps) * (self.K - s).clamp(min=0.0)
+        for g2 in (make_corner_regularised_extension_with_black_scholes_payoff(self.K, self.B, self.eps, self.r, self.sigma, self.T),
+                   BlackScholesCornerExtension(self.K, self.B, self.eps, self.r, self.sigma, self.T)):
+            assert torch.equal(g2(s, t), expected)
+
+    def test_reiner_rubinstein_equals_knocked_out_payoff_at_maturity(self) -> None:
+        s = torch.linspace(0.3, 3.0, 901, dtype=torch.float64)
+        price = reiner_rubinstein_down_and_out_put(s, self.K, self.B, self.r, self.sigma, torch.zeros_like(s))
+        expected = torch.where(s > self.B, (self.K - s).clamp(min=0.0), torch.zeros_like(s))
+        assert torch.equal(price, expected)
+
+    def test_price_is_continuous_at_maturity(self) -> None:
+        """The value at tau = 0 is the limit of the closed form: |V(tau) - V(0)| <= K sigma sqrt(tau)/sqrt(2 pi) + O(tau)."""
+        s = self._s()
+        for tau in (1e-6, 1e-4):
+            gap = (reiner_rubinstein_down_and_out_put(s, self.K, self.B, self.r, self.sigma, torch.full_like(s, tau))
+                   - reiner_rubinstein_down_and_out_put(s, self.K, self.B, self.r, self.sigma, torch.zeros_like(s))).abs().max()
+            assert gap <= self.K * self.sigma * tau**0.5 / (2 * torch.pi) ** 0.5 * 1.5 + 10 * tau
+
+    def test_gradient_through_the_maturity_branch_is_finite(self) -> None:
+        s = self._s().requires_grad_(True); t = torch.full_like(s, self.T)
+        g2 = BlackScholesCornerExtension(self.K, self.B, self.eps, self.r, self.sigma, self.T)
+        grad = torch.autograd.grad(g2(s, t).sum(), s)[0]
+        assert torch.isfinite(grad).all()
+        _, delta = g2._european_put_price_and_delta(s.detach(), t)
+        assert torch.equal(delta, -(s.detach() < self.K).to(delta.dtype))
