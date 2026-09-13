@@ -430,3 +430,22 @@ Hardware replicate: the ten Black-Scholes runs launched in parallel on the non-A
 $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$ of /bin/zsh.117$ (ordinary route,  = 4$) and /bin/zsh.151$
 (two-term route,  = 4$) against /bin/zsh.122$ and /bin/zsh.124$ on `republique`: the host effect is of the
 same order as the across-seed dispersion and does not change the conclusion.
+
+### 11.2 Error per band of the underlying price (50000 iterations, corner window removed)
+
+`data/aggregate_terminal_function_comparison/20260913_172225_iters50000_eps0.1_nocorner/model_based_diagnostics/s_band_errors.md` (`--s-band-edges 0.6 0.7 1 2 3`). Relative $L^2$
+error per band of $s$ (all $t$, $N_{0.1}$ removed), median over 5 seeds: on $[B, B+\varepsilon] = [0.6, 0.7]$,
+the transition band of the switching factor $\zeta((s-B)/\varepsilon)$, $0.20$--$0.22$ for the three
+configurations; on $[0.7, 1]$, $0.075$--$0.083$; on $[1, 2]$, $0.05$--$0.06$; on $[2, s_\infty]$, $13$ to $57$
+(the closed form is of order $10^{-4}$ there while the trained field is of order $10^{-3}$--$10^{-2}$,
+with a factor-30 dispersion across seeds). Share of the total error energy $\sum \|\Phi_\theta - V_{DO}\|^2$
+per band (median over seeds): $[0.6, 0.7]$ $34$--$54$ per cent, $[0.7, 1]$ $24$--$40$, $[1, 2]$ $1$,
+$[2, s_\infty]$ $2$ (ordinary route) to $42$ (split; seed-dependent, $1$--$75$). The transition band
+holds the largest share of the error in $4$ per cent of the price range (error-energy density
+$4$ times that of $[0.7, 1]$); between 20000 and 50000 iterations its relative error moved from
+$0.20$--$0.25$ to $0.20$--$0.22$ only. Two components are therefore present: a floor localised in
+the $\zeta$ transition band (the same for the three terminal functions, hence attributable to the
+switching factor rather than to the datum it weights), and an unconstrained far-field component
+of seed-dependent size. Attribution of the transition-band floor to the switching factor is the
+reading of these measurements, not yet a controlled test (a sweep of $\varepsilon$ at fixed corner
+exclusion, or a different $\zeta$, would be the test).
