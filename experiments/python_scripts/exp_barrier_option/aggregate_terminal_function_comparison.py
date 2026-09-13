@@ -181,11 +181,31 @@ def configuration_key_from_payoff_tag(payoff_tag: str) -> str:
     raise ValueError(f"unrecognised payoff tag {payoff_tag!r}")
 
 
-def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: bool) -> dict[str, dict[int, dict]]:
+def training_host_of_run(run_dir: Path) -> str | None:
+    """Short host name the run's LAST training segment ran on: the last
+    ``resumes`` entry's host if the run was resumed elsewhere, else the
+    launch host; ``None`` for runs recorded before the host was stored."""
+    metadata_path = run_dir / "metadata.yaml"
+    if not metadata_path.exists():
+        return None
+    with open(metadata_path) as f:
+        meta = yaml.safe_load(f)
+    segments = [meta.get("environment", {})] + [r.get("environment", {}) for r in meta.get("resumes", [])]
+    host = segments[-1].get("host")
+    return host.split(".")[0] if host else None
+
+
+def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: bool,
+                 hosts: list[str] | None = None) -> dict[str, dict[int, dict]]:
     """Return ``{configuration_key: {seed: summary_with_run_dir}}``.
 
-    When several run directories share a configuration and a seed, the most
-    recent timestamp is kept and the others are reported.
+    ``hosts`` restricts the runs to those whose last training segment ran on
+    one of the listed short host names (``"unknown"`` matches runs recorded
+    before the host was stored). Needed because float32 training is only
+    comparable within one CPU family (see the pilot's --num-threads help and
+    the joblists under bash_scripts/cluster/cmap/). When several run
+    directories share a configuration and a seed, the most recent timestamp
+    is kept and the others are reported.
     """
     runs: dict[str, dict[int, dict]] = defaultdict(dict)
     for run_dir in sorted(base_dir.iterdir()):
@@ -206,11 +226,16 @@ def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: b
             continue
         configuration = configuration_key_from_payoff_tag(match["payoff_tag"])
         seed = int(match["seed"])
+        host = training_host_of_run(run_dir)
+        if hosts is not None and (host or "unknown") not in hosts:
+            logger.info(f"  skipping {run_dir.name}: trained on {host or 'unknown host'}, not in {hosts}")
+            continue
         with open(summary_path) as f:
             summary = yaml.safe_load(f)
         summary["run_dir"] = str(run_dir)
         summary["timestamp"] = match["timestamp"]
         summary["corner_excluded_from_collocation"] = corner_excluded
+        summary["training_host"] = host
         if seed in runs[configuration]:
             previous = runs[configuration][seed]
             kept, dropped = ((summary, previous) if summary["timestamp"] > previous["timestamp"]
@@ -236,6 +261,7 @@ def aggregate(runs: dict[str, dict[int, dict]], metrics: list[str]) -> dict:
             "label": CONFIGURATION_LABELS[configuration].replace("\n", " "),
             "seeds": sorted(per_seed),
             "runs": {seed: per_seed[seed]["run_dir"] for seed in sorted(per_seed)},
+            "training_hosts": {seed: per_seed[seed].get("training_host") for seed in sorted(per_seed)},
             "metrics": {},
         }
         for metric in metrics:
@@ -284,10 +310,39 @@ def write_markdown_table(aggregated: dict, metrics: list[str], path: Path, iters
                 cells.append(f"{stats['median']:.3e} [{stats['min']:.3e}, {stats['max']:.3e}]")
         n_seeds = max(entry["metrics"][m]["n"] for m in metrics)
         lines.append(f"| {entry['label']} | {n_seeds} | " + " | ".join(cells) + " |")
-    lines += ["", "Run directories:", ""]
+    lines += ["", "Run directories (training host of the last segment in parentheses):", ""]
     for configuration, entry in aggregated.items():
         for seed, run_dir in entry["runs"].items():
-            lines.append(f"- {configuration}, seed {seed}: `{run_dir}`")
+            lines.append(f"- {configuration}, seed {seed} ({entry['training_hosts'].get(seed) or 'host not recorded'}): `{run_dir}`")
+    path.write_text("\n".join(lines) + "\n")
+
+
+def write_budget_comparison(aggregated: dict, other_summary_path: Path, metrics: list[str], path: Path,
+                            iters: int) -> None:
+    """Median-over-seeds ratio of every metric between this aggregation and
+    another one (typically a different iteration budget), per configuration."""
+    with open(other_summary_path) as f:
+        other = yaml.safe_load(f)
+    other_iters = other.get("iters")
+    lines = [f"# Budget comparison: {iters} iterations (this aggregation) against {other_iters} iterations",
+             "", f"Other aggregation: `{other_summary_path}`", "",
+             "Ratio = median over seeds at this budget / median over seeds at the other budget "
+             "(a ratio below 1 means the metric decreased with the longer budget).", "",
+             "| Configuration | " + " | ".join(f"`{m}` ({other_iters} → {iters}, ratio)" for m in metrics) + " |",
+             "|---|" + "|".join("---" for _ in metrics) + "|"]
+    for configuration, entry in aggregated.items():
+        other_entry = other.get("configurations", {}).get(configuration)
+        cells = []
+        for metric in metrics:
+            here = entry["metrics"].get(metric, {}).get("median")
+            there = (other_entry or {}).get("metrics", {}).get(metric, {}).get("median")
+            if here is None or there is None:
+                cells.append("—")
+            elif metric == "best_iter":
+                cells.append(f"{there:.0f} → {here:.0f}")
+            else:
+                cells.append(f"{there:.3e} → {here:.3e} ({here / there:.2f})" if there else "—")
+        lines.append(f"| {entry['label']} | " + " | ".join(cells) + " |")
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -577,6 +632,13 @@ def main() -> None:
                         help="Summary keys to aggregate.")
     parser.add_argument("--out-dir", type=str, default=None,
                         help="Output directory (default: data/<this script>/<timestamp>_iters<ITERS>_eps<EPS>).")
+    parser.add_argument("--hosts", nargs="+", type=str, default=None,
+                        help="Keep only runs whose last training segment ran on one of these short host "
+                             "names (as recorded in metadata.yaml; 'unknown' matches runs recorded before the "
+                             "host was stored). Float32 training is comparable only within one CPU family.")
+    parser.add_argument("--compare-summary", type=str, default=None,
+                        help="summary.yaml of another aggregation (e.g. another iteration budget): writes "
+                             "budget_comparison.md with per-configuration median ratios.")
     parser.add_argument("--skip-model-diagnostics", action="store_true",
                         help="Only aggregate the saved summaries; skip the window-shape sweep and the band "
                              "network-contribution diagnostic (which load every saved model).")
@@ -605,12 +667,14 @@ def main() -> None:
     logger.info(f"  iters={args.iters}  epsilon={args.epsilon:g}  corner-trained runs included: "
                 f"{args.include_corner_trained_runs}  metrics={args.metrics}")
 
-    runs = collect_runs(base_dir, args.iters, args.epsilon, require_nocorner=not args.include_corner_trained_runs)
+    runs = collect_runs(base_dir, args.iters, args.epsilon, require_nocorner=not args.include_corner_trained_runs,
+                        hosts=args.hosts)
     if not runs:
         logger.error("No matching run directory found.")
         sys.exit(1)
     for configuration, per_seed in runs.items():
-        logger.info(f"  {configuration}: seeds {sorted(per_seed)}")
+        logger.info(f"  {configuration}: seeds {sorted(per_seed)}  hosts "
+                    f"{ {seed: per_seed[seed].get('training_host') for seed in sorted(per_seed)} }")
 
     aggregated = aggregate(runs, args.metrics)
     with open(out_dir / "summary.yaml", "w") as f:
@@ -618,12 +682,17 @@ def main() -> None:
             "command": " ".join(sys.argv),
             "iters": args.iters, "epsilon": args.epsilon,
             "corner_trained_runs_included": args.include_corner_trained_runs,
+            "hosts_filter": args.hosts,
             "base_dir": str(base_dir),
             "configurations": aggregated,
         }, f, default_flow_style=False, sort_keys=False)
     logger.info(f"  Summary saved -> {out_dir / 'summary.yaml'}")
     write_markdown_table(aggregated, args.metrics, out_dir / "table.md", args.iters, args.epsilon)
     logger.info(f"  Table saved -> {out_dir / 'table.md'}")
+    if args.compare_summary is not None:
+        write_budget_comparison(aggregated, Path(args.compare_summary), args.metrics,
+                                out_dir / "budget_comparison.md", args.iters)
+        logger.info(f"  Budget comparison saved -> {out_dir / 'budget_comparison.md'}")
     figure_path = out_dir / "figures" / "terminal_function_comparison.png"
     plot_comparison(aggregated, figure_path, args.iters, args.epsilon)
     logger.info(f"  Figure saved -> {figure_path}")

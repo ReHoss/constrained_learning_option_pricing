@@ -344,6 +344,9 @@ def main() -> None:
     parser.add_argument("--dtype", type=str, default="float64", choices=["float32", "float64"],
                         help="Evaluation dtype. The models were trained in float32; float64 evaluation loads "
                              "the same weights and removes float32 round-off from the nested autograd passes.")
+    parser.add_argument("--hosts", nargs="+", type=str, default=None,
+                        help="Keep only runs whose last training segment ran on one of these short host names "
+                             "(see aggregate_terminal_function_comparison.py --hosts).")
     parser.add_argument("--out-dir", type=str, default=None, help="Output directory override.")
     args = parser.parse_args()
 
@@ -366,7 +369,7 @@ def main() -> None:
     logger.info(f"  times t = {args.times}")
     torch.set_default_dtype(torch.float64 if args.dtype == "float64" else torch.float32)
 
-    runs = collect_runs(base_dir, args.iters, args.epsilon, require_nocorner=True)
+    runs = collect_runs(base_dir, args.iters, args.epsilon, require_nocorner=True, hosts=args.hosts)
     if not runs:
         logger.error("No matching corner-excluded run directory found.")
         sys.exit(1)
@@ -382,7 +385,8 @@ def main() -> None:
             if other != contract:
                 logger.error(f"  {configuration} seed {seed}: contract {other} differs from {contract}; aborting.")
                 sys.exit(1)
-        logger.info(f"  {configuration}: seeds {sorted(per_seed)}")
+        logger.info(f"  {configuration}: seeds {sorted(per_seed)}  hosts "
+                    f"{ {seed: per_seed[seed].get('training_host') for seed in sorted(per_seed)} }")
 
     # ---- reference ----------------------------------------------------------
     logger.info("Building the symbolic Reiner-Rubinstein reference (sympy.diff, mpmath evaluation)")

@@ -397,3 +397,36 @@ $\|h_\varepsilon - V_{DO}\| = 4.37 \times 10^{-2}$ (Black-Scholes modes) and $4.
 seeds $0.097$--$0.181$), against $\|V_{DO}\|_{L^2(\mathcal{B})} = 6.17 \times 10^{-2}$. The network
 reduces the extension's error in the band by a factor of $5.5$ to $10$; the remaining error is
 $7$--$13$ per cent of $\|V_{DO}\|$ in the band.
+
+### 11.1 Measured at 50000 iterations (canonical runs on `republique`, 5 seeds per configuration)
+
+Aggregation: `data/aggregate_terminal_function_comparison/20260913_172225_iters50000_eps0.1_nocorner/` (`table.md`, `budget_comparison.md`, `model_based_diagnostics/`).
+The 50000-iteration runs were trained on AVX2 hosts only (`porte-d-orleans` up to iteration
+26000 for the split runs, `republique` afterwards; a 300-iteration control gives bit-identical
+weights on the two hosts, whereas the Sandy Bridge hosts differ by .6 \times 10^{-5}$ after 300
+iterations), with 4 threads per run, as recorded in each `metadata.yaml`.
+
+| Configuration | best loss,  \to 50000$ | $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$,  \to 50000$ | ratio |
+|---|---|---|---|
+| Black-Scholes, ordinary route | .0 \times 10^{-4} \to 3.7 \times 10^{-5}$ | /bin/zsh.169 \to 0.122$ | /bin/zsh.72$ |
+| Black-Scholes, two-term route | .1 \times 10^{-4} \to 1.7 \times 10^{-5}$ | /bin/zsh.148 \to 0.124$ | /bin/zsh.83$ |
+| Split-semigroup | .3 \times 10^{-4} \to 1.3 \times 10^{-5}$ | /bin/zsh.134 \to 0.127$ | /bin/zsh.95$ |
+
+The interior residual decreases by a factor of $ to $ while the error on the training domain
+decreases by at most a factor of .4$ and settles at /bin/zsh.12569X-/bin/zsh.13$ for the three configurations
+(across-seed ranges /bin/zsh.083569X-/bin/zsh.311$, overlapping). The best loss is again attained in the last
+$ per cent of the iterations (569X-$). The Greeks at the strike
+(`data/evaluate_greeks_no_corner/`, `--iters 50000 --hosts republique`) improve only near
+maturity: at  = 0.9$ the relative Gamma error falls from /bin/zsh.8569X-.0 \times 10^{-2}$ to
+.1569X-.2 \times 10^{-3}$, while at  = 0.5$ it stays at /bin/zsh.24569X-/bin/zsh.25$ and the Delta error at
+/bin/zsh.08$ (unchanged from 20000 iterations). The residual error is therefore a floor that the
+interior residual does not penalise, not a lack of iterations; the far-field boundary
+ = s_\infty$, where no condition is imposed (Remark 2), is the candidate to examine next
+(empirical observation; the attribution is a conjecture).
+
+Hardware replicate: the ten Black-Scholes runs launched in parallel on the non-AVX2 hosts
+(`porte-d-auteuil`, `porte-de-la-chapelle`, `porte-pouchet`; two of them died at start-up with
+`Illegal instruction` in `libtorch_cpu.so`) give, on the 8 surviving runs, medians of
+$\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$ of /bin/zsh.117$ (ordinary route,  = 4$) and /bin/zsh.151$
+(two-term route,  = 4$) against /bin/zsh.122$ and /bin/zsh.124$ on `republique`: the host effect is of the
+same order as the across-seed dispersion and does not change the conclusion.
