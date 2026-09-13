@@ -344,6 +344,8 @@ def main() -> None:
     parser.add_argument("--dtype", type=str, default="float64", choices=["float32", "float64"],
                         help="Evaluation dtype. The models were trained in float32; float64 evaluation loads "
                              "the same weights and removes float32 round-off from the nested autograd passes.")
+    parser.add_argument("--far-field", type=str, default="no", choices=["no", "yes", "any"],
+                        help="See aggregate_terminal_function_comparison.py --far-field.")
     parser.add_argument("--hosts", nargs="+", type=str, default=None,
                         help="Keep only runs whose last training segment ran on one of these short host names "
                              "(see aggregate_terminal_function_comparison.py --hosts).")
@@ -353,6 +355,7 @@ def main() -> None:
     base_dir = Path(args.base_dir) if args.base_dir is not None else script_data_dir(PILOT_SCRIPT_PATH)
     out_dir = (Path(args.out_dir) if args.out_dir is not None else script_data_dir(__file__) / (
         f"{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}_iters{args.iters}_eps{args.epsilon:g}_nocorner"
+        + {"no": "", "yes": "_farfield", "any": "_anyfarfield"}[args.far_field]
     ))
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "figures").mkdir(exist_ok=True)
@@ -369,7 +372,8 @@ def main() -> None:
     logger.info(f"  times t = {args.times}")
     torch.set_default_dtype(torch.float64 if args.dtype == "float64" else torch.float32)
 
-    runs = collect_runs(base_dir, args.iters, args.epsilon, require_nocorner=True, hosts=args.hosts)
+    runs = collect_runs(base_dir, args.iters, args.epsilon, require_nocorner=True, hosts=args.hosts,
+                        far_field=args.far_field)
     if not runs:
         logger.error("No matching corner-excluded run directory found.")
         sys.exit(1)

@@ -1,0 +1,18 @@
+# republique (AVX2): the 50000-iteration terminal-function comparison WITH the hard far-field
+# Dirichlet condition (--far-field-dirichlet), otherwise identical to the canonical batch
+# (epsilon 0.1, corner excluded, seeds 0-4, 4 threads). Splits first (the long pole).
+--epsilons 0.1 --iters 50000 --seed 0 --split-payoff --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 1 --split-payoff --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 2 --split-payoff --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 3 --split-payoff --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 4 --split-payoff --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 0 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 1 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 2 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 3 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 4 --black-scholes-payoff --analytic-residual --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 0 --black-scholes-payoff --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 1 --black-scholes-payoff --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 2 --black-scholes-payoff --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 3 --black-scholes-payoff --exclude-corner-from-collocation --far-field-dirichlet
+--epsilons 0.1 --iters 50000 --seed 4 --black-scholes-payoff --exclude-corner-from-collocation --far-field-dirichlet

@@ -448,3 +448,55 @@ switching factor rather than to the datum it weights), and an unconstrained far-
 of seed-dependent size. Attribution of the transition-band floor to the switching factor is the
 reading of these measurements, not yet a controlled test (a sweep of $\varepsilon$ at fixed corner
 exclusion, or a different $\zeta$, would be the test).
+
+## 12. Far-field condition on the truncated domain
+
+Let $\mathcal L^{BS} V = \partial_t V + \tfrac12\sigma^2 s^2\partial_{ss}V + r s\,\partial_s V - rV$
+and let $Q_{s_\infty} = (B, s_\infty)\times(0,T)$ be the truncated training domain, with
+$B < s_\infty < \infty$.
+
+**On the natural domain** $(B,\infty)\times(0,T)$ no boundary value is required at infinity: the
+exact price $V_{DO}$ is bounded ($0 \le V_{DO} \le K$) and uniqueness of the terminal-boundary
+problem holds in the class of bounded solutions (in the log-price variable $x = \ln s$ the operator
+is a constant-coefficient heat operator with drift on a half-line, for which uniqueness holds
+under the Tychonoff growth condition $|V| \le C e^{a x^2}$).
+
+**On the truncated domain**, the far segment $\Sigma_\infty = \{s_\infty\}\times(0,T)$ belongs to the
+parabolic boundary, and a condition on it is necessary for uniqueness: for any
+$\varphi\in C([0,T])$ with $\varphi(T)=0$ there is a solution $w$ of $\mathcal L^{BS}w = 0$ in
+$Q_{s_\infty}$ with $w = 0$ on $\{s=B\}$ and $\{t=T\}$ and $w = \varphi$ on $\Sigma_\infty$; every
+such $w$ has zero interior residual, so the interior loss of the pilot cannot distinguish
+$V_{DO}$ from $V_{DO} + w$. This is the unconstrained far-field component measured in section 11.2
+(seed-dependent, $2$ to $42$ per cent of the error energy).
+
+The pilot's `--far-field-dirichlet` imposes the Dirichlet condition
+$\Phi_\theta(s_\infty, t) = g_2(s_\infty, t)$ in hard form, through the factor
+$g_1(s,t) = (T-t)(s-B)\,\dfrac{s_\infty - s}{s_\infty - B}$
+(`barrier_composite_distance_with_far_field`), which vanishes on the three faces
+$\{s = B\}$, $\{t = T\}$, $\{s = s_\infty\}$. The error committed by the truncation is controlled as
+follows.
+
+**Proposition (truncation error).** Let $V$ be the solution of $\mathcal L^{BS} V = 0$ in
+$Q_{s_\infty}$ with $V(B,t) = 0$, $V(s,T) = (K-s)^+$ and $V(s_\infty, t) = \varphi(t)$. Then
+
+$$
+\sup_{Q_{s_\infty}} |V - V_{DO}| \;\le\; \sup_{t\in(0,T)} \big|\varphi(t) - V_{DO}(s_\infty, t)\big| .
+$$
+
+*Proof.* Set $w = V - V_{DO}$. Then $\mathcal L^{BS} w = 0$ in $Q_{s_\infty}$, $w = 0$ on
+$\{s = B\}$ and $\{t = T\}$, and $w = \varphi - V_{DO}(s_\infty,\cdot)$ on $\Sigma_\infty$. In the
+variable $\tau = T - t$ the equation reads $\partial_\tau w + L w = 0$ with
+$L w = -\tfrac12\sigma^2 s^2 \partial_{ss} w - r s\,\partial_s w + r w$, which is uniformly
+parabolic on $(B, s_\infty)$ (since $B > 0$) with zeroth-order coefficient $r \ge 0$. The weak
+maximum principle for such operators (Evans, *Partial Differential Equations*, 2nd ed.,
+§7.1.4, Theorem 9, applied to $w$ and to $-w$) gives $\sup |w| \le \sup_{\partial_p Q}|w|$, and
+$w$ vanishes on the parabolic boundary except on $\Sigma_\infty$. $\square$
+
+With $\varphi = g_2(s_\infty,\cdot)$ the pilot evaluates the right-hand side in float64 from the
+closed form (`far_field_truncation_error_bound`, logged and stored as
+`far_field_truncation_error_bound` in the summary). For the contract $K = 1$, $B = 0.6$,
+$r = 0.03$, $\sigma = 0.3$, $T = 1$ and $s_\infty = 3$: $\sup_t |V_{DO}(s_\infty, t)| = 1.0\times10^{-5}$,
+and the bound equals $4.1\times10^{-8}$ for the Black-Scholes terminal function and
+$1.6\times10^{-6}$ for the split-semigroup profile -- four to six orders of magnitude below the
+measured error floor of section 11, so the far-field condition removes the far-field
+component at no measurable cost in truncation error.

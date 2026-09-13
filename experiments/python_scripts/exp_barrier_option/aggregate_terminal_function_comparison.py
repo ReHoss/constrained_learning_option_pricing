@@ -133,7 +133,7 @@ BAND_FORMULA_TEXT = (
 #   <timestamp>_iters<ITERS>_eps<EPS>_seed<SEED>[<payoff_tag>][_nocorner]
 RUN_DIRECTORY_PATTERN = re.compile(
     r"^(?P<timestamp>\d{8}_\d{6})_iters(?P<iters>\d+)_eps(?P<eps>[0-9.]+)_seed(?P<seed>\d+)"
-    r"(?P<payoff_tag>(?:_(?!nocorner)[A-Za-z0-9.]+)*)(?P<nocorner>_nocorner)?$"
+    r"(?P<payoff_tag>(?:_(?!nocorner|farfield)[A-Za-z0-9.]+)*)(?P<nocorner>_nocorner)?(?P<farfield>_farfield)?$"
 )
 
 # Ordered so that the figure's abscissa reads from the least to the most
@@ -196,7 +196,7 @@ def training_host_of_run(run_dir: Path) -> str | None:
 
 
 def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: bool,
-                 hosts: list[str] | None = None) -> dict[str, dict[int, dict]]:
+                 hosts: list[str] | None = None, far_field: str = "no") -> dict[str, dict[int, dict]]:
     """Return ``{configuration_key: {seed: summary_with_run_dir}}``.
 
     ``hosts`` restricts the runs to those whose last training segment ran on
@@ -220,6 +220,11 @@ def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: b
         if require_nocorner and not corner_excluded:
             logger.info(f"  skipping {run_dir.name}: corner not excluded from collocation")
             continue
+        has_far_field = match["farfield"] is not None
+        if (far_field == "no" and has_far_field) or (far_field == "yes" and not has_far_field):
+            logger.info(f"  skipping {run_dir.name}: far-field Dirichlet {'present' if has_far_field else 'absent'}, "
+                        f"--far-field {far_field}")
+            continue
         summary_path = run_dir / f"summary_eps{epsilon:g}.yaml"
         if not summary_path.exists():
             logger.warning(f"  skipping {run_dir.name}: no {summary_path.name} (run incomplete?)")
@@ -236,6 +241,7 @@ def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: b
         summary["timestamp"] = match["timestamp"]
         summary["corner_excluded_from_collocation"] = corner_excluded
         summary["training_host"] = host
+        summary["far_field_dirichlet"] = has_far_field
         if seed in runs[configuration]:
             previous = runs[configuration][seed]
             kept, dropped = ((summary, previous) if summary["timestamp"] > previous["timestamp"]
@@ -684,6 +690,10 @@ def main() -> None:
                         help="Summary keys to aggregate.")
     parser.add_argument("--out-dir", type=str, default=None,
                         help="Output directory (default: data/<this script>/<timestamp>_iters<ITERS>_eps<EPS>).")
+    parser.add_argument("--far-field", type=str, default="no", choices=["no", "yes", "any"],
+                        help="Runs trained with the hard far-field Dirichlet condition (--far-field-dirichlet, "
+                             "directory tag _farfield): 'no' (default) aggregates only runs without it, 'yes' only "
+                             "runs with it, 'any' both (the tag then distinguishes them only in the run list).")
     parser.add_argument("--hosts", nargs="+", type=str, default=None,
                         help="Keep only runs whose last training segment ran on one of these short host "
                              "names (as recorded in metadata.yaml; 'unknown' matches runs recorded before the "
@@ -704,7 +714,7 @@ def main() -> None:
     args = parser.parse_args()
 
     base_dir = Path(args.base_dir) if args.base_dir is not None else script_data_dir(PILOT_SCRIPT_PATH)
-    corner_tag = "" if args.include_corner_trained_runs else "_nocorner"
+    corner_tag = ("" if args.include_corner_trained_runs else "_nocorner") + {"no": "", "yes": "_farfield", "any": "_anyfarfield"}[args.far_field]
     out_dir = (Path(args.out_dir) if args.out_dir is not None else script_data_dir(__file__) / (
         f"{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}_iters{args.iters}_eps{args.epsilon:g}{corner_tag}"
     ))
@@ -723,7 +733,7 @@ def main() -> None:
                 f"{args.include_corner_trained_runs}  metrics={args.metrics}")
 
     runs = collect_runs(base_dir, args.iters, args.epsilon, require_nocorner=not args.include_corner_trained_runs,
-                        hosts=args.hosts)
+                        hosts=args.hosts, far_field=args.far_field)
     if not runs:
         logger.error("No matching run directory found.")
         sys.exit(1)
@@ -738,6 +748,7 @@ def main() -> None:
             "iters": args.iters, "epsilon": args.epsilon,
             "corner_trained_runs_included": args.include_corner_trained_runs,
             "hosts_filter": args.hosts,
+            "far_field_filter": args.far_field,
             "base_dir": str(base_dir),
             "configurations": aggregated,
         }, f, default_flow_style=False, sort_keys=False)
