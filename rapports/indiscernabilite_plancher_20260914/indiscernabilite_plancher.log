@@ -493,12 +493,7 @@ File: figures/fig2_comparaison_par_graine.png Graphic file (type png)
 Package pdftex.def Info: figures/fig2_comparaison_par_graine.png  used on input
  line 89.
 (pdftex.def)             Requested size: 467.42276pt x 136.53955pt.
-
-Overfull \hbox (86.21835pt too wide) in paragraph at lines 105--114
- [] 
- []
-
-[1
+ [1
 
 {/usr/local/texlive/2022/texmf-var/fonts/map/pdftex/updmap/pdftex.map} <./figur
 es/fig1_erreur_vs_temps_median.png>] [2 <./figures/fig1b_erreur_vs_temps_par_co
@@ -516,51 +511,48 @@ Package pdftex.def Info: figures/fig4_plancher_predit_vs_mesure.png  used on in
 put line 165.
 (pdftex.def)             Requested size: 467.42276pt x 258.1305pt.
  [3 <./figures/fig3_budget_vs_plancher.png>]
-<figures/fig5_balayage_fenetre.png, id=68, 999.39085pt x 434.13622pt>
+<figures/fig5_balayage_fenetre.png, id=65, 999.39085pt x 434.13622pt>
 File: figures/fig5_balayage_fenetre.png Graphic file (type png)
 <use figures/fig5_balayage_fenetre.png>
 Package pdftex.def Info: figures/fig5_balayage_fenetre.png  used on input line 
 179.
 (pdftex.def)             Requested size: 467.42276pt x 203.05038pt.
- [4 <./figures/fig4_plancher_predit_vs_mesure.png>]
-[5 <./figures/fig5_balayage_fenetre.png>] (./indiscernabilite_plancher.aux)
+ [4 <./figures/fig4_plancher_predit_vs_mesure.png>] [5 <./figures/fig5_balayage
+_fenetre.png>] (./indiscernabilite_plancher.aux)
 Package rerunfilecheck Info: File `indiscernabilite_plancher.out' has not chang
 ed.
 (rerunfilecheck)             Checksum: B107C9E47EAB863B2211AEC54B78D89F;618.
  ) 
 Here is how much of TeX's memory you used:
- 12327 strings out of 478268
- 191787 string characters out of 5846346
+ 12315 strings out of 478268
+ 191660 string characters out of 5846346
  516095 words of memory out of 5000000
- 30352 multiletter control sequences out of 15000+600000
- 484220 words of font info for 70 fonts, out of 8000000 for 9000
+ 30343 multiletter control sequences out of 15000+600000
+ 481758 words of font info for 61 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 60i,8n,63p,794b,442s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 60i,9n,63p,794b,426s stack positions out of 10000i,1000n,20000p,200000b,200000s
 {/usr/local/texlive/2022/texmf-dist/fonts/enc/dvips/cm-super/cm-super-t1.enc}
 </usr/local/texlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmex10.pfb><
 /usr/local/texlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></
 usr/local/texlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi12.pfb></u
-sr/local/texlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi7.pfb></usr
-/local/texlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi8.pfb></usr/l
-ocal/texlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></usr/loc
-al/texlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmr6.pfb></usr/local/
-texlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmr7.pfb></usr/local/tex
-live/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmr8.pfb></usr/local/texliv
-e/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy10.pfb></usr/local/texlive
-/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy8.pfb></usr/local/texlive/2
-022/texmf-dist/fonts/type1/public/cm-super/sfbx1095.pfb></usr/local/texlive/202
-2/texmf-dist/fonts/type1/public/cm-super/sfbx1440.pfb></usr/local/texlive/2022/
-texmf-dist/fonts/type1/public/cm-super/sfcc1095.pfb></usr/local/texlive/2022/te
-xmf-dist/fonts/type1/public/cm-super/sfrm1000.pfb></usr/local/texlive/2022/texm
-f-dist/fonts/type1/public/cm-super/sfrm1095.pfb></usr/local/texlive/2022/texmf-
-dist/fonts/type1/public/cm-super/sfrm1200.pfb></usr/local/texlive/2022/texmf-di
-st/fonts/type1/public/cm-super/sfrm1728.pfb></usr/local/texlive/2022/texmf-dist
-/fonts/type1/public/cm-super/sfti1095.pfb></usr/local/texlive/2022/texmf-dist/f
-onts/type1/public/cm-super/sftt1095.pfb>
-Output written on indiscernabilite_plancher.pdf (5 pages, 1415833 bytes).
+sr/local/texlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi8.pfb></usr
+/local/texlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></usr/l
+ocal/texlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmr6.pfb></usr/loca
+l/texlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmr8.pfb></usr/local/t
+exlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy10.pfb></usr/local/te
+xlive/2022/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy8.pfb></usr/local/texl
+ive/2022/texmf-dist/fonts/type1/public/cm-super/sfbx1095.pfb></usr/local/texliv
+e/2022/texmf-dist/fonts/type1/public/cm-super/sfbx1440.pfb></usr/local/texlive/
+2022/texmf-dist/fonts/type1/public/cm-super/sfcc1095.pfb></usr/local/texlive/20
+22/texmf-dist/fonts/type1/public/cm-super/sfrm1095.pfb></usr/local/texlive/2022
+/texmf-dist/fonts/type1/public/cm-super/sfrm1200.pfb></usr/local/texlive/2022/t
+exmf-dist/fonts/type1/public/cm-super/sfrm1728.pfb></usr/local/texlive/2022/tex
+mf-dist/fonts/type1/public/cm-super/sfti1095.pfb></usr/local/texlive/2022/texmf
+-dist/fonts/type1/public/cm-super/sftt1095.pfb>
+Output written on indiscernabilite_plancher.pdf (5 pages, 1383126 bytes).
 PDF statistics:
- 176 PDF objects out of 1000 (max. 8388607)
- 113 compressed objects within 2 object streams
+ 161 PDF objects out of 1000 (max. 8388607)
+ 104 compressed objects within 2 object streams
  19 named destinations out of 1000 (max. 500000)
  47 words of extra memory for PDF output out of 10000 (max. 10000000)
 
