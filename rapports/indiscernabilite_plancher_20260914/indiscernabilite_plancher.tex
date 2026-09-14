@@ -64,7 +64,7 @@ sauvegardés (fichiers \code{.yaml} voisins), sans réentraînement.
 \includegraphics[width=\linewidth]{figures/fig1_erreur_vs_temps_median.png}
 \caption{\mesure\ Figure « erreur vs temps » du rapport de sélection,
 répliquée à cinq graines par le même script
-(\codepath{select_terminal_function_at_strike.py}). Erreur relative $\ell^2$
+(\code{select\_terminal\_function\_at\_strike.py}). Erreur relative $\ell^2$
 sur les noeuds $s_i>B+\epscoin=0.7$ d'une tranche $t_j$ (grille
 $s\in[B,2]$, $400$ noeuds ; $t\in[0,T]$, $200$ noeuds) du prix, du Delta et
 du Gamma. Trait plein : médiane sur les graines ; traits fins : graines.
@@ -157,7 +157,7 @@ résidu intérieur était nul et les données de barrière et de far-field
 exactes, l'erreur $w=\Phi_\theta-\VDO$ serait la solution de $\LBS w=0$,
 $w(B,\cdot)=0$, $w(\cdot,T)=\delta$, c'est-à-dire le prix de l'option
 down-and-out de payoff $\delta$, donné par le principe de réflexion
-(\codepath{diagnostic_scripts/predict_corner_layer_floor.py}, quadrature
+(\code{diagnostic\_scripts/predict\_corner\_layer\_floor.py}, quadrature
 vérifiée contre la forme close à $8\times10^{-9}$).
 
 \begin{figure}[htbp]
