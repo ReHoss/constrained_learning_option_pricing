@@ -501,6 +501,28 @@ $1.6\times10^{-6}$ for the split-semigroup profile -- four to six orders of magn
 measured error floor of section 11, so the far-field condition removes the far-field
 component at no measurable cost in truncation error.
 
+### 12.1 Measured with the far-field condition (50000 iterations, `republique`, 5 seeds per construction)
+
+Aggregation: `data/aggregate_terminal_function_comparison/20260916_111337_iters50000_eps0.1_nocorner_farfield/` (runs tagged `_farfield`; `--far-field yes --hosts republique`,
+`budget_comparison.md` against the canonical batch of section 11.1). Recorded truncation-error
+bounds: $4.09 \times 10^{-8}$ for the ten Black-Scholes runs, $1.58 \times 10^{-6}$ for the five split runs.
+
+| Construction | $\|\Phi_\theta - V_{DO}\|_{L^2([2,s_\infty]\times(0,T))}$, without $\to$ with | $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$, without $\to$ with | remainder after the predicted floor |
+|---|---|---|---|
+| Black-Scholes, ordinary route | $1.5\times10^{-3} \to 3.0\times10^{-4}$ | $0.122 \to 0.111$ | $0.021$ |
+| Black-Scholes, two-term route | $3.7\times10^{-3} \to 1.5\times10^{-4}$ | $0.124 \to 0.115$ | $0.026$ |
+| Split-semigroup | $6.4\times10^{-3} \to 2.4\times10^{-4}$ | $0.127 \to 0.099$ | $0.018$ |
+
+(medians over seeds). The far-field component of section 11.2 is reduced by a factor of $5$ to $26$
+and its across-seed dispersion from a factor $30$ to a factor $10$; what remains on $[2, s_\infty]$ is
+of the order of $\|V_{DO}\|$ there ($1.1\times10^{-4}$). On the training domain the error settles on the
+floor predicted in section 13 ($0.112$): per band, $0.186$--$0.215$ on $[0.6,0.7]$ (predicted $0.210$),
+$0.074$--$0.082$ on $[0.7,1]$ ($0.085$), $0.042$--$0.059$ on $[1,2]$ ($0.047$); the remainder
+$\|(\Phi_\theta - V_{DO}) - w\| / \|V_{DO}\|$ is $0.018$--$0.026$. The three constructions remain
+indistinguishable at $n = 5$ (overlapping ranges). The best interior loss is $1.0$ to $1.6$ times higher
+with the condition (the factor $(s_\infty - s)/(s_\infty - B)$ changes the function class), without
+effect on the error.
+
 ## 13. The corner-layer floor is the terminal-trace defect of the ansatz (predicted, then measured)
 
 For every terminal-function mode, $g_1(s,T) = 0$ and $g_2(s,T) = \zeta\big(\tfrac{s-B}{\varepsilon}\big)(K-s)^+$
