@@ -79,6 +79,7 @@ from learning_option_pricing.pde.real_line_extension_fields import (
     REAL_LINE_EXTENSION_FIELD_KINDS,
     GaussianSemigroupExtensionField,
     GradedChenMangasarianExtensionField,
+    PutPayoffGaussianSemigroupExtensionField,
     constant_chen_mangasarian_datum,
     exact_maximum_datum,
 )
@@ -93,6 +94,7 @@ __all__ = [
     "REAL_LINE_EXTENSION_FIELD_KINDS",
     "GaussianSemigroupExtensionField",
     "GradedChenMangasarianExtensionField",
+    "PutPayoffGaussianSemigroupExtensionField",
     "constant_chen_mangasarian_datum",
     "exact_maximum_datum",
 

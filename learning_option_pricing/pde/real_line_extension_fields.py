@@ -106,6 +106,7 @@ import math
 import torch
 
 from learning_option_pricing.pde.heat_references import (
+    _normal_cdf,
     chen_mangasarian_max,
     heat_put_payoff,
 )
@@ -114,6 +115,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "GaussianSemigroupExtensionField",
+    "PutPayoffGaussianSemigroupExtensionField",
     "GradedChenMangasarianExtensionField",
     "REAL_LINE_EXTENSION_FIELD_KINDS",
 ]
@@ -302,6 +304,55 @@ class GaussianSemigroupExtensionField:
             2.0 * math.pi * variance
         )
 
+    def field_and_space_derivatives(
+        self, coord: torch.Tensor, t: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        r"""``(h, d_x h, d_xx h)`` from a **single** kernel evaluation.
+
+        The three kernels of :meth:`field`, :meth:`space_derivative` and
+        :meth:`second_space_derivative` are polynomial prefactors of one and
+        the same Gaussian :math:`\varphi_{s}(x - y_{j})`, so the
+        ``(N, n_quad)`` exponential --- the dominant cost of every call --- is
+        computed once here and multiplied by the three prefactors, instead of
+        three (four, with :meth:`time_derivative`) times over.  The prefactor
+        formulas are the ones of the three single-quantity methods, written in
+        the same operation order, so the returned tensors are bitwise the
+        tensors those methods return; only the wall-clock cost differs.
+
+        Returns:
+            Three tensors of shape ``(N, 1)``, with the same terminal-slice
+            and unresolved-band conventions as the single-quantity methods
+            (datum, autograd derivative of the datum, and zero respectively).
+        """
+        coord = coord.reshape(-1, 1)
+        t = t.reshape(-1, 1)
+        nodes, datum_values = self._quadrature_nodes(coord)
+
+        time_to_terminal = self.terminal_time - t
+        unresolved = self._register_floor(time_to_terminal.detach())
+
+        safe_time = torch.clamp(time_to_terminal, min=self.time_to_terminal_floor)
+        standard_deviation = self.comparison_volatility * torch.sqrt(safe_time)
+        separation = coord - nodes.reshape(1, -1)
+        gaussian = self._kernel(separation, standard_deviation)
+        variance = standard_deviation**2
+
+        def integrate(weights: torch.Tensor) -> torch.Tensor:
+            return (weights * datum_values).sum(dim=-1, keepdim=True) * self.quadrature_step
+
+        value = integrate(gaussian)
+        first = integrate((-separation / standard_deviation**2) * gaussian)
+        second = integrate(((separation**2 - variance) / variance**2) * gaussian)
+
+        fallback = (time_to_terminal <= 0.0) | unresolved
+        datum_at_query = self._terminal_datum_fn(coord.reshape(-1)).reshape(-1, 1)
+        fallback_derivative = _autograd_space_derivative(self._terminal_datum_fn, coord)
+        return (
+            torch.where(fallback, datum_at_query, value),
+            torch.where(fallback, fallback_derivative, first),
+            torch.where(fallback, torch.zeros_like(second), second),
+        )
+
     # -- field and its analytic derivatives -------------------------------
 
     def field(self, coord: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
@@ -387,6 +438,188 @@ class GaussianSemigroupExtensionField:
             "largest_unresolved_time_to_terminal": (
                 self._floor_largest_time_to_terminal
             ),
+        }
+
+
+class PutPayoffGaussianSemigroupExtensionField:
+    r"""Split extension of the put payoff, :math:`h(\cdot, t) = e^{(T-t)\nu_{c}\partial_{xx}} V`
+    with :math:`V(y) = (K - e^{y})^{+}`, **in closed form**.
+
+    For this datum the Gaussian convolution of
+    :class:`GaussianSemigroupExtensionField` is an explicit integral.  With
+    :math:`k = \ln K`, :math:`s = \sigma_{c}\sqrt{T - t}`,
+    :math:`d_{1} = (k - x)/s` and :math:`d_{2} = d_{1} - s`, completing the
+    square in :math:`\int_{-\infty}^{k} (K - e^{y})\,\varphi_{s}(x - y)\,dy` gives
+
+    .. math::
+
+        h(x, t) = K\,\Phi(d_{1}) - e^{x + s^{2}/2}\,\Phi(d_{2}),
+
+    and, using the identity :math:`e^{x + s^{2}/2}\varphi(d_{2}) = K\varphi(d_{1})`
+    to collapse the product-rule terms,
+
+    .. math::
+
+        \partial_{x} h = -e^{x + s^{2}/2}\,\Phi(d_{2}),
+        \qquad
+        \partial_{xx} h = -e^{x + s^{2}/2}\,\Phi(d_{2}) + \frac{K\,\varphi(d_{1})}{s},
+        \qquad
+        \partial_{t} h = -\nu_{c}\,\partial_{xx} h .
+
+    The second derivative is the smoothed datum's curvature: the first term is
+    the Gaussian smoothing of :math:`\partial_{yy}V = -e^{y}\mathbf 1_{y<k}` on
+    the exercise side, the second is the Dirac mass of weight :math:`K` (the jump
+    of :math:`\partial_{y}V` at :math:`k`) smoothed by the kernel, diverging like
+    :math:`(T-t)^{-1/2}` at :math:`x = k` as the slice is approached, exactly as
+    the quadrature class documents.
+
+    Relation to the quadrature class.  The two classes evaluate the **same
+    mathematical object**; this one has no quadrature grid, hence no
+    domain-truncation error, no resolution error, and no unresolved band near the
+    slice (``time_to_terminal_floor`` is zero and the floor report never counts
+    an activation).  Its cost is :math:`O(N)` per call instead of
+    :math:`O(N \times n_{\mathrm{quad}})`.  It applies **only** to the put payoff
+    datum; a network-valued or glued datum (the Bermudan stage datum
+    :math:`\max(\payoff, C)`) has no closed form and must use the quadrature
+    class.  The interface (``field``, ``space_derivative``,
+    ``second_space_derivative``, ``time_derivative``, ``derivative_callables``,
+    ``field_and_space_derivatives``, ``quadrature_floor_report``) is that of the
+    quadrature class, so the two are interchangeable at a call site.
+
+    Terminal-slice convention.  At :math:`T - t \le 0` the field returns the
+    datum, :math:`\partial_{x} h` its one-sided derivative
+    :math:`-e^{x}\mathbf 1_{x<k}`, and :math:`\partial_{xx} h` zero (the Dirac
+    is not representable), matching the quadrature class's fallback so that a
+    caller sees the same values at the slice whichever class it holds.
+
+    Args:
+        K:                      Strike, :math:`K > 0`.
+        terminal_time:          Stage-local terminal time :math:`T`.
+        comparison_volatility:  :math:`\sigma_{c}`, so that
+                                :math:`\nu_{c} = \sigma_{c}^{2}/2`.
+        name:                   Identifier used in log messages and reports.
+    """
+
+    def __init__(
+        self,
+        *,
+        K: float,
+        terminal_time: float,
+        comparison_volatility: float,
+        name: str = "put_payoff_gaussian_semigroup_closed_form",
+    ) -> None:
+        if K <= 0.0:
+            raise ValueError(f"K must be strictly positive; received {K!r}.")
+        if comparison_volatility <= 0.0:
+            raise ValueError(
+                "comparison_volatility must be strictly positive; received "
+                f"{comparison_volatility!r}. A vanishing comparison volatility is "
+                "the raw (un-smoothed) extension, which is a different object and "
+                "is not built by this class."
+            )
+        self.K = float(K)
+        self.log_strike = math.log(self.K)
+        self.terminal_time = float(terminal_time)
+        self.comparison_volatility = float(comparison_volatility)
+        self.comparison_diffusivity = 0.5 * float(comparison_volatility) ** 2
+        self.name = name
+        # No quadrature: the whole strip 0 < T - t is resolved.  Exposed so a
+        # caller that reads the floor of the quadrature class finds zero here.
+        self.time_to_terminal_floor = 0.0
+        self._evaluation_count = 0
+
+    def _closed_form_pieces(self, coord: torch.Tensor, t: torch.Tensor):
+        r"""``(h, d_x h, d_xx h, fallback mask, coord column)`` for ``T - t > 0``.
+
+        The three quantities share :math:`\Phi(d_{2})`, :math:`e^{x + s^{2}/2}`
+        and :math:`\varphi(d_{1})`, computed once.  Where ``T - t <= 0`` the
+        standard deviation is replaced by one (any positive value) so that no
+        division by zero occurs in the discarded branch; the returned mask
+        selects the terminal-slice convention there.
+        """
+        coord = coord.reshape(-1, 1)
+        t = t.reshape(-1, 1)
+        time_to_terminal = self.terminal_time - t
+        self._evaluation_count += int(time_to_terminal.numel())
+        at_or_past_terminal = time_to_terminal <= 0.0
+
+        positive_time = torch.where(
+            at_or_past_terminal, torch.ones_like(time_to_terminal), time_to_terminal
+        )
+        standard_deviation = self.comparison_volatility * torch.sqrt(positive_time)
+        d_one = (self.log_strike - coord) / standard_deviation
+        d_two = d_one - standard_deviation
+        forward_factor = torch.exp(coord + 0.5 * standard_deviation**2)
+        forward_tail = forward_factor * _normal_cdf(d_two)
+        gaussian_at_strike = (
+            torch.exp(-0.5 * d_one**2) / math.sqrt(2.0 * math.pi)
+        ) / standard_deviation
+
+        value = self.K * _normal_cdf(d_one) - forward_tail
+        first = -forward_tail
+        second = -forward_tail + self.K * gaussian_at_strike
+        return value, first, second, at_or_past_terminal, coord
+
+    def _datum(self, coord_column: torch.Tensor) -> torch.Tensor:
+        return torch.clamp(self.K - torch.exp(coord_column), min=0.0)
+
+    def _datum_one_sided_derivative(self, coord_column: torch.Tensor) -> torch.Tensor:
+        exponential = torch.exp(coord_column)
+        return torch.where(
+            coord_column < self.log_strike, -exponential, torch.zeros_like(exponential)
+        )
+
+    # -- field and its analytic derivatives -------------------------------
+
+    def field_and_space_derivatives(
+        self, coord: torch.Tensor, t: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        r"""``(h, d_x h, d_xx h)``, each of shape ``(N, 1)``, from one evaluation."""
+        value, first, second, fallback, coord_column = self._closed_form_pieces(coord, t)
+        return (
+            torch.where(fallback, self._datum(coord_column), value),
+            torch.where(fallback, self._datum_one_sided_derivative(coord_column), first),
+            torch.where(fallback, torch.zeros_like(second), second),
+        )
+
+    def field(self, coord: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        r"""The extension :math:`h(x, t)`, shape ``(N, 1)``."""
+        return self.field_and_space_derivatives(coord, t)[0]
+
+    def space_derivative(self, coord: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        r"""The analytic :math:`\partial_{x} h`, shape ``(N, 1)``."""
+        return self.field_and_space_derivatives(coord, t)[1]
+
+    def second_space_derivative(
+        self, coord: torch.Tensor, t: torch.Tensor
+    ) -> torch.Tensor:
+        r"""The analytic :math:`\partial_{xx} h`, shape ``(N, 1)``."""
+        return self.field_and_space_derivatives(coord, t)[2]
+
+    def time_derivative(self, coord: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        r"""The analytic :math:`\partial_{t} h = -\nu_{c}\,\partial_{xx} h` (heat equation, exact)."""
+        return -self.comparison_diffusivity * self.second_space_derivative(coord, t)
+
+    def derivative_callables(self) -> dict:
+        """The ``{"dt", "dx", "dxx"}`` mapping consumed by ``TerminalAnsatz``."""
+        return {
+            "dt": self.time_derivative,
+            "dx": self.space_derivative,
+            "dxx": self.second_space_derivative,
+        }
+
+    # -- reporting --------------------------------------------------------
+
+    def quadrature_floor_report(self) -> dict:
+        """Same keys as the quadrature class's report; there is no floor to activate."""
+        return {
+            "profile": "closed_form",
+            "quadrature_step": 0.0,
+            "time_to_terminal_floor": 0.0,
+            "activation_count": 0,
+            "evaluation_count": self._evaluation_count,
+            "activation_fraction": 0.0,
+            "largest_unresolved_time_to_terminal": 0.0,
         }
 
 

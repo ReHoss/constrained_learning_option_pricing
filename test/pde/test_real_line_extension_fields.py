@@ -11,7 +11,11 @@ Each test pins one assertion of the free-boundary theory, and is named after it:
   slice is approached, whereas the mis-specified split's forcing **diverges** like
   ``(T - t)^(-1/2)``.  This is the property that singles out the split, and it is
   the one the ledger of the paper turns on;
-* the quadrature floor is **reported**, never silent.
+* the quadrature floor is **reported**, never silent;
+* the fused ``field_and_space_derivatives`` returns bitwise the tensors of the
+  three single-quantity methods (it is a cost optimisation, not a new formula);
+* the closed-form put-payoff field agrees with the quadrature field to the
+  quadrature's own discretisation error, and has no floor.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ import torch
 from learning_option_pricing.pde import (
     GaussianSemigroupExtensionField,
     GradedChenMangasarianExtensionField,
+    PutPayoffGaussianSemigroupExtensionField,
     black_scholes_put_exact,
     exact_maximum_datum,
     heat_put_payoff,
@@ -392,4 +397,109 @@ def test_the_graded_field_refuses_a_vanishing_grading_exponent():
             terminal_time=STAGE_TERMINAL_TIME,
             smoothing_scale=2.0,
             grading_exponent=0.0,
+        )
+
+
+# ---------------------------------------------------------------------------
+# The fused evaluation is a cost optimisation only: bitwise the same tensors
+# ---------------------------------------------------------------------------
+
+
+def test_the_fused_evaluation_is_bitwise_the_single_quantity_methods():
+    field = _field(VOLATILITY, n_quad=2000)
+    x = _grid(101)
+    for time_to_terminal in (0.3, 0.05, 0.5 * field.time_to_terminal_floor, 0.0):
+        t = torch.full_like(x, STAGE_TERMINAL_TIME - time_to_terminal)
+        value, first, second = field.field_and_space_derivatives(x, t)
+        assert torch.equal(value, field.field(x, t))
+        assert torch.equal(first, field.space_derivative(x, t))
+        assert torch.equal(second, field.second_space_derivative(x, t))
+
+
+# ---------------------------------------------------------------------------
+# Closed-form put-payoff field: the same object as the quadrature, exactly
+# ---------------------------------------------------------------------------
+
+
+def _put_payoff_datum(x: torch.Tensor) -> torch.Tensor:
+    return heat_put_payoff(x, STRIKE)
+
+
+def _put_payoff_fields(comparison_volatility: float, n_quad: int = 200_000):
+    quadrature = GaussianSemigroupExtensionField(
+        _put_payoff_datum,
+        terminal_time=STAGE_TERMINAL_TIME,
+        comparison_volatility=comparison_volatility,
+        y_lo=QUADRATURE_LO,
+        y_hi=QUADRATURE_HI,
+        n_quad=n_quad,
+    )
+    closed_form = PutPayoffGaussianSemigroupExtensionField(
+        K=STRIKE,
+        terminal_time=STAGE_TERMINAL_TIME,
+        comparison_volatility=comparison_volatility,
+    )
+    return quadrature, closed_form
+
+
+@pytest.mark.parametrize("comparison_volatility", [VOLATILITY, 2 * VOLATILITY])
+def test_the_closed_form_put_field_matches_the_quadrature_field(comparison_volatility):
+    """Value and both space derivatives agree to the quadrature's discretisation
+    error (the closed form has none): a genuinely independent check, since the
+    quadrature knows nothing of the normal distribution function."""
+    quadrature, closed_form = _put_payoff_fields(comparison_volatility)
+    x = _grid(101)
+    for time_to_terminal in (0.4, 0.1, 0.01):
+        t = torch.full_like(x, STAGE_TERMINAL_TIME - time_to_terminal)
+        reference = quadrature.field_and_space_derivatives(x, t)
+        candidate = closed_form.field_and_space_derivatives(x, t)
+        for want, got, tolerance in zip(reference, candidate, (1e-8, 1e-7, 1e-5)):
+            assert torch.allclose(got, want, atol=tolerance * STRIKE, rtol=1e-7), (
+                f"time_to_terminal={time_to_terminal}: max |difference| "
+                f"{(got - want).abs().max().item():.3e}"
+            )
+
+
+def test_the_closed_form_put_field_is_exact_at_the_slice_and_has_no_floor():
+    _, closed_form = _put_payoff_fields(VOLATILITY)
+    x = _grid(101)
+    t = torch.full_like(x, STAGE_TERMINAL_TIME)
+    value, first, second = closed_form.field_and_space_derivatives(x, t)
+    assert torch.equal(value, _put_payoff_datum(x).reshape(-1, 1))
+    expected_first = torch.where(x < math.log(STRIKE), -torch.exp(x), torch.zeros_like(x))
+    assert torch.equal(first, expected_first.reshape(-1, 1))
+    assert torch.equal(second, torch.zeros_like(second))
+    # No quadrature, so no band in which the kernel is unresolved: a point
+    # arbitrarily close to the slice is evaluated, and the report says so.
+    t_near = torch.full_like(x, STAGE_TERMINAL_TIME - 1e-12)
+    assert torch.isfinite(closed_form.second_space_derivative(x, t_near)).all()
+    report = closed_form.quadrature_floor_report()
+    assert closed_form.time_to_terminal_floor == 0.0
+    assert report["activation_count"] == 0
+    assert report["profile"] == "closed_form"
+
+
+def test_the_closed_form_put_field_solves_its_own_heat_equation_by_autograd():
+    """d_t h + nu_c d_xx h = 0 with d_t h taken by autograd on the closed-form
+    value (the analytic route supplies it as -nu_c d_xx h; here that identity
+    is checked rather than assumed)."""
+    _, closed_form = _put_payoff_fields(VOLATILITY)
+    x = _grid(51)
+    t = torch.full_like(x, STAGE_TERMINAL_TIME - 0.2).requires_grad_(True)
+    value = closed_form.field(x, t)
+    (autograd_time_derivative,) = torch.autograd.grad(value.sum(), t)
+    analytic_second = closed_form.second_space_derivative(x, t.detach()).reshape(-1)
+    residual = autograd_time_derivative + 0.5 * VOLATILITY**2 * analytic_second
+    assert residual.abs().max().item() < 1e-9 * STRIKE
+    x_grad = _grid(51).requires_grad_(True)
+    value = closed_form.field(x_grad, t.detach())
+    (autograd_space_derivative,) = torch.autograd.grad(value.sum(), x_grad)
+    analytic_first = closed_form.space_derivative(x_grad.detach(), t.detach()).reshape(-1)
+    assert torch.allclose(autograd_space_derivative, analytic_first, atol=1e-9 * STRIKE)
+
+
+def test_the_closed_form_put_field_refuses_a_non_positive_strike():
+    with pytest.raises(ValueError):
+        PutPayoffGaussianSemigroupExtensionField(
+            K=0.0, terminal_time=STAGE_TERMINAL_TIME, comparison_volatility=VOLATILITY
         )
