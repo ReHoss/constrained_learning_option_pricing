@@ -158,6 +158,7 @@ continuous-barrier formula).
 | $g_1(s,t)=d_{\partial_p Q}$ | Composite distance (eq. 9) | `pricing.barrier.barrier_composite_distance` |
 | $g_2(s,t)=h_\varepsilon(s,t)$ | Corner-regularised extension (Def. 5) | `pricing.barrier.make_corner_regularised_extension` |
 | $\zeta(r)$ | $C^\infty$ compactly-supported transition | `pricing.barrier._smoothstep01` |
+| $\pi(x,t) = e^{(T-t)\nu_c\partial_{xx}}(K-e^{x})^+$ | Split-semigroup profile, closed form (section 14) | `pde.real_line_extension_fields.PutPayoffGaussianSemigroupExtensionField` |
 | $V_{DO}(s,t)$ | Exact closed-form reference | `pricing.barrier.reiner_rubinstein_down_and_out_put` |
 | $U_\theta(s,t)=g_1 u_\theta+g_2$ | Trial solution | `models.etcnn.ETCNN.forward` |
 | $\mathcal{L}(\theta)$ | Interior-residual-only loss | `exp_barrier_option.pilot_down_and_out_put.compute_loss` |
@@ -579,3 +580,74 @@ $\zeta$-switched ansatz -- a property of the ansatz, identical for every termina
 that equals the payoff at $t = T$, and unreachable by training. Its size is set by $\varepsilon$
 (the support of $\delta$) and by $K - B$ (its amplitude); the corner exclusion window does not
 change it, since $w$ is determined by the data, not by where the residual is enforced.
+
+## 14. Cost of the split-semigroup route: closed-form evaluation of the profile
+
+**Observation (measured).** The five split-semigroup runs of section 12.1 took $1.06$--$1.07$ s
+per iteration on `republique` (4 threads, `n_f = 4096`, float32) against $0.083$--$0.085$ s for the
+two-term Black-Scholes route and $0.111$--$0.119$ s for the ordinary route: a factor $12.6$. The
+whole excess is in the evaluation of $\mathcal L^{BS} h_\varepsilon^{\mathrm{split}}$, whose
+profile $\pi$ was obtained by `GaussianSemigroupExtensionField` as a fixed-grid trapezoidal
+convolution on $n_{\mathrm{quad}} = 8000$ log-price nodes, recomputed at every iteration for every
+collocation point ($O(n_f \times n_{\mathrm{quad}})$ exponentials per call).
+
+**Closed form.** For the put datum the convolution is an explicit integral. Let $k = \ln K$,
+$x = \ln s$, $m = \sigma_c\sqrt{T-t}$, $d_1 = (k - x)/m$ and $d_2 = d_1 - m$, with $\Phi$ and
+$\varphi$ the standard normal distribution and density. Completing the square in
+$\int_{-\infty}^{k} (K - e^{y})\,\varphi_m(x - y)\,dy$ gives, for $t < T$,
+
+$$
+\pi(x, t) = K\,\Phi(d_1) - e^{x + m^2/2}\,\Phi(d_2),
+\qquad
+\partial_x \pi = -e^{x + m^2/2}\,\Phi(d_2),
+\qquad
+\partial_{xx} \pi = -e^{x + m^2/2}\,\Phi(d_2) + \frac{K\,\varphi(d_1)}{m},
+$$
+
+and $\partial_t \pi = -\nu_c\,\partial_{xx}\pi$ by the heat equation the profile satisfies
+($\nu_c = \sigma_c^2/2$). The first-derivative simplification uses the identity
+$e^{x + m^2/2}\varphi(d_2) = K\varphi(d_1)$. The term $K\varphi(d_1)/m$ is the Dirac mass of weight
+$K$ (the jump of $\partial_y (K-e^y)^+$ at $k$) smoothed by the kernel; it diverges as
+$(T-t)^{-1/2}$ at $x = k$, which is the behaviour the quadrature class documents. At $t = T$ the
+datum, its one-sided derivative and a zero second derivative are returned, matching the
+quadrature class's terminal-slice convention.
+
+**Rigour.** The closed form evaluates the *same* mathematical object as the quadrature, exactly:
+there is no support truncation ($y_{\mathrm{lo}}, y_{\mathrm{hi}}$), no resolution error, and no
+unresolved band of width $\sim (\Delta y/\sigma_c)^2$ near the terminal slice (the
+`time_to_terminal_floor` of the quadrature class is zero here and its floor report never counts
+an activation). The two-term assembly of the interior residual,
+$\mathcal L^{BS}(g_1 u_\theta + h_\varepsilon^{\mathrm{split}}) = \mathcal L^{BS}(g_1 u_\theta) + \mathcal L^{BS} h_\varepsilon^{\mathrm{split}}$,
+is unchanged; only the evaluation of the second, parameter-independent term differs. The
+change therefore removes a numerical approximation rather than introducing one. The closed
+form applies to the put datum only; a network-valued or glued datum (the Bermudan stage datum
+$\max(g, C)$) has no closed form and keeps the quadrature route.
+
+**Measured agreement and cost** (laptop, 4 threads, `n_f = 4096`, float32, one training
+iteration including backward and optimiser step, $\sigma_c = \sigma = 0.3$, $\varepsilon = 0.1$,
+far-field Dirichlet, same collocation batch):
+
+| Route | Iteration | $\mathcal L^{BS} h_\varepsilon$ alone |
+|---|---|---|
+| Black-Scholes, two-term analytic | $44.9$ ms | $1.35$ ms |
+| Split, quadrature $n_{\mathrm{quad}} = 8000$ | $163.1$ ms | $119.8$ ms |
+| Split, closed form | $44.6$ ms | $1.25$ ms |
+
+Agreement between the two split routes on the batch: $\max|h_{\mathrm{quad}} - h_{\mathrm{closed}}| = 4.2\times10^{-5}$
+on values up to $20.6$, and $\max|\mathcal L^{BS}h_{\mathrm{quad}} - \mathcal L^{BS}h_{\mathrm{closed}}| = 4.5$ on
+values up to $5.2\times10^{6}$ (the $(T-t)^{-1/2}$ divergence at collocation points close to the
+slice), i.e. a relative discrepancy of $10^{-6}$ that is the quadrature's own error.
+`test/pricing/test_barrier.py` pins both routes against an independent closed form written in
+the test (a different code path from the production class) on value, second price derivative
+and Black-Scholes residual. The split route is thereby brought to the per-iteration cost of the
+Black-Scholes two-term route; on `republique` the expected gain is the measured factor $12.6$
+(to be confirmed by a run tagged `_closedform`).
+
+**Code.** `pde.real_line_extension_fields.PutPayoffGaussianSemigroupExtensionField` (the
+profile and its analytic derivatives, one shared evaluation for $\pi$, $\partial_x\pi$,
+$\partial_{xx}\pi$); `pricing.barrier.make_corner_regularised_extension_split(profile=...)`
+with `SPLIT_PROFILE_ROUTES = ("closed_form", "quadrature")`, closed form by default;
+`pilot_down_and_out_put.py --split-profile {closed_form,quadrature}` (default `closed_form`,
+run tag `_closedform` or `_nquad<n>`). `load_trained_model` falls back to the quadrature route
+for metadata that predates the `split_profile` key, so the runs of sections 10--13 replot
+faithfully; a resume keeps the on-disk route and warns if the command line asks for the other.
