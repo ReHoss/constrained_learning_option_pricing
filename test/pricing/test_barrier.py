@@ -26,6 +26,7 @@ from learning_option_pricing.pricing.barrier import (
     barrier_composite_distance_with_far_field,
     make_corner_regularised_extension,
     make_corner_regularised_extension_split,
+    SPLIT_PROFILE_ROUTES,
     make_corner_regularised_extension_with_black_scholes_payoff,
     make_corner_regularised_extension_with_smoothed_payoff,
     mangasarian_smoothed_put_payoff,
@@ -447,19 +448,36 @@ class TestCornerRegularisedExtensionSplit:
     Y_LO, Y_HI = math.log(0.08), math.log(9.0)
     N_QUAD = 1_000_000
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture(scope="class", params=SPLIT_PROFILE_ROUTES)
     @classmethod
-    def h_eps(cls):
-        """Built once per class and shared by every test below (see the
-        n_quad development note above for why it is expensive: ~0.3-0.4s
-        per (value, second-derivative) query pair at this n_quad, since
-        GaussianSemigroupExtensionField recomputes its quadrature nodes and
-        the full batch convolution on every call -- nothing is cached
-        across calls, let alone across test methods)."""
+    def h_eps(cls, request):
+        """Built once per class and per evaluation route, and shared by every
+        test below.  Both routes of make_corner_regularised_extension_split
+        are exercised against the SAME hand-derived oracles: the
+        ``"quadrature"`` route (see the n_quad development note above for
+        why it is expensive: ~0.3-0.4s per (value, second-derivative) query
+        pair at this n_quad, since GaussianSemigroupExtensionField
+        recomputes its quadrature nodes and the full batch convolution on
+        every call) and the ``"closed_form"`` route, whose production code
+        (PutPayoffGaussianSemigroupExtensionField, log-price derivatives
+        chain-ruled to price space) is a different arrangement of the
+        formulas from the oracles' direct price-space expressions."""
         return make_corner_regularised_extension_split(
             cls.K, cls.B, cls.epsilon, cls.T, cls.sigma,
-            cls.Y_LO, cls.Y_HI, n_quad=cls.N_QUAD,
+            cls.Y_LO, cls.Y_HI, n_quad=cls.N_QUAD, profile=request.param,
         )
+
+    def test_rejects_unknown_profile(self) -> None:
+        with pytest.raises(ValueError):
+            make_corner_regularised_extension_split(
+                self.K, self.B, self.epsilon, self.T, self.sigma, profile="autograd",
+            )
+
+    def test_quadrature_profile_requires_a_support(self) -> None:
+        with pytest.raises(ValueError):
+            make_corner_regularised_extension_split(
+                self.K, self.B, self.epsilon, self.T, self.sigma, profile="quadrature",
+            )
 
     def test_zero_on_entire_barrier_face(self, h_eps) -> None:
         """h(B, t) = 0 for every t: the cutoff zeta(0) = 0 kills the

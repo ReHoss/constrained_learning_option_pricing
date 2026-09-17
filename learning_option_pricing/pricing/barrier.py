@@ -61,6 +61,7 @@ import torch
 
 from learning_option_pricing.pde.real_line_extension_fields import (
     GaussianSemigroupExtensionField,
+    PutPayoffGaussianSemigroupExtensionField,
 )
 from learning_option_pricing.pricing.terminal import black_scholes_put, payoff_put, _report_tau_floor_activation
 
@@ -676,7 +677,7 @@ class SplitSemigroupCornerExtension:
         K: float,
         B: float,
         epsilon: float,
-        split_field: GaussianSemigroupExtensionField,
+        split_field: GaussianSemigroupExtensionField | PutPayoffGaussianSemigroupExtensionField,
     ) -> None:
         self.K = K
         self.B = B
@@ -711,20 +712,25 @@ class SplitSemigroupCornerExtension:
         ``x`` already equals the price-space partial derivative in ``t`` at
         fixed ``s``.
 
-        Queries the field exactly once each for ``field``/``"dt"``/``"dx"``/
-        ``"dxx"`` (the four quantities the price-space derivatives below are
-        built from), regardless of how many of them the caller goes on to
-        use: each is an ``O(batch_size x n_quad)`` convolution with no
-        caching (see ``GaussianSemigroupExtensionField``'s module
-        docstring), so this is the minimum number of quadrature passes, not
-        four times that for four separately-called derivative methods.
+        Queries the field exactly **once**, through
+        ``field_and_space_derivatives`` (one shared kernel evaluation for
+        ``h``/``d_x h``/``d_xx h``), and obtains ``d_t h = -nu_c d_xx h``
+        from the returned second derivative by the field's own heat
+        equation -- the identity ``time_derivative`` itself implements.  For
+        the quadrature-backed field this is one ``O(batch_size x n_quad)``
+        exponential instead of four (``field``, ``"dt"``, ``"dx"``,
+        ``"dxx"`` each re-evaluating the same Gaussian), with bitwise the
+        same tensors; for the closed-form field the cost is ``O(batch_size)``
+        either way.
         """
         log_price, t_flat, broadcast_shape = self._log_price_and_broadcast(s, t)
-        derivative = self.split_field.derivative_callables()
-        pi_value = self.split_field.field(log_price, t_flat).reshape(broadcast_shape)
-        d_t_pi = derivative["dt"](log_price, t_flat).reshape(broadcast_shape)
-        d_x_pi = derivative["dx"](log_price, t_flat).reshape(broadcast_shape)
-        d_xx_pi = derivative["dxx"](log_price, t_flat).reshape(broadcast_shape)
+        pi_value, d_x_pi, d_xx_pi = self.split_field.field_and_space_derivatives(
+            log_price, t_flat
+        )
+        pi_value = pi_value.reshape(broadcast_shape)
+        d_x_pi = d_x_pi.reshape(broadcast_shape)
+        d_xx_pi = d_xx_pi.reshape(broadcast_shape)
+        d_t_pi = -self.split_field.comparison_diffusivity * d_xx_pi
 
         s_reshaped = s.expand(broadcast_shape)
         d_s_pi = d_x_pi / s_reshaped
@@ -810,15 +816,21 @@ class SplitSemigroupCornerExtension:
         return d_t + 0.5 * sigma**2 * s**2 * d_ss + r * s * d_s - r * value
 
 
+#: The two evaluation routes of the split-semigroup profile accepted by
+#: :func:`make_corner_regularised_extension_split`.
+SPLIT_PROFILE_ROUTES = ("closed_form", "quadrature")
+
+
 def make_corner_regularised_extension_split(
     K: float,
     B: float,
     epsilon: float,
     T: float,
     comparison_volatility: float,
-    y_lo: float,
-    y_hi: float,
+    y_lo: float | None = None,
+    y_hi: float | None = None,
     n_quad: int = 8000,
+    profile: str = "closed_form",
 ) -> SplitSemigroupCornerExtension:
     r"""Corner-regularised extension using the split-semigroup terminal profile.
 
@@ -854,10 +866,35 @@ GaussianSemigroupExtensionField`'s (see that class's docstring for the
     terminal slice (mis-matching it reinstates an unbounded second-order
     channel -- see the referenced class's tests).
 
-    ``y_lo``/``y_hi`` are the fixed quadrature support of the underlying
-    field, in the **log-price** coordinate: they must cover the evaluation
-    window in ``s`` padded by several diffusion lengths
-    :math:`\sigma_c\sqrt T`, per the referenced class's own requirement.
+    **Evaluation route** (``profile``).  The datum is the put payoff
+    :math:`g(x) = (K - e^x)^+`, for which the Gaussian convolution is an
+    explicit integral (with :math:`m = \sigma_c\sqrt{T-t}` and
+    :math:`c = \ln(K/s)/m`):
+
+    .. math::
+
+        \pi(s, t) = K\,\Phi(c) - s\,e^{\sigma_c^2 (T-t)/2}\,\Phi(c - m),
+
+    together with closed-form :math:`\partial_x\pi`, :math:`\partial_{xx}\pi`
+    (see :class:`~learning_option_pricing.pde.real_line_extension_fields.\
+PutPayoffGaussianSemigroupExtensionField`).  ``profile="closed_form"`` (the
+    default) evaluates that formula: it is the exact value of the same
+    mathematical object the quadrature approximates, with no support
+    truncation, no resolution error, no near-maturity unresolved band, and an
+    :math:`O(n)` cost per call instead of :math:`O(n \times n_{\rm quad})`.
+    ``profile="quadrature"`` keeps the fixed-grid trapezoidal route of
+    :class:`~learning_option_pricing.pde.real_line_extension_fields.\
+GaussianSemigroupExtensionField`, which is the generic route for a datum
+    with no closed form and is retained here as a cross-check of the closed
+    form (``test/pricing/test_barrier.py`` pins their agreement) and for
+    reproducing runs made before the closed form existed.
+
+    ``y_lo``/``y_hi``/``n_quad`` concern the quadrature route only: they are
+    the fixed quadrature support of the underlying field, in the
+    **log-price** coordinate, and must cover the evaluation window in ``s``
+    padded by several diffusion lengths :math:`\sigma_c\sqrt T`, per the
+    referenced class's own requirement.  They are ignored (and may be left
+    ``None``) for the closed form.
 
     Args:
         K: Strike price.
@@ -868,9 +905,12 @@ GaussianSemigroupExtensionField`'s (see that class's docstring for the
             semigroup, forwarded to
             :class:`~learning_option_pricing.pde.real_line_extension_fields.\
 GaussianSemigroupExtensionField`.
-        y_lo: Lower end of the log-price quadrature support.
-        y_hi: Upper end of the log-price quadrature support.
-        n_quad: Number of quadrature nodes.
+        y_lo: Lower end of the log-price quadrature support
+            (``profile="quadrature"`` only).
+        y_hi: Upper end of the log-price quadrature support
+            (``profile="quadrature"`` only).
+        n_quad: Number of quadrature nodes (``profile="quadrature"`` only).
+        profile: ``"closed_form"`` (default) or ``"quadrature"``; see above.
 
     Returns:
         A :class:`SplitSemigroupCornerExtension`, callable as ``h_eps(s, t)
@@ -899,19 +939,40 @@ GaussianSemigroupExtensionField`.
           finite difference through the quadratured field, which would
           amplify the quadrature's own discretisation error by
           :math:`1/h^2`.
-        - ``h_eps.split_field``: the underlying
-          :class:`GaussianSemigroupExtensionField`, for
+        - ``h_eps.split_field``: the underlying profile field
+          (:class:`PutPayoffGaussianSemigroupExtensionField` or
+          :class:`GaussianSemigroupExtensionField`), for
           ``h_eps.split_field.quadrature_floor_report()``.
 
     Raises:
-        ValueError: If ``epsilon <= 0`` or ``B >= K`` (this function's own
-            checks); or if ``comparison_volatility <= 0`` or ``y_hi <= y_lo``
-            (raised by ``GaussianSemigroupExtensionField`` itself).
+        ValueError: If ``epsilon <= 0``, ``B >= K`` or ``profile`` is not one
+            of :data:`SPLIT_PROFILE_ROUTES` (this function's own checks); if
+            ``profile="quadrature"`` and ``y_lo``/``y_hi`` are missing; or if
+            ``comparison_volatility <= 0`` or ``y_hi <= y_lo`` (raised by the
+            profile field itself).
     """
     if epsilon <= 0.0:
         raise ValueError(f"epsilon must be > 0; got {epsilon}.")
     if not (0.0 < B < K):
         raise ValueError(f"the reverse knock-out regime requires 0 < B < K; got {B=}, {K=}.")
+    if profile not in SPLIT_PROFILE_ROUTES:
+        raise ValueError(
+            f"profile must be one of {SPLIT_PROFILE_ROUTES}; got {profile!r}."
+        )
+
+    if profile == "closed_form":
+        split_field = PutPayoffGaussianSemigroupExtensionField(
+            K=K,
+            terminal_time=T,
+            comparison_volatility=comparison_volatility,
+            name="barrier_split_semigroup_closed_form",
+        )
+        return SplitSemigroupCornerExtension(K, B, epsilon, split_field)
+
+    if y_lo is None or y_hi is None:
+        raise ValueError(
+            "profile='quadrature' requires the log-price quadrature support y_lo/y_hi."
+        )
 
     def terminal_datum_on_the_log_price_line(x: torch.Tensor) -> torch.Tensor:
         return payoff_put(torch.exp(x), K)
