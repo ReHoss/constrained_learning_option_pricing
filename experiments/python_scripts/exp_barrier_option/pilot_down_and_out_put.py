@@ -74,6 +74,7 @@ from learning_option_pricing.pricing.barrier import (  # noqa: E402
     barrier_composite_distance_with_far_field,
     make_corner_regularised_extension,
     make_corner_regularised_extension_split,
+    SPLIT_PROFILE_ROUTES,
     make_corner_regularised_extension_with_black_scholes_payoff,
     BlackScholesCornerExtension,
     make_corner_regularised_extension_with_smoothed_payoff,
@@ -116,6 +117,16 @@ DEFAULT_GRADING = "time_graded"
 # raised if training is unstable, with the understanding that doing so multiplies
 # the per-iteration cost roughly linearly.
 DEFAULT_SPLIT_N_QUAD = 8000
+# Evaluation route of the split-semigroup profile. "closed_form" evaluates the
+# explicit Gaussian convolution of the put payoff
+# (PutPayoffGaussianSemigroupExtensionField): exact, no quadrature floor, O(n_f)
+# per iteration. "quadrature" is the fixed-grid route of
+# GaussianSemigroupExtensionField at --split-n-quad nodes, O(n_f x n_quad) per
+# iteration (measured: 0.31 s vs 0.002 s per F(g2) call at n_f=4096, float32,
+# 4 CPU threads); it is the route of every run made before the closed form
+# existed, and load_trained_model falls back to it for metadata that predates
+# the "split_profile" key so those runs replot faithfully.
+DEFAULT_SPLIT_PROFILE = "closed_form"
 # Quadrature domain padding, in units of the diffusion length
 # comparison_volatility*sqrt(T), beyond the evaluation window (B, s_infty) in
 # log-price -- calibrated in test/pricing/test_barrier.py (>=6 diffusion lengths
@@ -425,6 +436,7 @@ def build_model(
     comparison_volatility: float | None = None,
     split_y_lo: float | None = None, split_y_hi: float | None = None,
     split_n_quad: int = DEFAULT_SPLIT_N_QUAD,
+    split_profile: str = DEFAULT_SPLIT_PROFILE,
     far_field_dirichlet: bool = False,
 ) -> ETCNN:
     """Build the ETCNN ansatz U_theta = g1 * u_theta + g2.
@@ -451,8 +463,11 @@ def build_model(
       ``split_payoff`` is set: :func:`make_corner_regularised_extension_split`.
       ``comparison_volatility`` defaults to the contract's own ``sigma``
       (the matched split, whose remainder forcing is bounded uniformly up to
-      the terminal slice); ``split_y_lo``/``split_y_hi`` default to
-      :func:`default_split_quadrature_bounds`; all are unused unless
+      the terminal slice); ``split_profile`` selects the evaluation route
+      (``"closed_form"``, exact and O(n_f) per call, or ``"quadrature"``,
+      the fixed-grid route at ``split_n_quad`` nodes on the support
+      ``split_y_lo``/``split_y_hi``, which default to
+      :func:`default_split_quadrature_bounds`); all are unused unless
       ``split_payoff`` is ``True``. The returned ``g2`` exposes
       ``black_scholes_residual(s, t, r, sigma)`` -- ``compute_loss`` uses
       this to route the interior PDE residual through analytic derivatives
@@ -490,6 +505,7 @@ def build_model(
             split_y_hi = split_y_hi if split_y_hi is not None else default_y_hi
         g2 = make_corner_regularised_extension_split(
             K, B, epsilon, T, resolved_comparison_volatility, split_y_lo, split_y_hi, n_quad=split_n_quad,
+            profile=split_profile,
         )
     else:
         g2 = make_corner_regularised_extension(K, B, epsilon)
@@ -521,6 +537,7 @@ def train_one_epsilon(
     split_y_lo: float | None = None,
     split_y_hi: float | None = None,
     split_n_quad: int = DEFAULT_SPLIT_N_QUAD,
+    split_profile: str = DEFAULT_SPLIT_PROFILE,
     far_field_dirichlet: bool = False,
 ) -> tuple[ETCNN, dict, float, int]:
     """Train one ETCNN for one epsilon. Returns (best_model, history, best_loss, best_iter)."""
@@ -535,6 +552,7 @@ def train_one_epsilon(
         analytic_residual=analytic_residual,
         split_payoff=split_payoff, s_inf=s_inf, comparison_volatility=comparison_volatility,
         split_y_lo=split_y_lo, split_y_hi=split_y_hi, split_n_quad=split_n_quad,
+        split_profile=split_profile,
         far_field_dirichlet=far_field_dirichlet,
     ).to(DEVICE)
     n_params = sum(p.numel() for p in model.parameters())
@@ -759,22 +777,28 @@ FORMULA_TEXT_BLACK_SCHOLES_PAYOFF = (
 )
 
 
-def formula_text_split_payoff(comparison_volatility: float, n_quad: int) -> str:
+def formula_text_split_payoff(
+    comparison_volatility: float, n_quad: int, profile: str = DEFAULT_SPLIT_PROFILE,
+) -> str:
     """Formula textbox for the split-semigroup variant of g2 (Proposition 7 /
-    Example 7): labels the comparison diffusivity and quadrature resolution
-    actually used, since both change the achieved accuracy (CLAUDE.md:
-    "Label figures when you think comparison are unfair.")."""
-    return (
-        r"$\mathcal{L}^{BS}V=\partial_tV+\frac{1}{2}\sigma^2s^2\partial_{ss}V+rs\partial_sV-rV$"
-        "\n"
-        r"$g_1(s,t)=(T-t)(s-B)$,  $g_2(s,t)=\zeta((s-B)/\varepsilon)\,\pi(s,t)$,  "
-        r"$\pi(\cdot,t)=e^{(T-t)\nu_c\partial_{xx}}(K-e^{(\cdot)})^+$ at $x=\ln s$"
-        "\n"
-        rf"$\nu_c=\sigma_c^2/2$, $\sigma_c={comparison_volatility:g}$ (comparison volatility), "
-        rf"$n_{{\rm quad}}={n_quad:g}$ (fixed-grid quadrature, no caching across calls)"
-        "\n"
-        r"reference: $V_{DO}$ = Reiner-Rubinstein closed form (method of images, $\mathcal{L}^{BS}$-exact)"
+    Example 7): labels the comparison diffusivity and the evaluation route
+    (closed form, or quadrature at the resolution actually used), since both
+    change the achieved accuracy (CLAUDE.md: "Label figures when you think
+    comparison are unfair.")."""
+    route_text = (
+        r"$\pi$ evaluated in closed form: $K\,\Phi(c)-s\,e^{\nu_c(T-t)}\Phi(c-m)$, "
+        r"$m=\sigma_c\sqrt{T-t}$, $c=\ln(K/s)/m$ (no quadrature)"
+        if profile == "closed_form"
+        else rf"$n_{{\rm quad}}={n_quad:g}$ (fixed-grid quadrature, no caching across calls)"
     )
+    return "\n".join([
+        r"$\mathcal{L}^{BS}V=\partial_tV+\frac{1}{2}\sigma^2s^2\partial_{ss}V+rs\partial_sV-rV$",
+        r"$g_1(s,t)=(T-t)(s-B)$,  $g_2(s,t)=\zeta((s-B)/\varepsilon)\,\pi(s,t)$,  "
+        r"$\pi(\cdot,t)=e^{(T-t)\nu_c\partial_{xx}}(K-e^{(\cdot)})^+$ at $x=\ln s$",
+        rf"$\nu_c=\sigma_c^2/2$, $\sigma_c={comparison_volatility:g}$ (comparison volatility), "
+        + route_text,
+        r"reference: $V_{DO}$ = Reiner-Rubinstein closed form (method of images, $\mathcal{L}^{BS}$-exact)",
+    ])
 
 
 def plot_error_vs_epsilon(summaries: list[dict], out_path: Path, formula_text: str = FORMULA_TEXT_RAW_PAYOFF) -> None:
@@ -885,6 +909,9 @@ def formula_text_for_run(meta: dict) -> str:
         return formula_text_split_payoff(
             comparison_volatility if comparison_volatility is not None else meta["contract"]["sigma"],
             hyper.get("split_n_quad", DEFAULT_SPLIT_N_QUAD),
+            # Runs recorded before the closed form existed trained through the
+            # quadrature route; their metadata has no "split_profile" key.
+            hyper.get("split_profile", "quadrature"),
         )
     return FORMULA_TEXT_RAW_PAYOFF
 
@@ -912,6 +939,9 @@ def load_trained_model(run_dir: Path, epsilon: float, meta: dict | None = None) 
         comparison_volatility=hyper.get("comparison_volatility", None),
         split_y_lo=hyper.get("split_y_lo", None), split_y_hi=hyper.get("split_y_hi", None),
         split_n_quad=hyper.get("split_n_quad", DEFAULT_SPLIT_N_QUAD),
+        # Metadata without the key predates the closed form: those runs
+        # trained through the quadrature route and must be rebuilt with it.
+        split_profile=hyper.get("split_profile", "quadrature"),
         far_field_dirichlet=hyper.get("far_field_dirichlet", False),
     )
     model_path = run_dir / "models" / f"model_eps{epsilon:g}.pt"
@@ -1009,11 +1039,21 @@ def main() -> None:
                               "raw (K-s)^+ payoff in g2. Mutually exclusive with --smoothed-payoff "
                               "and --black-scholes-payoff. The interior PDE residual for this mode "
                               "is assembled from analytic derivatives (g2.black_scholes_residual), "
-                              "not autograd through g2 -- see compute_loss's docstring. WARNING: g2 "
-                              "here is a fixed-grid quadrature with no caching across calls (see "
-                              "GaussianSemigroupExtensionField's module docstring); every training "
-                              "iteration re-pays its full O(n_f x split_n_quad) cost. Default: raw "
-                              "payoff (unchanged).")
+                              "not autograd through g2 -- see compute_loss's docstring. The profile "
+                              "is evaluated by the route selected with --split-profile (closed form "
+                              "by default). Default: raw payoff (unchanged).")
+    parser.add_argument("--split-profile", type=str, default=DEFAULT_SPLIT_PROFILE,
+                         choices=list(SPLIT_PROFILE_ROUTES),
+                         help="Evaluation route of the split-semigroup profile (only used with "
+                              "--split-payoff). 'closed_form' (default): the explicit Gaussian "
+                              "convolution of the put payoff, K Phi(c) - s exp(nu_c (T-t)) Phi(c-m), "
+                              "with closed-form derivatives -- exact, no quadrature floor, O(n_f) per "
+                              "iteration. 'quadrature': the fixed-grid route of "
+                              "GaussianSemigroupExtensionField at --split-n-quad nodes, O(n_f x "
+                              "split_n_quad) per iteration with no caching across calls (about 140x "
+                              "slower per F(g2) call at the defaults); the route of every run made "
+                              "before the closed form existed, kept for reproducing them and as a "
+                              "cross-check.")
     parser.add_argument("--comparison-volatility", type=float, default=None,
                          help="sigma_c of the split-semigroup profile's comparison heat semigroup "
                               "(only used with --split-payoff). Default: the contract's own --sigma "
@@ -1030,7 +1070,7 @@ def main() -> None:
                               "support (only used with --split-payoff). Default: see --split-y-lo.")
     parser.add_argument("--split-n-quad", type=int, default=DEFAULT_SPLIT_N_QUAD,
                          help="Number of quadrature nodes for the split-semigroup profile (only "
-                              "used with --split-payoff). Controls an accuracy/cost tradeoff "
+                              "used with --split-payoff --split-profile quadrature). Controls an accuracy/cost tradeoff "
                               "measured in test/pricing/test_barrier.py: the default trades "
                               "training-time viability against the ~1e-6 pointwise accuracy that "
                               "unit test targeted near maturity (which needed up to 1_000_000 "
@@ -1176,7 +1216,7 @@ def main() -> None:
     elif args.black_scholes_payoff:
         formula_text = FORMULA_TEXT_BLACK_SCHOLES_PAYOFF
     elif args.split_payoff:
-        formula_text = formula_text_split_payoff(comparison_volatility, args.split_n_quad)
+        formula_text = formula_text_split_payoff(comparison_volatility, args.split_n_quad, args.split_profile)
     else:
         formula_text = FORMULA_TEXT_RAW_PAYOFF
 
@@ -1189,7 +1229,9 @@ def main() -> None:
     elif args.black_scholes_payoff:
         payoff_tag = "_blackscholes" + ("_analyticres" if args.analytic_residual else "")
     elif args.split_payoff:
-        payoff_tag = f"_split_nuc{comparison_volatility:g}_nquad{args.split_n_quad}"
+        payoff_tag = f"_split_nuc{comparison_volatility:g}" + (
+            "_closedform" if args.split_profile == "closed_form" else f"_nquad{args.split_n_quad}"
+        )
     else:
         payoff_tag = ""
     # The corner-exclusion flag belongs in the directory name: it changes what
@@ -1209,6 +1251,22 @@ def main() -> None:
         handlers=[logging.StreamHandler(), logging.FileHandler(out_dir / "training.log")],
     )
     logging.getLogger("matplotlib.mathtext").setLevel(logging.WARNING)
+
+    if resuming_existing_run and args.split_payoff:
+        # A resumed run keeps the profile route it was started with: the
+        # checkpointed weights and loss history belong to that g2.  Metadata
+        # without the key predates the closed form and means "quadrature".
+        with open(out_dir / "metadata.yaml") as f:
+            split_profile_on_disk = yaml.safe_load(f)["hyperparameters"].get("split_profile", "quadrature")
+        if split_profile_on_disk != args.split_profile:
+            logger.warning(
+                f"--resume: the run on disk trained the split-semigroup profile through the "
+                f"'{split_profile_on_disk}' route but the command line asks for "
+                f"'{args.split_profile}'; the on-disk route is kept so that the continuation "
+                f"is faithful (pass --split-profile {split_profile_on_disk} to silence this)."
+            )
+            args.split_profile = split_profile_on_disk
+            formula_text = formula_text_split_payoff(comparison_volatility, args.split_n_quad, args.split_profile)
 
     logger.info("Pilot — down-and-out put, corner-regularised ETCNN ansatz")
     logger.info(f"  Output directory: {out_dir}")
@@ -1267,22 +1325,32 @@ def main() -> None:
         logger.info(
             f"    comparison_volatility={comparison_volatility:g} "
             f"({'matched to --sigma' if comparison_volatility == args.sigma else 'MISMATCHED from --sigma'}), "
-            f"log-price quadrature support ({split_y_lo:.6g}, {split_y_hi:.6g}), "
-            f"n_quad={args.split_n_quad}."
+            f"profile route: {args.split_profile}."
         )
+        if args.split_profile == "closed_form":
+            logger.info(
+                "    pi(s,t) = K Phi(c) - s exp(nu_c (T-t)) Phi(c-m), m = sigma_c sqrt(T-t), "
+                "c = ln(K/s)/m, with closed-form d_x, d_xx and d_t = -nu_c d_xx "
+                "(PutPayoffGaussianSemigroupExtensionField): exact, no quadrature support, "
+                "no near-maturity floor; --split-y-lo/--split-y-hi/--split-n-quad are ignored."
+            )
+        else:
+            logger.info(
+                f"    log-price quadrature support ({split_y_lo:.6g}, {split_y_hi:.6g}), "
+                f"n_quad={args.split_n_quad}."
+            )
+            logger.info(
+                "    WARNING: GaussianSemigroupExtensionField recomputes its quadrature nodes and "
+                "the full (n_f x n_quad) convolution on every call, with no caching across training "
+                "iterations. This dominates the per-iteration wall-clock cost at n_f/n_quad of this "
+                "size (about 140x the closed-form route per F(g2) call at the defaults); prefer "
+                "--split-profile closed_form unless reproducing an older quadrature run."
+            )
         logger.info(
             "    Interior PDE residual for this mode is assembled from g2's analytic "
             "black_scholes_residual, not autograd through g2 (see compute_loss's docstring); "
             "the two-term split costs one extra forward pass of the network manifold per "
-            "iteration, negligible next to the quadrature."
-        )
-        logger.info(
-            "    WARNING: GaussianSemigroupExtensionField recomputes its quadrature nodes and "
-            "the full (n_f x n_quad) convolution on every call, with no caching across training "
-            "iterations (verified: torch.linspace and the datum are re-evaluated every call, not "
-            "just once at construction). This is expected to dominate the per-iteration wall-clock "
-            "cost at n_f/n_quad of this size; if training is impractically slow, lower --split-n-quad "
-            "or --n-f before assuming a numerical problem."
+            "iteration."
         )
     else:
         logger.info("  Terminal payoff: raw (K-s)^+ (make_corner_regularised_extension).")
@@ -1325,6 +1393,7 @@ def main() -> None:
             "split_y_lo": split_y_lo,
             "split_y_hi": split_y_hi,
             "split_n_quad": args.split_n_quad,
+            "split_profile": args.split_profile,
         },
     }
     if resuming_existing_run:
@@ -1372,6 +1441,7 @@ def main() -> None:
             corner_exclusion_window=(corner_window if args.exclude_corner_from_collocation else None),
             split_payoff=args.split_payoff, comparison_volatility=comparison_volatility,
             split_y_lo=split_y_lo, split_y_hi=split_y_hi, split_n_quad=args.split_n_quad,
+            split_profile=args.split_profile,
             far_field_dirichlet=args.far_field_dirichlet,
         )
         truncation_bound = None
