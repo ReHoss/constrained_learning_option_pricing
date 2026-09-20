@@ -413,8 +413,12 @@ def plot_comparison(aggregated: dict, path: Path, iters: int, epsilon: float) ->
     # Panel width grows with the number of configurations so the rotated
     # multi-line tick labels do not overlap (six configurations once the
     # analytic corner treatments are in the comparison).
-    panel_width = max(4.2, 1.15 * len(configurations))
-    fig, axes = plt.subplots(1, len(METRIC_PANELS), figsize=(panel_width * len(METRIC_PANELS), 5.2))
+    panel_width = max(4.6, 1.15 * len(configurations))
+    # Two rows of two panels: an A4 page holds this aspect ratio legibly, which
+    # a single row of four panels does not once six configurations are compared.
+    n_rows, n_cols = 2, 2
+    fig, axes_grid = plt.subplots(n_rows, n_cols, figsize=(panel_width * n_cols, 5.4 * n_rows))
+    axes = list(axes_grid.reshape(-1))
     positions = range(len(configurations))
     for ax, (metric, title, scale) in zip(axes, METRIC_PANELS):
         for position, configuration in zip(positions, configurations):
@@ -435,7 +439,8 @@ def plot_comparison(aggregated: dict, path: Path, iters: int, epsilon: float) ->
         )
         ax.set_title(title, fontsize=8)
         ax.grid(True, which="both", alpha=0.3)
-    axes[0].set_ylabel("Metric value")
+    for ax in axes[::n_cols]:
+        ax.set_ylabel("Metric value")
     fig.suptitle(
         f"Down-and-out put — terminal-function comparison, {iters} iterations, "
         f"$\\varepsilon={epsilon:g}$ for the smoothing runs (corner excluded from collocation unless labelled)",
@@ -443,7 +448,7 @@ def plot_comparison(aggregated: dict, path: Path, iters: int, epsilon: float) ->
     )
     # Explicit margins: the rotated two-line tick labels and the formula box
     # below them need a reserved bottom band that tight_layout does not provide.
-    fig.subplots_adjust(left=0.06, right=0.99, top=0.84, bottom=0.44, wspace=0.28)
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.91, bottom=0.22, wspace=0.22, hspace=0.95)
     finalize_figure(fig, path, formula=FORMULA_TEXT, axes=list(axes), formula_fontsize=6.5)
 
 
@@ -630,8 +635,14 @@ def _median_over_seeds(per_seed: dict, extract) -> float | None:
 
 def plot_window_shape_sweep(sweep: dict, path: Path, iters: int, epsilon: float) -> None:
     configurations = list(sweep)
-    fig, axes = plt.subplots(1, len(configurations), figsize=(4.6 * len(configurations), 6.0), sharey=True)
-    axes = list(axes) if len(configurations) > 1 else [axes]
+    # At most three panels per row so the figure keeps a page-friendly aspect ratio.
+    n_cols = min(3, len(configurations))
+    n_rows = -(-len(configurations) // n_cols)
+    fig, axes_grid = plt.subplots(n_rows, n_cols, figsize=(4.6 * n_cols, 4.6 * n_rows + 1.6),
+                                  sharey=True, squeeze=False)
+    axes = list(axes_grid.reshape(-1))
+    for ax in axes[len(configurations):]:
+        ax.set_visible(False)
     handles = {}
     for ax, configuration in zip(axes, configurations):
         per_seed = sweep[configuration]
@@ -656,18 +667,20 @@ def plot_window_shape_sweep(sweep: dict, path: Path, iters: int, epsilon: float)
         ax.set_xlabel("Excluded area fraction $|N\\cap\\Omega|/|\\Omega|$")
         ax.set_title(CONFIGURATION_LABELS[configuration], fontsize=9)
         ax.grid(True, which="both", alpha=0.3)
-    axes[0].set_ylabel("Relative $L^2$ error on the complement $\\Omega\\setminus N$")
+    for ax in axes[::n_cols]:
+        ax.set_ylabel("Relative $L^2$ error on the complement $\\Omega\\setminus N$")
     # Legend in the band between the x-axis labels and the formula box (which
     # finalize_figure draws at the bottom edge of the figure).
-    legend = fig.legend(handles=list(handles.values()), loc="center", bbox_to_anchor=(0.5, 0.17),
+    legend = fig.legend(handles=list(handles.values()), loc="center", bbox_to_anchor=(0.5, 0.11),
                         ncol=len(handles), fontsize=8, title="Excluded window family (shape)")
     fig.suptitle(
         f"Down-and-out put — error vs. excluded area for three window shapes, {iters} iterations, "
         f"$\\varepsilon={epsilon:g}$, corner window excluded from collocation",
         fontsize=10,
     )
-    fig.subplots_adjust(left=0.07, right=0.98, top=0.84, bottom=0.34, wspace=0.12)
-    finalize_figure(fig, path, legends=[legend], formula=WINDOW_SHAPE_FORMULA_TEXT, axes=axes, formula_fontsize=6.5)
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.90, bottom=0.22, wspace=0.12, hspace=0.35)
+    finalize_figure(fig, path, legends=[legend], formula=WINDOW_SHAPE_FORMULA_TEXT,
+                    axes=axes[:len(configurations)], formula_fontsize=6.5)
 
 
 def plot_band_network_contribution(band: dict, path: Path, iters: int, epsilon: float,

@@ -78,7 +78,9 @@ Every run writes `metadata.yaml`, `summary_eps<E>.yaml`, `models/model_eps<E>.pt
 figures; `--replot <run_dir>` rebuilds every figure from those artefacts. The aggregation
 (`aggregate_terminal_function_comparison.py --iters N --epsilon E`) and the Greeks evaluation
 (`evaluate_greeks_no_corner.py`) read the run directories by name and never retrain; the
-subtraction runs are collected regardless of `--epsilon`. Runs of one comparison must share
+analytic corner treatments (subtraction, enrichment) are collected regardless of `--epsilon`.
+`build_corner_treatment_figure_report.py --aggregation-dir ... --greeks-dir ...` assembles the
+figures and tables of one aggregation into a LaTeX/PDF report under `rapports/` (no recomputation). Runs of one comparison must share
 `--num-threads` and a CPU family (float32 reductions are thread-count and kernel dependent).
 
 ## Tests
