@@ -838,3 +838,93 @@ at $n = 5$ (overlapping ranges), as in section 11.
 and have $\varepsilon = 0.1$; the subtraction runs include the corner and have no bandwidth. The
 comparison is between the two treatments as each is meant to be run, not a one-factor ablation;
 the figure labels the difference.
+
+## 16. Corner enrichment (Method 2, Section 5.2 of Doc A)
+
+Method 2 is the short-time limit of Method 1: when no closed-form digital exists, only the
+leading similarity profile of the corner is retained. It is implemented on the same structure
+as section 15 so that the two can be compared at equal budget.
+
+### 16.1 Construction
+
+Let $\xi(s,t) = \ln(s/B)/(\sigma\sqrt{2(T-t)})$ be the similarity variable of Lemma 1 and
+$\Lambda = \mathrm{erf}$ the similarity profile, the bounded self-similar solution of
+$\partial_\tau u = \tfrac12\sigma^2\partial_{yy}u$ on $y = \ln(s/B) > 0$ with unit inner datum and
+null datum at $y = 0$. Let $\chi:[B,\infty)\to[0,1]$ be the fixed $C^\infty$ cutoff
+
+$$
+\chi(s) = 1 - \zeta\!\left(\frac{s - B - \delta_0}{\delta_1 - \delta_0}\right),
+\qquad \chi \equiv 1 \text{ on } \{s - B \le \delta_0\},\quad \chi \equiv 0 \text{ on } \{s - B \ge \delta_1\},
+$$
+
+with $\zeta$ the smooth step of section 2 and radii $0 < \delta_0 < \delta_1$ (defaults
+$\delta_0 = 0.1$, the canonical evaluation window, and $\delta_1 = 0.3$, the outer edge of the
+band of section 11). The enriched estimator (22) is
+$\Phi_\theta = E + h + d_{\partial_pQ}\Psi_\theta$ with
+
+$$
+E(s,t) = \chi(s)\,\Delta\,\Lambda\big(\xi(s,t)\big),
+\qquad
+h(s,t) = \pi(s,t) - \chi(s)\,\pi(B,t),
+$$
+
+for the same three terminal profiles $\pi$ as section 15. Traces: on $\Sigma_T$, $\Lambda\to1$
+so $E(s,T) = \chi(s)\Delta$ and $h(s,T) = (K-s)^+ - \chi(s)\Delta = g - E(\cdot,T)$, the residual
+terminal datum of Definition 8; on $\Sigma_B$, $\xi = 0$ gives $E = 0$ and $\chi(B) = 1$ gives
+$h = 0$. The cutoff depends on $s$ only — the same simplification of the $\ell^1$ ball as the
+time-independent $h_\varepsilon$ of section 5 — which is what lets the barrier trace of $h$ hold
+for every $t$; its transition strip $\{\delta_0 < s - B < \delta_1\}$ is at distance $\delta_0 > 0$
+from the corner, as the commutator estimate of Proposition 5 requires. Section 15's choice
+$h = \pi - \pi(B,\cdot)$ is the case $\chi\equiv1$ of this formula, and both extensions are
+instances of one class (`_AnalyticallyResolvedCornerExtension`, $g_2 = S + \pi - \chi\,\pi(B,\cdot)$
+with $S$ the singular part).
+
+**Interior residual.** Unlike the digital, $\Lambda(\xi)$ is not annihilated by
+$\mathcal L^{BS}$: in the variable $y$ the operator reads
+$\partial_t + \tfrac12\sigma^2\partial_{yy} + (r - \tfrac12\sigma^2)\partial_y - r$, the first two
+terms cancel on $\Lambda$, and
+
+$$
+\mathcal L^{BS}\Lambda = \big(r - \tfrac12\sigma^2\big)\,\partial_y\Lambda - r\Lambda,
+\qquad \partial_y\Lambda = \frac{\Lambda'(\xi)}{\sigma\sqrt{2(T-t)}} = \frac{2}{\sqrt\pi}\,\frac{e^{-\xi^2}}{\sigma\sqrt{2(T-t)}},
+$$
+
+of order $(T-t)^{-1/2}e^{-\xi^2}$: unbounded at the corner along paths of fixed $\xi$, but
+square-integrable on $Q$ (Proposition 5) and with no small parameter (Remark 10). The full
+residual $\mathcal L^{BS}(E + h)$, commutator terms of $\chi$ included, is assembled in closed
+form from the profile's derivatives ($\partial_s\Lambda = \Lambda'\,\partial_s\xi$,
+$\partial_{ss}\Lambda = \Lambda''(\partial_s\xi)^2 + \Lambda'\partial_{ss}\xi$,
+$\partial_t\Lambda = \Lambda'\,\xi/(2(T-t))$) and enters the two-term route as in section 15.
+The training loss samples a residual that is not zero at the corner, in contrast with Method 1;
+the comparison between the two is precisely the exact-versus-leading-order row of Table 1 of
+Doc A.
+
+### 16.2 Verification (`test/pricing/test_barrier.py`, float64)
+
+- $\Lambda$ solves the heat equation in $y$ ($\partial_t\Lambda + \tfrac12\sigma^2(s^2\partial_{ss} + s\partial_s)\Lambda = 0$)
+  to $10^{-12}$ on a $400\times400$ grid; closed-form derivatives against autograd to
+  $10^{-10}$, $10^{-8}$, $10^{-10}$.
+- $V_{DOD}\to\Lambda(\xi)$ at fixed $\xi$ as $\tau\to0$ (the enrichment is the short-time limit
+  of the digital): the gap decreases monotonically over $\tau\in\{10^{-2},10^{-3},10^{-4}\}$ and
+  is below $10^{-3}$ at the last.
+- Traces exact for the three profiles; $\chi = 1$ at $s = B + \delta_0$ and $0$ at
+  $s = B + \delta_1$; $E$ vanishes beyond $\delta_1$ where $g_2$ reduces to $\pi$.
+- $\mathcal L^{BS}g_2$, $\partial_sg_2$, $\partial_{ss}g_2$, $\partial_tg_2$ in closed form
+  against autograd through the whole $g_2$: discrepancies $< 10^{-9}$, $10^{-10}$, $10^{-7}$,
+  $10^{-9}$ off the strike; where $\chi = 1$ the residual of $E$ equals
+  $\Delta[(r - \tfrac12\sigma^2)\partial_y\Lambda - r\Lambda]$ to $10^{-12}$.
+
+### 16.3 Math → code mapping
+
+| Symbol | Code |
+|---|---|
+| $\Lambda(\xi)$ and derivatives | `corner_similarity_profile_value_and_derivatives` |
+| $g_2 = \chi\Delta\Lambda + \pi - \chi\,\pi(B,\cdot)$, $\mathcal L^{BS}g_2$, $\partial_sg_2$, $\partial_{ss}g_2$ | `CornerEnrichedExtension` (`enrichment`, `regular_part`, `black_scholes_residual`, `first_price_derivative`, `second_price_derivative`), built by `make_corner_enriched_extension` |
+| $\delta_0$, $\delta_1$ | `pilot_down_and_out_put.py --corner-treatment enrichment --enrichment-delta0 --enrichment-delta1`; directory tag `_enrichment_<profile>_d0<δ0>_d1<δ1>`; metadata keys `enrichment_delta0`, `enrichment_delta1` |
+| Aggregation and Greeks | configurations `enrichment_{raw,blackscholes,split}`, same conventions as section 15 |
+
+### 16.4 Batch launched (2026-09-21) — not yet measured
+
+`bash_scripts/cluster/cmap/joblist_50k_enrichment_republique.txt` (Black-Scholes and split
+profiles) and `joblist_50k_enrichment_orleans.txt` (raw profile), $\delta_0 = 0.1$, $\delta_1 = 0.3$,
+otherwise identical to the subtraction batch of section 15.4. Results: — (not measured).
