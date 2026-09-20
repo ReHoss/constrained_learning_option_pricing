@@ -1,0 +1,8 @@
+# porte-d-orleans (AVX2, 20 physical cores -> 5 jobs x 4 threads): raw-payoff baseline of the
+# corner-enrichment batch (delta0 = 0.1, delta1 = 0.3), 50000 iterations, corner INCLUDED in
+# collocation, seeds 0-4, 4 threads.
+--corner-treatment enrichment --iters 50000 --seed 0
+--corner-treatment enrichment --iters 50000 --seed 1
+--corner-treatment enrichment --iters 50000 --seed 2
+--corner-treatment enrichment --iters 50000 --seed 3
+--corner-treatment enrichment --iters 50000 --seed 4
