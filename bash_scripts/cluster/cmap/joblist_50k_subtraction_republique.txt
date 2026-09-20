@@ -1,0 +1,15 @@
+# republique (AVX2, 16 cores -> 4 jobs x 4 threads): exact singular subtraction (Method 1,
+# Section 5.1 of the note), 50000 iterations, corner INCLUDED in collocation (no corner layer
+# to exclude), seeds 0-4, one terminal profile per line group. Same budget, seeds and thread
+# count as the canonical smoothing batch of section 11.1 so the two are comparable.
+# Black-Scholes profile first, then the split profile; the raw-payoff baseline runs on orleans.
+--corner-treatment subtraction --black-scholes-payoff --iters 50000 --seed 0
+--corner-treatment subtraction --black-scholes-payoff --iters 50000 --seed 1
+--corner-treatment subtraction --black-scholes-payoff --iters 50000 --seed 2
+--corner-treatment subtraction --black-scholes-payoff --iters 50000 --seed 3
+--corner-treatment subtraction --black-scholes-payoff --iters 50000 --seed 4
+--corner-treatment subtraction --split-payoff --iters 50000 --seed 0
+--corner-treatment subtraction --split-payoff --iters 50000 --seed 1
+--corner-treatment subtraction --split-payoff --iters 50000 --seed 2
+--corner-treatment subtraction --split-payoff --iters 50000 --seed 3
+--corner-treatment subtraction --split-payoff --iters 50000 --seed 4
