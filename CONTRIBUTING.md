@@ -61,6 +61,26 @@ python experiments/python_scripts/exp1/phase1_bsm_validation.py
 
 Output is saved to `data/phase1_bsm_validation/<timestamp>_<params>/`.
 
+### Barrier option (down-and-out put)
+
+The pilot `experiments/python_scripts/exp_barrier_option/pilot_down_and_out_put.py` trains one
+ETCNN per configuration and evaluates it against the Reiner-Rubinstein closed form
+(`documents/methodology/barrier_option.md`). Two axes of the ablation are selected by flags:
+
+- the terminal profile at the strike: raw payoff (default), `--black-scholes-payoff`,
+  `--split-payoff` (closed form by default), `--smoothed-payoff` (Chen-Mangasarian);
+- the treatment of the conflicting corner `(B, T)`: `--corner-treatment smoothing` (default,
+  the cutoff `zeta((s-B)/epsilon)` swept over `--epsilons`) or `--corner-treatment subtraction`
+  (exact singular subtraction with the closed-form digital price, no corner layer; the epsilon
+  sweep collapses to the placeholder `eps0` in file names, methodology section 15).
+
+Every run writes `metadata.yaml`, `summary_eps<E>.yaml`, `models/model_eps<E>.pt` and its
+figures; `--replot <run_dir>` rebuilds every figure from those artefacts. The aggregation
+(`aggregate_terminal_function_comparison.py --iters N --epsilon E`) and the Greeks evaluation
+(`evaluate_greeks_no_corner.py`) read the run directories by name and never retrain; the
+subtraction runs are collected regardless of `--epsilon`. Runs of one comparison must share
+`--num-threads` and a CPU family (float32 reductions are thread-count and kernel dependent).
+
 ## Tests
 
 ```bash
@@ -86,7 +106,11 @@ ruff format .
 
 ## Running on an HPC cluster
 
-Bash launchers live under `bash_scripts/cluster/{jeanzay,ruche}/python/`.
+Bash launchers live under `bash_scripts/cluster/{jeanzay,ruche,adastra}/python/` (Slurm
+clusters) and `bash_scripts/cluster/cmap/` (the CMAP lab machines, no Slurm, no GPU:
+`run_joblist.sh <joblist> <max_parallel> <threads>` runs one pilot invocation per joblist line,
+pinned to `--num-threads <threads>`; the `joblist_*.txt` files next to it are the batches
+actually run).
 
 ### One-time setup (on the cluster)
 

@@ -651,3 +651,133 @@ with `SPLIT_PROFILE_ROUTES = ("closed_form", "quadrature")`, closed form by defa
 run tag `_closedform` or `_nquad<n>`). `load_trained_model` falls back to the quadrature route
 for metadata that predates the `split_profile` key, so the runs of sections 10--13 replot
 faithfully; a resume keeps the on-disk route and warns if the command line asks for the other.
+
+## 15. Exact singular subtraction at the corner (Method 1, Section 5.1 of Doc A)
+
+The smoothing construction of sections 2--14 spreads the corner jump $\Delta = K - B$ over the
+layer of bandwidth $\varepsilon$ by the cutoff $\zeta((s-B)/\varepsilon)$; the interior residual
+of the extension is of order $\Delta\varepsilon^{-1}$ in that layer, and section 13 identified
+the transition band of $\zeta$ as the localised floor of the error. Method 1 of Doc A replaces
+the smoothing by a closed-form, $\mathcal L^{BS}$-exact function reproducing the jump, so that
+the singular part contributes nothing to the residual and no bandwidth remains. This section
+records the construction implemented, the one choice it required beyond Doc A, its
+verification, and the batch launched to measure it.
+
+### 15.1 Construction
+
+Let $V_{DOD}:\overline Q\to[0,1]$ be the price of the down-and-out cash-or-nothing claim of
+unit payoff $\mathbf 1_{s>B}$ knocked out at $B$ (equation (15) of Doc A),
+
+$$
+V_{DOD}(s,t) = e^{-r(T-t)}\Big[N\big(d_-(s,t)\big) - (s/B)^{1-2r/\sigma^2}\,N\big(d_-(B^2/s,\,t)\big)\Big],
+\qquad
+d_-(s,t) = \frac{\ln(s/B) + (r-\tfrac12\sigma^2)(T-t)}{\sigma\sqrt{T-t}} .
+$$
+
+It solves $\mathcal L^{BS}V_{DOD} = 0$ on $Q$, vanishes on $\Sigma_B$ (the two terms coincide at
+$s = B$) and equals $\mathbf 1_{s>B}$ on $\Sigma_T$. The subtracted estimator of Definition 7 is
+
+$$
+\Phi_\theta = \Delta\,V_{DOD} + h + d_{\partial_pQ}\,\Psi_\theta,
+\qquad d_{\partial_pQ}(s,t) = (T-t)(s-B),
+$$
+
+with $h\in C^{2,1}(Q)\cap C^0(\overline Q)$ an extension of the data of the subtracted price
+$\widetilde V_{DO} = V_{DO} - \Delta V_{DOD}$: terminal datum $g - \Delta\mathbf 1_{s>B}$, barrier
+datum $0$, which coincide at the corner (Proposition 3 of Doc A).
+
+**Choice of $h$.** Doc A leaves $h$ free. Let $\pi:\overline Q\to\mathbb R$ be a terminal
+profile, a function with $\pi(s,T) = (K-s)^+$, taken among the three functions already used as
+terminal functions of the smoothing ansatz: the raw payoff $\pi = (K-s)^+$, the European put
+$\pi = V^e$, and the split-semigroup profile of section 14. The extension used is
+
+$$
+h(s,t) = \pi(s,t) - \pi(B,t).
+$$
+
+On $\Sigma_T$, $h(s,T) = (K-s)^+ - (K-B) = g(s) - \Delta$ for $s > B$, the subtracted terminal
+datum; on $\Sigma_B$, $h(B,t) = 0$ for every $t$, the subtracted barrier datum; at the corner
+both traces are $0$. The subtraction of $\pi(B,t)$ rather than of the constant $\Delta$ is what
+makes the barrier trace hold for the time-dependent profiles ($V^e(B,t)\neq K-B$ for $t<T$);
+for the raw payoff $\pi(B,t) = \Delta$ and $h = (K-s)^+ - \Delta$ literally. The price of this
+choice is that $h$ is not annihilated by the operator even when $\pi$ is: since $\pi(B,\cdot)$
+depends on $t$ alone,
+
+$$
+\mathcal L^{BS}h = \mathcal L^{BS}\pi + \partial_t\pi(B,t) - r\,\pi(B,t),
+$$
+
+a bounded function up to the terminal face for the three profiles (for $V^e$ and the split
+profile, $\partial_t\pi(B,t)$ is bounded as $t\to T$ because $B\neq K$), which the free network
+absorbs. The trial solution is $g_1 u_\theta + g_2$ with $g_2 = \Delta V_{DOD} + h$ and the
+unchanged $g_1 = d_{\partial_pQ}$ (or its far-field variant of section 12).
+
+**Interior residual.** By linearity and Proposition 4 of Doc A,
+$\mathcal L^{BS}\Phi_\theta = \mathcal L^{BS}(g_1 u_\theta) + \mathcal L^{BS}h$, the digital term
+contributing exactly zero. The residual is assembled through the two-term route of section 7:
+$\mathcal L^{BS}(g_1u_\theta)$ by autograd on the network manifold, $\mathcal L^{BS}h$ in closed
+form from the profile's derivatives ($\partial_s V^e = -N(-\tilde d_1)$,
+$\partial_{ss}V^e = \varphi(\tilde d_1)/(s\sigma\sqrt{T-t})$, $\partial_t V^e$ from
+$\mathcal L^{BS}V^e = 0$; the split profile's derivatives from section 14). Autograd through the
+full trial solution is not used: $\partial_{ss}V_{DOD}$ is unbounded at the corner (it grows like
+$(T-t)^{-1}$ along a path of fixed similarity variable), and autograd would evaluate the zero
+residual of the digital as the difference of large terms in float32 at every collocation point
+close to $(B,T)$. The omitted digital residual is exactly zero for the constant coefficients
+$(r,\sigma)$ the digital is built with only (Remark 8 of Doc A); the implementation refuses
+other coefficients rather than returning a residual missing the term (19).
+
+**No corner layer.** The collocation sampler covers the whole domain, corner included: there is
+nothing to exclude, the residual of $g_2$ is bounded up to $(B,T)$, and both hard constraints
+hold exactly on the whole parabolic boundary. The evaluation metrics keep the $\ell^1$ window
+$N_{0.1}$ of section 11 so that $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$ is computed on the
+same region as for the smoothing runs; $\mathrm{rel}_{L^2}(\Omega)$ (window included) is now a
+meaningful metric as well.
+
+**Chen--Mangasarian profile.** Not offered in this mode: it reintroduces a smoothing bandwidth
+$\varepsilon_0$ at the strike, which is the class of calibration Method 1 removes at the corner,
+and the family was set aside by the selection of section 10 ($8.2$ standard deviations behind
+the Black-Scholes profile at its best $\varepsilon_0$).
+
+### 15.2 Verification (`test/pricing/test_barrier.py`, float64)
+
+- $\mathcal L^{BS}V_{DOD} = 0$ by autograd on a $600\times600$ grid of $(B+0.005, 3)\times(0, T-10^{-3})$:
+  maximum $|\mathcal L^{BS}V_{DOD}| < 10^{-10}$ (measured $1.9\times10^{-16}$ on the development grid).
+- The closed-form $\partial_sV_{DOD}$, $\partial_{ss}V_{DOD}$, $\partial_tV_{DOD}$ against autograd
+  of the price: discrepancies $< 10^{-10}$, $< 10^{-8}$, $< 10^{-10}$.
+- Traces: $V_{DOD}(B,t) = 0$ and $V_{DOD}(s,T) = \mathbf 1_{s>B}$ exactly; $g_2(s,T) = (K-s)^+$ down
+  to $s = B + 10^{-9}$ and $g_2(B,t) = 0$ for every $t$, for the three profiles.
+- $\mathcal L^{BS}g_2$ in closed form against autograd through the whole $g_2$ (digital included):
+  discrepancy $< 10^{-9}$ off the strike; the residual stays below $1$ on a sequence of points
+  approaching the corner ($s - B = 10\tau$, $\tau\in\{10^{-2},10^{-4},10^{-6}\}$).
+- The subtracted split extension equals the smoothing split extension shifted by
+  $\Delta V_{DOD} - \pi(B,t)$ where $\zeta = 1$; the quadrature route of the split profile agrees
+  with the closed form to $10^{-6}$.
+
+### 15.3 Math → code mapping
+
+| Symbol | Code |
+|---|---|
+| $V_{DOD}$, $\partial_sV_{DOD}$, $\partial_{ss}V_{DOD}$, $\partial_tV_{DOD}$ | `down_and_out_digital_price`, `down_and_out_digital_price_and_derivatives` (`learning_option_pricing/pricing/barrier.py`) |
+| $\pi$ and its derivatives | `RawPutPayoffTerminalProfile`, `BlackScholesPutTerminalProfile`, `SplitSemigroupPutTerminalProfile` (`value_and_derivatives`) |
+| $g_2 = \Delta V_{DOD} + \pi - \pi(B,\cdot)$, $\mathcal L^{BS}h$, $\partial_s g_2$, $\partial_{ss}g_2$ | `SubtractedDigitalCornerExtension` (`__call__`, `black_scholes_residual`, `first_price_derivative`, `second_price_derivative`), built by `make_subtracted_digital_extension` |
+| Corner treatment of a run | `pilot_down_and_out_put.py --corner-treatment {smoothing,subtraction}`; profile from the payoff flags (`--black-scholes-payoff`, `--split-payoff`, none = raw); metadata keys `corner_treatment`, `subtraction_terminal_profile`; directory tag `_subtraction_<profile>`, placeholder `eps0` in file names |
+| Decomposition figure | `figures/subtraction_decomposition.png` ($\Delta V_{DOD}$, $h$, $g_1u_\theta$, $\Phi_\theta$, $V_{DO}$ at $t\in\{0,0.5,0.9\}$) |
+| Aggregation and Greeks | `aggregate_terminal_function_comparison.py`, `evaluate_greeks_no_corner.py`: configurations `subtraction_{raw,blackscholes,split}`, collected regardless of `--epsilon` and of the corner-exclusion filter, labelled "[corner included in collocation]" in the figures |
+
+### 15.4 Batch launched (2026-09-20) — not yet measured
+
+`bash_scripts/cluster/cmap/joblist_50k_subtraction_republique.txt` (Black-Scholes and split
+profiles, 5 seeds each, 4 jobs $\times$ 4 threads) and `joblist_50k_subtraction_orleans.txt`
+(raw-payoff baseline, 5 seeds, 5 jobs $\times$ 4 threads): 50000 iterations, $n_f = 4096$,
+float32, corner included in collocation, no far-field condition, same seeds and thread count as
+the canonical batch of section 11.1. Both hosts are AVX2 and bit-identical for this pilot.
+Measured cost at start: $0.05$ s per iteration on both hosts, against $0.083$--$0.119$ s for the
+smoothing runs of section 14 (the corner-rejection pass and the cutoff derivatives are absent).
+
+The comparison to be read once the runs finish: $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$,
+$\mathrm{rel}_{L^2}(\Omega)$, the per-band errors of section 11.2 (in particular on
+$[0.6, 0.7]$, the former transition band), and the Greeks at the strike, against the smoothing
+runs of section 11.1. Two differences must be kept in mind when reading it: the smoothing runs
+excluded the corner window from collocation and the subtraction runs include it (labelled on
+the figures), and the smoothing runs have a bandwidth $\varepsilon = 0.1$ while the subtraction
+runs have none. Results: — (not measured).
