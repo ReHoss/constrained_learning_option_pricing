@@ -39,6 +39,14 @@ barrier-condition loss term) -- Section 4's stated goal in the note.
   value eps=0 in file names), and the interior residual of g2 is the bounded
   residual of the regular part alone (Proposition 4), assembled analytically
   (:class:`learning_option_pricing.pricing.barrier.SubtractedDigitalCornerExtension`).
+- ``enrichment`` (Method 2, Section 5.2 of the note, Definition 8): the
+  short-time limit of Method 1 -- the jump is reproduced to leading order by
+  the similarity profile, g2 = chi(s) (K-B) erf(xi) + pi - chi(s) pi(B, .),
+  xi = ln(s/B)/(sigma sqrt(2(T-t))), with a fixed C-infinity cutoff chi in s
+  (radii --enrichment-delta0/--enrichment-delta1). Same artefact layout as
+  the subtraction mode; the residual of g2 is square-integrable but not zero
+  (Proposition 5), and no small parameter is introduced (Remark 10)
+  (:class:`learning_option_pricing.pricing.barrier.CornerEnrichedExtension`).
 
 Trained models are compared, for each epsilon, to the exact closed-form
 reference (method of images / Reiner-Rubinstein,
@@ -94,6 +102,7 @@ from learning_option_pricing.pricing.barrier import (  # noqa: E402
     BlackScholesCornerExtension,
     make_corner_regularised_extension_with_smoothed_payoff,
     make_subtracted_digital_extension,
+    make_corner_enriched_extension,
     SUBTRACTION_TERMINAL_PROFILES,
     reiner_rubinstein_down_and_out_put,
 )
@@ -154,16 +163,24 @@ DEFAULT_SPLIT_PADDING_DIFFUSION_LENGTHS = 6.0
 #: The two corner treatments of Table 1 of the note retained here (see the
 #: module docstring); the leading-order enrichment of Section 5.2 is not
 #: implemented yet.
-CORNER_TREATMENTS = ("smoothing", "subtraction")
-# In subtraction mode there is no corner layer; the epsilon loop, file names
-# (summary_eps<E>.yaml, model_eps<E>.pt) and directory tag use this single
-# placeholder so the artefact layout stays identical to the smoothing runs.
+CORNER_TREATMENTS = ("smoothing", "subtraction", "enrichment")
+#: The treatments that resolve the corner analytically (no corner layer).
+ANALYTIC_CORNER_TREATMENTS = ("subtraction", "enrichment")
+# In the analytic treatments there is no corner layer; the epsilon loop, file
+# names (summary_eps<E>.yaml, model_eps<E>.pt) and directory tag use this
+# single placeholder so the artefact layout stays identical to the smoothing runs.
 SUBTRACTION_EPSILON_PLACEHOLDER = 0.0
-# Corner window of the evaluation metrics in subtraction mode: epsilon carries
-# no meaning there, so the window defaults to the canonical value of the
+# Corner window of the evaluation metrics in the analytic treatments: epsilon
+# carries no meaning there, so the window defaults to the canonical value of the
 # smoothing comparison (epsilon = 0.1) to keep rel_l2_outside_corner on the
 # same region across treatments.
 DEFAULT_SUBTRACTION_CORNER_WINDOW = 0.1
+# Cutoff radii of the corner enrichment (Definition 8), in price units: chi = 1
+# on s - B <= delta0, 0 on s - B >= delta1. The inner radius equals the
+# canonical evaluation window; the transition strip [0.1, 0.3] is the band of
+# the model-based diagnostics of section 11.
+DEFAULT_ENRICHMENT_DELTA0 = 0.1
+DEFAULT_ENRICHMENT_DELTA1 = 0.3
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -471,6 +488,8 @@ def build_model(
     far_field_dirichlet: bool = False,
     corner_treatment: str = "smoothing",
     subtraction_terminal_profile: str = "raw",
+    enrichment_delta0: float = DEFAULT_ENRICHMENT_DELTA0,
+    enrichment_delta1: float = DEFAULT_ENRICHMENT_DELTA1,
 ) -> ETCNN:
     """Build the ETCNN ansatz U_theta = g1 * u_theta + g2.
 
@@ -484,6 +503,9 @@ def build_model(
     ``black_scholes_payoff``/``split_payoff``/``analytic_residual`` switches
     are then unused: the returned ``g2`` always exposes
     ``black_scholes_residual``, so ``compute_loss`` takes the two-term route.
+    ``corner_treatment="enrichment"`` does the same with
+    :func:`make_corner_enriched_extension` and the cutoff radii
+    ``enrichment_delta0``/``enrichment_delta1``.
 
     ``far_field_dirichlet`` replaces ``g1 = (T-t)(s-B)`` by
     :func:`barrier_composite_distance_with_far_field`, which also vanishes on
@@ -530,7 +552,7 @@ def build_model(
             return barrier_composite_distance_with_far_field(s, t, B, T, s_inf)
         return barrier_composite_distance(s, t, B, T)
 
-    if corner_treatment == "subtraction":
+    if corner_treatment in ANALYTIC_CORNER_TREATMENTS:
         resolved_comparison_volatility = comparison_volatility if comparison_volatility is not None else sigma
         if subtraction_terminal_profile == "split" and split_profile == "quadrature" and (
             split_y_lo is None or split_y_hi is None
@@ -538,11 +560,17 @@ def build_model(
             default_y_lo, default_y_hi = default_split_quadrature_bounds(B, s_inf, T, resolved_comparison_volatility)
             split_y_lo = split_y_lo if split_y_lo is not None else default_y_lo
             split_y_hi = split_y_hi if split_y_hi is not None else default_y_hi
-        g2 = make_subtracted_digital_extension(
-            K, B, r, sigma, T, subtraction_terminal_profile,
+        profile_options = dict(
             comparison_volatility=resolved_comparison_volatility,
             y_lo=split_y_lo, y_hi=split_y_hi, n_quad=split_n_quad, split_profile=split_profile,
         )
+        if corner_treatment == "subtraction":
+            g2 = make_subtracted_digital_extension(K, B, r, sigma, T, subtraction_terminal_profile, **profile_options)
+        else:
+            g2 = make_corner_enriched_extension(
+                K, B, r, sigma, T, subtraction_terminal_profile,
+                delta0=enrichment_delta0, delta1=enrichment_delta1, **profile_options,
+            )
     elif smoothed_payoff:
         g2 = make_corner_regularised_extension_with_smoothed_payoff(K, B, epsilon, T, eps0, grading=grading)
     elif black_scholes_payoff:
@@ -600,10 +628,12 @@ def train_one_epsilon(
     far_field_dirichlet: bool = False,
     corner_treatment: str = "smoothing",
     subtraction_terminal_profile: str = "raw",
+    enrichment_delta0: float = DEFAULT_ENRICHMENT_DELTA0,
+    enrichment_delta1: float = DEFAULT_ENRICHMENT_DELTA1,
 ) -> tuple[ETCNN, dict, float, int]:
-    """Train one ETCNN for one epsilon (or, in subtraction mode, the single
-    placeholder epsilon). Returns (best_model, history, best_loss, best_iter)."""
-    label = (f"subtraction:{subtraction_terminal_profile}" if corner_treatment == "subtraction"
+    """Train one ETCNN for one epsilon (or, in the analytic corner treatments,
+    the single placeholder epsilon). Returns (best_model, history, best_loss, best_iter)."""
+    label = (f"{corner_treatment}:{subtraction_terminal_profile}" if corner_treatment in ANALYTIC_CORNER_TREATMENTS
              else f"eps={epsilon:g}")
     model_seed = derive_seed(seed, "model_init")
     sampler_seed = derive_seed(seed, "sampler")
@@ -619,6 +649,7 @@ def train_one_epsilon(
         far_field_dirichlet=far_field_dirichlet,
         corner_treatment=corner_treatment,
         subtraction_terminal_profile=subtraction_terminal_profile,
+        enrichment_delta0=enrichment_delta0, enrichment_delta1=enrichment_delta1,
     ).to(DEVICE)
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(f"[{label}] model parameters: {n_params}")
@@ -876,31 +907,48 @@ SUBTRACTION_PROFILE_FORMULAS = {
 def formula_text_subtraction(
     terminal_profile: str, comparison_volatility: float | None = None,
     split_profile: str = DEFAULT_SPLIT_PROFILE, n_quad: int = DEFAULT_SPLIT_N_QUAD,
+    corner_treatment: str = "subtraction",
+    enrichment_delta0: float = DEFAULT_ENRICHMENT_DELTA0, enrichment_delta1: float = DEFAULT_ENRICHMENT_DELTA1,
 ) -> str:
-    """Formula textbox for the exact-subtraction ansatz (Method 1, Definition 7
-    of the note), labelled with the terminal profile actually used."""
+    """Formula textbox for the analytic corner resolutions -- exact subtraction
+    (Method 1, Definition 7) or corner enrichment (Method 2, Definition 8) --
+    labelled with the terminal profile actually used."""
     profile_line = SUBTRACTION_PROFILE_FORMULAS[terminal_profile]
     if terminal_profile == "split":
         route = ("closed form, no quadrature" if split_profile == "closed_form"
                  else rf"quadrature, $n_{{\rm quad}}={n_quad:g}$")
         profile_line += rf",  $\nu_c=\sigma_c^2/2$, $\sigma_c={comparison_volatility:g}$ ({route})"
+    operator_line = r"$\mathcal{L}^{BS}V=\partial_tV+\frac{1}{2}\sigma^2s^2\partial_{ss}V+rs\partial_sV-rV$;  "
+    reference_line = r"reference: $V_{DO}$ = Reiner-Rubinstein closed form (method of images, $\mathcal{L}^{BS}$-exact)"
+    if corner_treatment == "enrichment":
+        return "\n".join([
+            operator_line
+            + r"$\Phi_\theta=E+h+g_1u_\theta$, $E=\chi(s)\,\Delta\,\mathrm{erf}(\xi)$, $\Delta=K-B$, "
+            r"$g_1(s,t)=(T-t)(s-B)$ (corner enrichment, no corner layer)",
+            r"$\xi(s,t)=\frac{\ln(s/B)}{\sigma\sqrt{2(T-t)}}$;  "
+            rf"$\chi(s)=1-\zeta\left((s-B-\delta_0)/(\delta_1-\delta_0)\right)$, $\delta_0={enrichment_delta0:g}$, "
+            rf"$\delta_1={enrichment_delta1:g}$;  "
+            r"$h(s,t)=\pi(s,t)-\chi(s)\,\pi(B,t)$,  " + profile_line,
+            reference_line,
+        ])
     return "\n".join([
-        r"$\mathcal{L}^{BS}V=\partial_tV+\frac{1}{2}\sigma^2s^2\partial_{ss}V+rs\partial_sV-rV$;  "
-        r"$\Phi_\theta=\Delta\,V_{DOD}+h+g_1u_\theta$, $\Delta=K-B$, $g_1(s,t)=(T-t)(s-B)$ (exact subtraction, no corner layer)",
+        operator_line
+        + r"$\Phi_\theta=\Delta\,V_{DOD}+h+g_1u_\theta$, $\Delta=K-B$, $g_1(s,t)=(T-t)(s-B)$ (exact subtraction, no corner layer)",
         r"$V_{DOD}(s,t)=e^{-r(T-t)}\left[N(d_-(s,t))-(s/B)^{1-2r/\sigma^2}N(d_-(B^2/s,t))\right]$, "
         r"$d_-(s,t)=\frac{\ln(s/B)+(r-\sigma^2/2)(T-t)}{\sigma\sqrt{T-t}}$;  "
         r"$h(s,t)=\pi(s,t)-\pi(B,t)$,  " + profile_line,
-        r"reference: $V_{DO}$ = Reiner-Rubinstein closed form (method of images, $\mathcal{L}^{BS}$-exact)",
+        reference_line,
     ])
 
 
 def plot_subtraction_decomposition(
     model: ETCNN, eval_result: dict, K: float, B: float, T: float, out_path: Path, formula_text: str,
 ) -> None:
-    """Slices at fixed t of the three terms of the subtracted estimator,
-    Phi_theta = Delta V_DOD + h + g1 u_theta, against the closed form: shows
-    what the closed-form digital reproduces, what the regular extension h
-    adds and what is left to the network."""
+    """Slices at fixed t of the three terms of an analytically corner-resolved
+    estimator, Phi_theta = S + h + g1 u_theta (S = Delta V_DOD for the exact
+    subtraction, S = chi Delta erf(xi) for the enrichment), against the closed
+    form: shows what the closed-form singular part reproduces, what the
+    regular extension h adds and what is left to the network."""
     s_grid = eval_result["s_grid"]
     t_grid = eval_result["t_grid"]
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.8), sharey=True)
@@ -910,14 +958,18 @@ def plot_subtraction_decomposition(
         s = s_grid.to(DEVICE).to(torch.get_default_dtype())
         t = torch.full_like(s, float(t_grid[j]))
         with torch.no_grad():
-            digital = g2.digital_price(s, t).double().cpu().numpy()
-            regular = g2.subtracted_data_extension(s, t).double().cpu().numpy()
+            singular = g2.singular_part(s, t).double().cpu().numpy()
+            regular = g2.regular_part(s, t).double().cpu().numpy()
             manifold = model.forward_neural_manifold(torch.stack([s, t], dim=1)).squeeze(-1).double().cpu().numpy()
         s_np = s_grid.numpy()
         ax.plot(s_np, eval_result["reference"].numpy()[:, j], linestyle="--", color="black", lw=1.8, label=r"$V_{DO}$ (closed form)")
         ax.plot(s_np, eval_result["learned"].numpy()[:, j], color="tab:blue", lw=1.6, label=r"$\Phi_\theta$ (trained)")
-        ax.plot(s_np, digital, color="tab:red", lw=1.4, label=r"$\Delta\,V_{DOD}$ (subtracted singular part)")
-        ax.plot(s_np, regular, color="tab:green", lw=1.4, label=r"$h=\pi-\pi(B,\cdot)$ (regular extension)")
+        singular_label = (r"$E=\chi\,\Delta\,\mathrm{erf}(\xi)$ (corner enrichment)" if hasattr(g2, "enrichment")
+                          else r"$\Delta\,V_{DOD}$ (subtracted singular part)")
+        regular_label = (r"$h=\pi-\chi\,\pi(B,\cdot)$ (regular extension)" if hasattr(g2, "enrichment")
+                         else r"$h=\pi-\pi(B,\cdot)$ (regular extension)")
+        ax.plot(s_np, singular, color="tab:red", lw=1.4, label=singular_label)
+        ax.plot(s_np, regular, color="tab:green", lw=1.4, label=regular_label)
         ax.plot(s_np, manifold, color="tab:purple", lw=1.4, label=r"$g_1u_\theta$ (network)")
         ax.axvline(B, color="black", linestyle=":", lw=1.0)
         ax.axvline(K, color="grey", linestyle=":", lw=1.0)
@@ -962,7 +1014,7 @@ def plot_price_surface(
 
     # epsilon = 0 is never a smoothing bandwidth (rejected by the builders): it
     # is the placeholder of the exact-subtraction runs.
-    trained_title = ("Trained (exact subtraction, no corner layer)" if epsilon == SUBTRACTION_EPSILON_PLACEHOLDER
+    trained_title = ("Trained (analytic corner resolution, no corner layer)" if epsilon == SUBTRACTION_EPSILON_PLACEHOLDER
                      else f"Trained ($\\varepsilon={epsilon:g}$)")
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5), sharey=True)
     panels = (
@@ -1033,12 +1085,15 @@ def formula_text_for_run(meta: dict) -> str:
     a run's metadata. ``.get(..., default)`` keeps runs recorded before a mode
     existed readable (absent key -> the raw-payoff default)."""
     hyper = meta["hyperparameters"]
-    if hyper.get("corner_treatment", "smoothing") == "subtraction":
+    if hyper.get("corner_treatment", "smoothing") in ANALYTIC_CORNER_TREATMENTS:
         comparison_volatility = hyper.get("comparison_volatility", None)
         return formula_text_subtraction(
             hyper["subtraction_terminal_profile"],
             comparison_volatility if comparison_volatility is not None else meta["contract"]["sigma"],
             hyper.get("split_profile", DEFAULT_SPLIT_PROFILE), hyper.get("split_n_quad", DEFAULT_SPLIT_N_QUAD),
+            corner_treatment=hyper["corner_treatment"],
+            enrichment_delta0=hyper.get("enrichment_delta0", DEFAULT_ENRICHMENT_DELTA0),
+            enrichment_delta1=hyper.get("enrichment_delta1", DEFAULT_ENRICHMENT_DELTA1),
         )
     if hyper.get("smoothed_payoff", False):
         return formula_text_smoothed_payoff(hyper.get("eps0", DEFAULT_EPS0), hyper.get("grading", DEFAULT_GRADING))
@@ -1086,6 +1141,8 @@ def load_trained_model(run_dir: Path, epsilon: float, meta: dict | None = None) 
         # Metadata without the key predates the exact-subtraction ansatz.
         corner_treatment=hyper.get("corner_treatment", "smoothing"),
         subtraction_terminal_profile=hyper.get("subtraction_terminal_profile", "raw"),
+        enrichment_delta0=hyper.get("enrichment_delta0", DEFAULT_ENRICHMENT_DELTA0),
+        enrichment_delta1=hyper.get("enrichment_delta1", DEFAULT_ENRICHMENT_DELTA1),
     )
     model_path = run_dir / "models" / f"model_eps{epsilon:g}.pt"
     model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
@@ -1173,7 +1230,19 @@ def main() -> None:
                               "outside-corner metric is evaluated on the same region), the interior residual is "
                               "always assembled through the two-term analytic route (the digital's residual is "
                               "exactly zero, Proposition 4; autograd through it would difference unbounded terms "
-                              "at the corner). Directory tag _subtraction_<profile>.")
+                              "at the corner). Directory tag _subtraction_<profile>. 'enrichment' (Method 2, "
+                              "Section 5.2, Definition 8): the short-time limit of Method 1, g2 = chi(s) (K-B) "
+                              "erf(xi) + pi - chi(s) pi(B, .), xi = ln(s/B)/(sigma sqrt(2(T-t))), chi a fixed "
+                              "C-infinity cutoff in s with radii --enrichment-delta0/--enrichment-delta1; same "
+                              "conventions as 'subtraction' (placeholder eps=0, corner window, two-term route). "
+                              "The residual of g2 is square-integrable but not zero (Proposition 5). Directory "
+                              "tag _enrichment_<profile>_d0<delta0>_d1<delta1>.")
+    parser.add_argument("--enrichment-delta0", type=float, default=DEFAULT_ENRICHMENT_DELTA0,
+                         help="Inner cutoff radius delta0 of the corner enrichment (chi = 1 on s - B <= delta0), "
+                              "price units; only used with --corner-treatment enrichment.")
+    parser.add_argument("--enrichment-delta1", type=float, default=DEFAULT_ENRICHMENT_DELTA1,
+                         help="Outer cutoff radius delta1 of the corner enrichment (chi = 0 on s - B >= delta1 > "
+                              "delta0); only used with --corner-treatment enrichment.")
     parser.add_argument("--exclude-corner-from-collocation", action="store_true",
                          help="Reject interior collocation points falling in the ell^1 corner window "
                               "(s-B)+(T-t) <= --corner-window, so the PDE residual is never enforced at the "
@@ -1292,7 +1361,7 @@ def main() -> None:
         s_inf = meta["domain"]["s_inf"]
         corner_window = meta["hyperparameters"]["corner_window"]
         formula_text = formula_text_for_run(meta)
-        replot_subtraction = meta["hyperparameters"].get("corner_treatment", "smoothing") == "subtraction"
+        replot_subtraction = meta["hyperparameters"].get("corner_treatment", "smoothing") in ANALYTIC_CORNER_TREATMENTS
         if meta["hyperparameters"].get("dtype") == "float64":
             torch.set_default_dtype(torch.float64)
         (out_dir / "figures").mkdir(exist_ok=True)
@@ -1329,7 +1398,7 @@ def main() -> None:
             logger.info(f"[eps={epsilon:g}] price-surface figure rebuilt from {model_path}")
 
         if replot_subtraction:
-            logger.info("--replot: error_vs_epsilon.png not produced (subtraction mode, no epsilon sweep).")
+            logger.info("--replot: error_vs_epsilon.png not produced (analytic corner treatment, no epsilon sweep).")
         else:
             plot_error_vs_epsilon(summaries, out_dir / "figures" / "error_vs_epsilon.png", formula_text=formula_text)
         logger.info(f"--replot: done ({len(summaries)} epsilon values)")
@@ -1363,18 +1432,22 @@ def main() -> None:
     # ---- corner treatment: in subtraction mode the terminal profile is read
     # off the payoff flags, the epsilon sweep collapses to one placeholder and
     # the evaluation window defaults to the canonical smoothing value.
-    subtraction = args.corner_treatment == "subtraction"
+    subtraction = args.corner_treatment in ANALYTIC_CORNER_TREATMENTS  # subtraction OR enrichment
     subtraction_terminal_profile = None
     if subtraction:
+        if args.corner_treatment == "enrichment" and not (0.0 < args.enrichment_delta0 < args.enrichment_delta1):
+            print(f"ERROR: need 0 < --enrichment-delta0 < --enrichment-delta1; got {args.enrichment_delta0}, "
+                  f"{args.enrichment_delta1}.", file=sys.stderr)
+            sys.exit(2)
         if args.smoothed_payoff:
-            print("ERROR: --corner-treatment subtraction does not accept --smoothed-payoff (the Chen-Mangasarian "
+            print(f"ERROR: --corner-treatment {args.corner_treatment} does not accept --smoothed-payoff (the Chen-Mangasarian "
                   "family was set aside in section 10 of the methodology document; the terminal profiles of the "
                   f"subtraction ansatz are {SUBTRACTION_TERMINAL_PROFILES}).", file=sys.stderr)
             sys.exit(2)
         subtraction_terminal_profile = ("black_scholes" if args.black_scholes_payoff
                                         else "split" if args.split_payoff else "raw")
         if args.epsilons != list(DEFAULT_EPSILONS) and args.epsilons != [SUBTRACTION_EPSILON_PLACEHOLDER]:
-            print(f"WARNING: --corner-treatment subtraction has no corner layer; --epsilons {args.epsilons} is "
+            print(f"WARNING: --corner-treatment {args.corner_treatment} has no corner layer; --epsilons {args.epsilons} is "
                   f"ignored (placeholder eps={SUBTRACTION_EPSILON_PLACEHOLDER:g} names the artefacts).", file=sys.stderr)
         args.epsilons = [SUBTRACTION_EPSILON_PLACEHOLDER]
         if args.corner_window is None:
@@ -1399,6 +1472,8 @@ def main() -> None:
     if subtraction:
         formula_text = formula_text_subtraction(
             subtraction_terminal_profile, comparison_volatility, args.split_profile, args.split_n_quad,
+            corner_treatment=args.corner_treatment,
+            enrichment_delta0=args.enrichment_delta0, enrichment_delta1=args.enrichment_delta1,
         )
     elif args.smoothed_payoff:
         formula_text = formula_text_smoothed_payoff(args.eps0, args.grading)
@@ -1416,7 +1491,9 @@ def main() -> None:
     if subtraction:
         # The treatment and its terminal profile name the run: aggregation
         # scripts key on this tag (aggregate_terminal_function_comparison.py).
-        payoff_tag = f"_subtraction_{subtraction_terminal_profile.replace('_', '')}"
+        payoff_tag = f"_{args.corner_treatment}_{subtraction_terminal_profile.replace('_', '')}"
+        if args.corner_treatment == "enrichment":
+            payoff_tag += f"_d0{args.enrichment_delta0:g}_d1{args.enrichment_delta1:g}"
         if subtraction_terminal_profile == "split":
             payoff_tag += f"_nuc{comparison_volatility:g}" + (
                 "_closedform" if args.split_profile == "closed_form" else f"_nquad{args.split_n_quad}"
@@ -1493,7 +1570,7 @@ def main() -> None:
                     "is not well posed without one, see --far-field-dirichlet; Remark 2 of the methodology doc]")
     logger.info(f"  Corner treatment: {args.corner_treatment}")
     if subtraction:
-        logger.info(f"  Epsilons swept: none (exact subtraction has no corner layer; placeholder "
+        logger.info(f"  Epsilons swept: none ({args.corner_treatment} has no corner layer; placeholder "
                     f"eps={SUBTRACTION_EPSILON_PLACEHOLDER:g} names the artefacts)")
     else:
         logger.info(f"  Epsilons swept: {sorted(args.epsilons)}")
@@ -1502,7 +1579,22 @@ def main() -> None:
     logger.info(f"  Master seed: {args.seed}")
     logger.info(f"    -> model_init seed: {derive_seed(args.seed, 'model_init')}")
     logger.info(f"    -> sampler seed:    {derive_seed(args.seed, 'sampler')}")
-    if subtraction:
+    if args.corner_treatment == "enrichment":
+        logger.info(
+            f"  Ansatz: corner enrichment (Method 2, Section 5.2, Definition 8): "
+            f"Phi = E + h + g1 u_theta, E = chi(s) (K-B) erf(xi), xi = ln(s/B)/(sigma sqrt(2(T-t))), "
+            f"h = pi - chi(s) pi(B, .), Delta = K - B = {args.K - args.B:g}; cutoff radii delta0={args.enrichment_delta0:g}, "
+            f"delta1={args.enrichment_delta1:g}; terminal profile pi = {subtraction_terminal_profile} "
+            f"(make_corner_enriched_extension)."
+        )
+        logger.info(
+            "    Interior residual: two-term analytic route, F(g1 u_theta) by autograd + F(E) + F(h) in closed form; "
+            "F(E) = chi Delta [(r - sigma^2/2) d_y erf(xi) - r erf(xi)] + commutator terms, of order "
+            "tau^(-1/2) exp(-xi^2) at the corner: square-integrable, not zero (Proposition 5). The corner is "
+            + ("EXCLUDED from collocation (--exclude-corner-from-collocation)." if args.exclude_corner_from_collocation
+               else "INCLUDED in collocation.")
+        )
+    elif subtraction:
         logger.info(
             f"  Ansatz: exact subtraction (Method 1, Section 5.1, Definition 7): "
             f"Phi = (K-B) V_DOD + h + g1 u_theta with h = pi - pi(B, .), Delta = K - B = {args.K - args.B:g}; "
@@ -1515,8 +1607,9 @@ def main() -> None:
             + ("EXCLUDED from collocation (--exclude-corner-from-collocation)." if args.exclude_corner_from_collocation
                else "INCLUDED in collocation: the residual is enforced up to the corner, where it stays bounded.")
         )
+    if subtraction:
         if args.analytic_residual:
-            logger.info("    --analytic-residual is implied by the subtraction ansatz (no effect).")
+            logger.info(f"    --analytic-residual is implied by the {args.corner_treatment} ansatz (no effect).")
         if subtraction_terminal_profile == "split":
             logger.info(f"    comparison_volatility={comparison_volatility:g} "
                         f"({'matched to --sigma' if comparison_volatility == args.sigma else 'MISMATCHED from --sigma'}), "
@@ -1620,6 +1713,8 @@ def main() -> None:
             "split_profile": args.split_profile,
             "corner_treatment": args.corner_treatment,
             "subtraction_terminal_profile": subtraction_terminal_profile,
+            "enrichment_delta0": args.enrichment_delta0 if args.corner_treatment == "enrichment" else None,
+            "enrichment_delta1": args.enrichment_delta1 if args.corner_treatment == "enrichment" else None,
         },
     }
     if resuming_existing_run:
@@ -1671,6 +1766,7 @@ def main() -> None:
             far_field_dirichlet=args.far_field_dirichlet,
             corner_treatment=args.corner_treatment,
             subtraction_terminal_profile=subtraction_terminal_profile or "raw",
+            enrichment_delta0=args.enrichment_delta0, enrichment_delta1=args.enrichment_delta1,
         )
         truncation_bound = None
         if args.far_field_dirichlet:
@@ -1718,7 +1814,7 @@ def main() -> None:
                 out_dir / "figures" / "subtraction_decomposition.png", formula_text,
             )
     if subtraction:
-        logger.info("  error_vs_epsilon.png not produced: no epsilon sweep in subtraction mode.")
+        logger.info(f"  error_vs_epsilon.png not produced: no epsilon sweep in {args.corner_treatment} mode.")
     else:
         plot_error_vs_epsilon(summaries, out_dir / "figures" / "error_vs_epsilon.png", formula_text=formula_text)
 

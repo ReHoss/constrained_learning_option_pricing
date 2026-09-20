@@ -40,6 +40,9 @@ from learning_option_pricing.pricing.barrier import (
     RawPutPayoffTerminalProfile,
     BlackScholesPutTerminalProfile,
     SplitSemigroupPutTerminalProfile,
+    CornerEnrichedExtension,
+    corner_similarity_profile_value_and_derivatives,
+    make_corner_enriched_extension,
 )
 from learning_option_pricing.pricing.terminal import black_scholes_put, bsm_operator, payoff_put
 
@@ -1195,3 +1198,146 @@ class TestSubtractedDigitalCornerExtension:
             make_subtracted_digital_extension(self.K, self.B, self.r, self.sigma, self.T, "split", split_profile="quadrature")
         with pytest.raises(ValueError):
             SubtractedDigitalCornerExtension(self.K, self.B, self.r, self.sigma, 0.0, RawPutPayoffTerminalProfile(self.K))
+
+
+# ---------------------------------------------------------------------------
+# Corner enrichment  (Method 2, Section 5.2 of the note, Lemma 1 / Definition 8)
+# ---------------------------------------------------------------------------
+
+class TestCornerSimilarityProfile:
+    B, sigma, T = 0.6, 0.3, 1.0
+
+    def _interior(self):
+        s = torch.linspace(self.B + 0.005, 3.0, 400, dtype=torch.float64)
+        t = torch.linspace(0.0, self.T - 1e-3, 400, dtype=torch.float64)
+        ss, tt = torch.meshgrid(s, t, indexing="ij")
+        return ss.reshape(-1).clone().requires_grad_(True), tt.reshape(-1).clone().requires_grad_(True)
+
+    def test_solves_the_heat_equation_in_log_price(self) -> None:
+        """Lambda(xi) is the self-similar solution of d_tau u = (sigma^2/2) d_yy u,
+        y = ln(s/B); in the price variable d_yy = s^2 d_ss + s d_s."""
+        ss, tt = self._interior()
+        value, d_s, d_ss, d_t = corner_similarity_profile_value_and_derivatives(ss, self.B, self.sigma, self.T - tt)
+        heat = d_t + 0.5 * self.sigma**2 * (ss**2 * d_ss + ss * d_s)
+        assert float(heat.abs().max()) < 1e-12
+
+    def test_closed_form_derivatives_match_autograd(self) -> None:
+        ss, tt = self._interior()
+        value, d_s, d_ss, d_t = corner_similarity_profile_value_and_derivatives(ss, self.B, self.sigma, self.T - tt)
+        d_s_ag = torch.autograd.grad(value.sum(), ss, create_graph=True)[0]
+        d_ss_ag = torch.autograd.grad(d_s_ag.sum(), ss, retain_graph=True)[0]
+        d_t_ag = torch.autograd.grad(value.sum(), tt)[0]
+        assert torch.allclose(d_s, d_s_ag, atol=1e-10)
+        assert torch.allclose(d_ss, d_ss_ag, atol=1e-8)
+        assert torch.allclose(d_t, d_t_ag, atol=1e-10)
+
+    def test_traces_and_limits(self) -> None:
+        t = torch.linspace(0.0, self.T, 51, dtype=torch.float64)
+        assert torch.equal(corner_similarity_profile_value_and_derivatives(
+            torch.full_like(t, self.B), self.B, self.sigma, self.T - t)[0], torch.zeros_like(t))
+        s = torch.linspace(0.3, 3.0, 271, dtype=torch.float64)
+        value, d_s, d_ss, d_t = corner_similarity_profile_value_and_derivatives(s, self.B, self.sigma, torch.zeros_like(s))
+        assert torch.equal(value, (s > self.B).to(value.dtype))
+        for derivative in (d_s, d_ss, d_t):
+            assert torch.equal(derivative, torch.zeros_like(s))
+        # values in [0, 1]
+        ss, tt = self._interior()
+        value = corner_similarity_profile_value_and_derivatives(ss.detach(), self.B, self.sigma, self.T - tt.detach())[0]
+        assert float(value.min()) >= 0.0 and float(value.max()) <= 1.0
+
+    def test_is_the_short_time_limit_of_the_digital(self) -> None:
+        """At fixed xi the digital converges to Lambda(xi) as tau -> 0 (the
+        enrichment is the short-time limit of Method 1)."""
+        r = 0.03
+        gaps = []
+        for tau in (1e-2, 1e-3, 1e-4):
+            xi = torch.linspace(0.05, 2.5, 50, dtype=torch.float64)
+            s = self.B * torch.exp(xi * self.sigma * math.sqrt(2.0 * tau))
+            digital = down_and_out_digital_price(s, self.B, r, self.sigma, torch.tensor(tau, dtype=torch.float64))
+            gaps.append(float((digital - torch.erf(xi)).abs().max()))
+        assert gaps[0] > gaps[1] > gaps[2] and gaps[2] < 1e-3
+
+
+class TestCornerEnrichedExtension:
+    """g2 = chi Delta Lambda(xi) + pi - chi pi(B, .) reproduces both data exactly
+    with no small parameter; residual and derivatives agree with autograd."""
+    K, B, r, sigma, T = 1.0, 0.6, 0.03, 0.3, 1.0
+    delta0, delta1 = 0.1, 0.3
+
+    def _extensions(self):
+        return [make_corner_enriched_extension(self.K, self.B, self.r, self.sigma, self.T, name,
+                                               delta0=self.delta0, delta1=self.delta1)
+                for name in SUBTRACTION_TERMINAL_PROFILES]
+
+    def test_terminal_trace_is_the_payoff_exactly(self) -> None:
+        s = torch.linspace(self.B + 1e-9, 3.0, 1000, dtype=torch.float64)
+        t = torch.full_like(s, self.T)
+        for g2 in self._extensions():
+            assert torch.allclose(g2(s, t), payoff_put(s, self.K), atol=1e-13), g2.profile_name
+
+    def test_barrier_trace_is_zero_for_every_t(self) -> None:
+        t = torch.linspace(0.0, self.T, 201, dtype=torch.float64)
+        s = torch.full_like(t, self.B)
+        for g2 in self._extensions():
+            assert torch.equal(g2(s, t), torch.zeros_like(t)), g2.profile_name
+
+    def test_cutoff_is_one_near_the_corner_and_zero_far_away(self) -> None:
+        g2 = self._extensions()[1]
+        s = torch.tensor([self.B, self.B + self.delta0, self.B + self.delta1, 3.0], dtype=torch.float64)
+        chi, d_chi, dd_chi = g2._cutoff_value_and_derivatives(s)
+        assert torch.equal(chi, torch.tensor([1.0, 1.0, 0.0, 0.0], dtype=torch.float64))
+        assert torch.equal(d_chi, torch.zeros(4, dtype=torch.float64))
+        # Far from the corner the enrichment vanishes and g2 reduces to the profile pi.
+        t = torch.tensor([0.4], dtype=torch.float64)
+        far = torch.tensor([self.B + self.delta1 + 0.05], dtype=torch.float64)
+        assert float(g2.enrichment(far, t)) == 0.0
+        assert torch.allclose(g2(far, t), g2.terminal_profile.value_and_derivatives(far, t)[0])
+
+    def test_regular_part_vanishes_at_the_corner_from_both_faces(self) -> None:
+        for g2 in self._extensions():
+            h_terminal = g2.regular_part(torch.tensor([self.B + 1e-6], dtype=torch.float64), torch.tensor([self.T], dtype=torch.float64))
+            h_barrier = g2.regular_part(torch.tensor([self.B], dtype=torch.float64), torch.tensor([self.T - 1e-6], dtype=torch.float64))
+            assert abs(float(h_terminal)) < 2e-6 and abs(float(h_barrier)) < 1e-12
+
+    def _interior_off_strike(self):
+        s = torch.cat([torch.linspace(self.B + 0.005, self.K - 0.01, 300, dtype=torch.float64),
+                       torch.linspace(self.K + 0.01, 3.0, 300, dtype=torch.float64)]).requires_grad_(True)
+        t = torch.linspace(0.0, self.T - 1e-3, 600, dtype=torch.float64).requires_grad_(True)
+        return s, t
+
+    def test_closed_form_residual_and_derivatives_match_autograd(self) -> None:
+        s, t = self._interior_off_strike()
+        for g2 in self._extensions():
+            value = g2(s, t)
+            residual_autograd = bsm_operator(value, s, t, self.r, 0.0, self.sigma)
+            d_s_ag = torch.autograd.grad(value.sum(), s, create_graph=True)[0]
+            d_ss_ag = torch.autograd.grad(d_s_ag.sum(), s, retain_graph=True)[0]
+            d_t_ag = torch.autograd.grad(value.sum(), t)[0]
+            sd, td = s.detach(), t.detach()
+            assert torch.allclose(g2.black_scholes_residual(sd, td, self.r, self.sigma), residual_autograd.detach(), atol=1e-9), g2.profile_name
+            assert torch.allclose(g2.first_price_derivative(sd, td), d_s_ag, atol=1e-10), g2.profile_name
+            assert torch.allclose(g2.second_price_derivative(sd, td), d_ss_ag, atol=1e-7), g2.profile_name
+            assert torch.allclose(g2.first_time_derivative(sd, td), d_t_ag, atol=1e-9), g2.profile_name
+
+    def test_enrichment_residual_is_the_drift_and_reaction_remainder(self) -> None:
+        """Where chi = 1, L^BS E = Delta [(r - sigma^2/2) d_y Lambda - r Lambda]
+        (Lemma 1: Lambda annihilates the heat balance; the drift and reaction
+        terms survive), of order tau^{-1/2} e^{-xi^2}: not zero, unlike the digital."""
+        g2 = self._extensions()[1]
+        s = torch.linspace(self.B + 0.001, self.B + self.delta0, 100, dtype=torch.float64)
+        t = torch.full_like(s, 0.7)
+        tau = self.T - t
+        value, d_s, _, _ = corner_similarity_profile_value_and_derivatives(s, self.B, self.sigma, tau)
+        expected = (self.K - self.B) * ((self.r - 0.5 * self.sigma**2) * s * d_s - self.r * value)
+        assert torch.allclose(g2._singular_residual(s, t, self.r, self.sigma), expected, atol=1e-12)
+        assert float(expected.abs().max()) > 0.0
+
+    def test_refuses_bad_radii_and_other_coefficients(self) -> None:
+        profile = RawPutPayoffTerminalProfile(self.K)
+        with pytest.raises(ValueError):
+            CornerEnrichedExtension(self.K, self.B, self.r, self.sigma, self.T, profile, 0.0, 0.3)
+        with pytest.raises(ValueError):
+            CornerEnrichedExtension(self.K, self.B, self.r, self.sigma, self.T, profile, 0.3, 0.1)
+        g2 = self._extensions()[0]
+        with pytest.raises(ValueError):
+            g2.black_scholes_residual(torch.tensor([1.0], dtype=torch.float64), torch.tensor([0.3], dtype=torch.float64), self.r, 2 * self.sigma)

@@ -149,11 +149,17 @@ CONFIGURATION_LABELS: dict[str, str] = {
     "subtraction_raw": "Exact subtraction,\nraw payoff profile",
     "subtraction_blackscholes": "Exact subtraction,\nBlack-Scholes profile",
     "subtraction_split": "Exact subtraction,\nsplit-semigroup profile",
+    # Corner enrichment (Method 2, Section 5.2): same conventions.
+    "enrichment_raw": "Corner enrichment,\nraw payoff profile",
+    "enrichment_blackscholes": "Corner enrichment,\nBlack-Scholes profile",
+    "enrichment_split": "Corner enrichment,\nsplit-semigroup profile",
 }
 
 
 def is_subtraction_configuration(configuration: str) -> bool:
-    return configuration.startswith("subtraction_")
+    """True for the analytic corner treatments (exact subtraction, corner
+    enrichment): no corner layer, placeholder epsilon 0 in the run directory."""
+    return configuration.startswith("subtraction_") or configuration.startswith("enrichment_")
 
 
 def configuration_tick_label(configuration: str, per_seed: dict) -> str:
@@ -207,6 +213,12 @@ def configuration_key_from_payoff_tag(payoff_tag: str) -> str:
         return "subtraction_blackscholes"
     if payoff_tag.startswith("_subtraction_split"):
         return "subtraction_split"
+    if payoff_tag.startswith("_enrichment_raw"):
+        return "enrichment_raw"
+    if payoff_tag.startswith("_enrichment_blackscholes"):
+        return "enrichment_blackscholes"
+    if payoff_tag.startswith("_enrichment_split"):
+        return "enrichment_split"
     raise ValueError(f"unrecognised payoff tag {payoff_tag!r}")
 
 
@@ -236,8 +248,8 @@ def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: b
     directories share a configuration and a seed, the most recent timestamp
     is kept and the others are reported.
 
-    Exact-subtraction runs (``_subtraction_<profile>`` tags) have no corner
-    layer: their directory epsilon is the placeholder ``0`` and the corner is
+    Exact-subtraction and corner-enrichment runs (``_subtraction_<profile>``,
+    ``_enrichment_<profile>_...`` tags) have no corner layer: their directory epsilon is the placeholder ``0`` and the corner is
     ordinarily included in their collocation. They are therefore collected
     regardless of ``epsilon`` and of ``require_nocorner`` (both filters act on
     the smoothing runs only), and each summary records its own ``epsilon`` so

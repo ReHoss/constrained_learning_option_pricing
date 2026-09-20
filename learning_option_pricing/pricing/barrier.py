@@ -1587,11 +1587,151 @@ class SplitSemigroupPutTerminalProfile:
         return split_profile_price_and_time_derivatives(self.split_field, s, torch.as_tensor(t))
 
 
-#: Terminal profiles accepted by :func:`make_subtracted_digital_extension`.
+#: Terminal profiles accepted by :func:`make_subtracted_digital_extension`
+#: and :func:`make_corner_enriched_extension`.
 SUBTRACTION_TERMINAL_PROFILES = ("raw", "black_scholes", "split")
 
 
-class SubtractedDigitalCornerExtension:
+class _AnalyticallyResolvedCornerExtension:
+    r"""Common structure of the two analytic corner resolutions of Section 5 of
+    the note (Table 1, retained rows): an extension
+
+    .. math::
+
+        g_2(s,t) = S(s,t) + h(s,t), \qquad h(s,t) = \pi(s,t) - \chi(s)\,\pi(B,t),
+
+    where :math:`S` is the closed-form *singular part* reproducing the corner
+    jump (the subtracted digital :math:`\Delta V_{DOD}` of Method 1, or the
+    enrichment :math:`\chi\Delta\Lambda(\xi)` of Method 2), :math:`\pi` a
+    terminal profile with :math:`\pi(s,T) = (K-s)^+`, and :math:`\chi:[B,\infty)\to[0,1]`
+    a fixed cutoff in ``s`` with :math:`\chi(B) = 1` (identically :math:`1` for
+    Method 1). The *regular part* :math:`h` extends the residual data:
+
+    - on :math:`\Sigma_T`: :math:`h(s,T) = (K-s)^+ - \chi(s)\Delta = g - S(\cdot,T)`
+      (both singular parts equal :math:`\chi(s)\Delta` on the terminal face for
+      :math:`s > B`);
+    - on :math:`\Sigma_B`: :math:`h(B,t) = \pi(B,t) - \pi(B,t) = 0`, because
+      :math:`\chi(B) = 1`; both singular parts vanish there too.
+
+    Subclasses supply the singular part with its derivatives
+    (:meth:`_singular_value_and_derivatives`), its interior residual
+    (:meth:`_singular_residual`, exactly zero for the digital), and the cutoff
+    with its derivatives (:meth:`_cutoff_value_and_derivatives`). Everything
+    else -- value, price and time derivatives, closed-form residual -- is
+    assembled here once.
+    """
+
+    def __init__(self, K: float, B: float, r: float, sigma: float, T: float, terminal_profile) -> None:
+        if not (0.0 < B < K):
+            raise ValueError(f"the reverse knock-out regime requires 0 < B < K; got {B=}, {K=}.")
+        if T <= 0.0:
+            raise ValueError(f"T must be > 0; got {T}.")
+        self.K, self.B, self.r, self.sigma, self.T = K, B, r, sigma, T
+        self.jump = K - B  # Delta = K - B, the corner jump of Proposition 1
+        self.terminal_profile = terminal_profile
+        self.profile_name = getattr(terminal_profile, "name", type(terminal_profile).__name__)
+
+    # -- to be supplied by the subclasses -----------------------------------
+
+    def _singular_value_and_derivatives(self, s: torch.Tensor, t: torch.Tensor):
+        r"""``(S, d_s S, d_ss S, d_t S)`` in closed form."""
+        raise NotImplementedError
+
+    def _singular_residual(self, s: torch.Tensor, t: torch.Tensor, r: float, sigma: float) -> torch.Tensor:
+        r""":math:`\mathcal L^{BS}S` in closed form."""
+        raise NotImplementedError
+
+    def _cutoff_value_and_derivatives(self, s: torch.Tensor):
+        r"""``(chi(s), chi'(s), chi''(s))``; identically ``(1, 0, 0)`` by default."""
+        one = torch.ones_like(s)
+        zero = torch.zeros_like(s)
+        return one, zero, zero
+
+    # -- pieces ------------------------------------------------------------
+
+    def _profile_at_barrier(self, s: torch.Tensor, t: torch.Tensor):
+        r""":math:`(\pi(B,t), \partial_t\pi(B,t))`, broadcast to the shape of ``s``/``t``."""
+        t_tensor = torch.as_tensor(t)
+        broadcast_shape = torch.broadcast_shapes(s.shape, t_tensor.shape)
+        s_barrier = torch.full(broadcast_shape, self.B, dtype=s.dtype, device=s.device)
+        value, _, _, d_t = self.terminal_profile.value_and_derivatives(s_barrier, t_tensor.expand(broadcast_shape))
+        return value, d_t
+
+    def singular_part(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        r"""The closed-form singular part :math:`S(s,t)` alone."""
+        return self._singular_value_and_derivatives(s, t)[0]
+
+    def regular_part(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        r"""The regular part :math:`h(s,t) = \pi(s,t) - \chi(s)\pi(B,t)` alone."""
+        pi_value, _, _, _ = self.terminal_profile.value_and_derivatives(s, t)
+        pi_at_barrier, _ = self._profile_at_barrier(s, t)
+        chi, _, _ = self._cutoff_value_and_derivatives(s)
+        return pi_value - chi * pi_at_barrier
+
+    def _regular_value_and_derivatives(self, s: torch.Tensor, t: torch.Tensor):
+        r"""``(h, d_s h, d_ss h, d_t h)`` from the profile's closed-form derivatives."""
+        pi_value, d_s_pi, d_ss_pi, d_t_pi = self.terminal_profile.value_and_derivatives(s, t)
+        pi_at_barrier, d_t_pi_at_barrier = self._profile_at_barrier(s, t)
+        chi, d_s_chi, d_ss_chi = self._cutoff_value_and_derivatives(s)
+        return (
+            pi_value - chi * pi_at_barrier,
+            d_s_pi - d_s_chi * pi_at_barrier,
+            d_ss_pi - d_ss_chi * pi_at_barrier,
+            d_t_pi - chi * d_t_pi_at_barrier,
+        )
+
+    # -- the extension and its derivatives ---------------------------------
+
+    def __call__(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return self.singular_part(s, t) + self.regular_part(s, t)
+
+    def first_price_derivative(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        r""":math:`\partial_s g_2 = \partial_s S + \partial_s h`."""
+        return self._singular_value_and_derivatives(s, t)[1] + self._regular_value_and_derivatives(s, t)[1]
+
+    def second_price_derivative(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        r""":math:`\partial_{ss} g_2 = \partial_{ss} S + \partial_{ss} h`."""
+        return self._singular_value_and_derivatives(s, t)[2] + self._regular_value_and_derivatives(s, t)[2]
+
+    def first_time_derivative(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        r""":math:`\partial_t g_2 = \partial_t S + \partial_t h`."""
+        return self._singular_value_and_derivatives(s, t)[3] + self._regular_value_and_derivatives(s, t)[3]
+
+    def black_scholes_residual(
+        self, s: torch.Tensor, t: torch.Tensor, r: float, sigma: float,
+    ) -> torch.Tensor:
+        r""":math:`\mathcal L^{BS}g_2 = \mathcal L^{BS}S + \mathcal L^{BS}h` in closed form.
+
+        Never autograd, never a finite difference; the presence of this method
+        selects the two-term residual assembly in
+        ``pilot_down_and_out_put.compute_loss``.
+
+        Args:
+            s: Underlying asset price tensor.
+            t: Time tensor, broadcastable with ``s``.
+            r: Risk-free rate of the operator; must equal the contract's.
+            sigma: Volatility of the operator; must equal the contract's.
+
+        Returns:
+            The residual, broadcast shape of ``s``/``t``.
+
+        Raises:
+            ValueError: If ``r`` or ``sigma`` differ from the ones the singular
+                part was built with (its residual, exactly zero or in closed
+                form, is a property of those coefficients).
+        """
+        if r != self.r or sigma != self.sigma:
+            raise ValueError(
+                f"{type(self).__name__}.black_scholes_residual: the singular part is built for "
+                f"(r, sigma) = ({self.r}, {self.sigma}); got ({r}, {sigma}). Under other coefficients its "
+                f"residual is not the one assembled here (Remark 8 of the note)."
+            )
+        h_value, d_s_h, d_ss_h, d_t_h = self._regular_value_and_derivatives(s, t)
+        regular_residual = d_t_h + 0.5 * sigma**2 * s**2 * d_ss_h + r * s * d_s_h - r * h_value
+        return self._singular_residual(s, t, r, sigma) + regular_residual
+
+
+class SubtractedDigitalCornerExtension(_AnalyticallyResolvedCornerExtension):
     r"""Terminal-and-barrier extension of the exact-subtraction ansatz (Method 1,
     Section 5.1 of the note, Definition 7), with its interior residual and
     price derivatives in closed form.
@@ -1624,11 +1764,10 @@ class SubtractedDigitalCornerExtension:
     :math:`\Delta` is what makes the barrier trace hold exactly for the
     time-dependent profiles (:math:`V^e(B,t) \neq K - B` for ``t < T``); for
     the raw payoff :math:`\pi(B,t) = \Delta` and :math:`h = (K-s)^+ - \Delta`
-    literally.  The price is :math:`\pi(B,t) = \pi(s,t)|_{s=B}`, a function
-    of ``t`` alone, so :math:`h` is not annihilated by the operator even when
-    :math:`\pi` is: :math:`\mathcal L^{BS}h = \mathcal L^{BS}\pi + \partial_t\pi(B,\cdot)
-    - r\,\pi(B,\cdot)`, bounded and smooth up to the terminal face, which the
-    free network absorbs.
+    literally.  Since :math:`\pi(B,t)` is a function of ``t`` alone, :math:`h`
+    is not annihilated by the operator even when :math:`\pi` is:
+    :math:`\mathcal L^{BS}h = \mathcal L^{BS}\pi + \partial_t\pi(B,\cdot) - r\,\pi(B,\cdot)`,
+    bounded and smooth up to the terminal face, which the free network absorbs.
 
     **Interior residual** (``black_scholes_residual``).  By Proposition 4
     :math:`\mathcal L^{BS}(\Delta V_{DOD}) = 0` exactly for constant
@@ -1643,11 +1782,9 @@ class SubtractedDigitalCornerExtension:
     assembled from the profile's closed-form derivatives -- never autograd
     through :math:`V_{DOD}`, whose second price derivative is unbounded at the
     corner and would be evaluated by autograd as the difference of large
-    cancelling terms.  The presence of this method selects the two-term
-    residual assembly in ``pilot_down_and_out_put.compute_loss``.  The
-    exactness of the omitted digital term is a property of the constant
-    coefficients ``(r, sigma)`` the digital was built with (Remark 8 of the
-    note); the method therefore refuses other coefficients rather than
+    cancelling terms.  The exactness of the omitted digital term is a property
+    of the constant coefficients ``(r, sigma)`` the digital was built with
+    (Remark 8 of the note); the method refuses other coefficients rather than
     silently returning a residual missing the term (19).
 
     **Price derivatives** (``first_price_derivative``,
@@ -1668,100 +1805,264 @@ class SubtractedDigitalCornerExtension:
         ValueError: If ``B >= K``, ``B <= 0`` or ``T <= 0``.
     """
 
-    def __init__(
-        self, K: float, B: float, r: float, sigma: float, T: float, terminal_profile,
-    ) -> None:
-        if not (0.0 < B < K):
-            raise ValueError(f"the reverse knock-out regime requires 0 < B < K; got {B=}, {K=}.")
-        if T <= 0.0:
-            raise ValueError(f"T must be > 0; got {T}.")
-        self.K, self.B, self.r, self.sigma, self.T = K, B, r, sigma, T
-        self.jump = K - B  # Delta = K - B, the corner jump of Proposition 1
-        self.terminal_profile = terminal_profile
-        self.profile_name = getattr(terminal_profile, "name", type(terminal_profile).__name__)
+    def _singular_value_and_derivatives(self, s: torch.Tensor, t: torch.Tensor):
+        price, delta, gamma, theta = down_and_out_digital_price_and_derivatives(
+            s, self.B, self.r, self.sigma, self.T - t,
+        )
+        return self.jump * price, self.jump * delta, self.jump * gamma, self.jump * theta
 
-    # -- pieces ------------------------------------------------------------
-
-    def _digital(self, s: torch.Tensor, t: torch.Tensor):
-        return down_and_out_digital_price_and_derivatives(s, self.B, self.r, self.sigma, self.T - t)
-
-    def _profile_at_barrier(self, s: torch.Tensor, t: torch.Tensor):
-        r""":math:`(\pi(B,t), \partial_t\pi(B,t))`, broadcast to the shape of ``s``/``t``."""
-        t_tensor = torch.as_tensor(t)
-        broadcast_shape = torch.broadcast_shapes(s.shape, t_tensor.shape)
-        s_barrier = torch.full(broadcast_shape, self.B, dtype=s.dtype, device=s.device)
-        value, _, _, d_t = self.terminal_profile.value_and_derivatives(s_barrier, t_tensor.expand(broadcast_shape))
-        return value, d_t
+    def _singular_residual(self, s: torch.Tensor, t: torch.Tensor, r: float, sigma: float) -> torch.Tensor:
+        r"""Exactly zero (Proposition 4): the digital is operator-exact."""
+        broadcast_shape = torch.broadcast_shapes(s.shape, torch.as_tensor(t).shape)
+        return torch.zeros(broadcast_shape, dtype=s.dtype, device=s.device)
 
     def digital_price(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         r"""The subtracted singular part :math:`\Delta\,V_{DOD}(s,t)` alone."""
-        return self.jump * self._digital(s, t)[0]
+        return self.singular_part(s, t)
 
     def subtracted_data_extension(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         r"""The regular part :math:`h(s,t) = \pi(s,t) - \pi(B,t)` alone."""
-        pi_value, _, _, _ = self.terminal_profile.value_and_derivatives(s, t)
-        pi_at_barrier, _ = self._profile_at_barrier(s, t)
-        return pi_value - pi_at_barrier
+        return self.regular_part(s, t)
 
-    # -- the extension and its derivatives ---------------------------------
 
-    def __call__(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        return self.digital_price(s, t) + self.subtracted_data_extension(s, t)
+def corner_similarity_profile_value_and_derivatives(
+    s: torch.Tensor, B: float, sigma: float, tau: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    r"""``(Lambda(xi), d_s Lambda, d_ss Lambda, d_t Lambda)`` of the leading corner
+    similarity profile :math:`\Lambda(\xi) = \operatorname{erf}(\xi)`,
+    :math:`\xi(s,t) = \ln(s/B)/(\sigma\sqrt{2(T-t)})` (Lemma 1 of the note).
 
-    def first_price_derivative(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        r""":math:`\partial_s g_2 = \Delta\,\partial_sV_{DOD} + \partial_s\pi`."""
-        _, digital_delta, _, _ = self._digital(s, t)
-        _, d_s_pi, _, _ = self.terminal_profile.value_and_derivatives(s, t)
-        return self.jump * digital_delta + d_s_pi
+    :math:`\Lambda(\xi)` is the bounded self-similar solution of the heat
+    equation :math:`\partial_\tau u = \tfrac12\sigma^2\partial_{yy}u` on the
+    half-line :math:`y = \ln(s/B) > 0` with unit inner datum and null datum at
+    :math:`y = 0`.  With :math:`\Lambda' = (2/\sqrt\pi)e^{-\xi^2}`,
+    :math:`\Lambda'' = -2\xi\Lambda'`, :math:`\partial_s\xi = 1/(s\sigma\sqrt{2\tau})`,
+    :math:`\partial_{ss}\xi = -\partial_s\xi/s` and :math:`\partial_t\xi = \xi/(2\tau)`
+    (:math:`\xi \propto \tau^{-1/2}`, :math:`\partial_t = -\partial_\tau`), the chain
+    rule gives the three derivatives.  At ``tau = 0`` exactly the limit
+    :math:`\mathbf 1_{s>B}` is returned with zero derivatives; for ``s <= B``
+    everything is ``0``.
 
-    def second_price_derivative(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        r""":math:`\partial_{ss} g_2 = \Delta\,\partial_{ss}V_{DOD} + \partial_{ss}\pi`."""
-        _, _, digital_gamma, _ = self._digital(s, t)
-        _, _, d_ss_pi, _ = self.terminal_profile.value_and_derivatives(s, t)
-        return self.jump * digital_gamma + d_ss_pi
+    Args:
+        s: Underlying asset price tensor.
+        B: Knock-out barrier, ``B > 0``.
+        sigma: Volatility.
+        tau: Time to maturity, broadcastable with ``s``.
 
-    def first_time_derivative(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        r""":math:`\partial_t g_2 = \Delta\,\partial_tV_{DOD} + \partial_t\pi(s,t) - \partial_t\pi(B,t)`."""
-        _, _, _, digital_theta = self._digital(s, t)
-        _, _, _, d_t_pi = self.terminal_profile.value_and_derivatives(s, t)
-        _, d_t_pi_at_barrier = self._profile_at_barrier(s, t)
-        return self.jump * digital_theta + d_t_pi - d_t_pi_at_barrier
+    Returns:
+        Four tensors of the broadcast shape of ``s``/``tau``.
+    """
+    if B <= 0.0:
+        raise ValueError(f"the barrier must be positive; got {B=}.")
+    tau_tensor = torch.as_tensor(tau)
+    tau_safe = torch.clamp(tau_tensor, min=_TAU_EPS)
+    s_safe = torch.clamp(s, min=B * (1.0 + 1e-6))
+    scale = sigma * torch.sqrt(2.0 * tau_safe)
+    xi = torch.log(s_safe / B) / scale
+    value = torch.erf(xi)
+    lambda_prime = (2.0 / math.sqrt(math.pi)) * torch.exp(-(xi**2))
+    lambda_double_prime = -2.0 * xi * lambda_prime
+    d_s_xi = 1.0 / (s_safe * scale)
+    d_ss_xi = -d_s_xi / s_safe
+    d_t_xi = xi / (2.0 * tau_safe)
+    d_s = lambda_prime * d_s_xi
+    d_ss = lambda_double_prime * d_s_xi**2 + lambda_prime * d_ss_xi
+    d_t = lambda_prime * d_t_xi
+    _report_tau_floor_activation(tau_tensor, "corner_similarity_profile_value_and_derivatives")
 
-    def black_scholes_residual(
-        self, s: torch.Tensor, t: torch.Tensor, r: float, sigma: float,
-    ) -> torch.Tensor:
-        r""":math:`\mathcal L^{BS}g_2 = \mathcal L^{BS}h` in closed form (class docstring).
+    positive_tau = tau_tensor > 0
+    zero = torch.zeros_like(value)
+    value = torch.where(positive_tau, value, (s > B).to(value.dtype))
+    d_s = torch.where(positive_tau, d_s, zero)
+    d_ss = torch.where(positive_tau, d_ss, zero)
+    d_t = torch.where(positive_tau, d_t, zero)
+    alive = s > B
+    return (
+        torch.where(alive, value, zero),
+        torch.where(alive, d_s, zero),
+        torch.where(alive, d_ss, zero),
+        torch.where(alive, d_t, zero),
+    )
 
-        Never autograd, never a finite difference.  The digital term is
-        omitted because it is exactly annihilated (Proposition 4); this holds
-        for the coefficients the digital was built with only, so differing
-        ``r``/``sigma`` are refused.
 
-        Args:
-            s: Underlying asset price tensor.
-            t: Time tensor, broadcastable with ``s``.
-            r: Risk-free rate of the operator; must equal the contract's.
-            sigma: Volatility of the operator; must equal the contract's.
+class CornerEnrichedExtension(_AnalyticallyResolvedCornerExtension):
+    r"""Terminal-and-barrier extension of the corner-enriched ansatz (Method 2,
+    Section 5.2 of the note, Definition 8): the short-time limit of Method 1,
+    for use when no closed-form digital exists.
 
-        Returns:
-            The residual, broadcast shape of ``s``/``t``.
+    With the similarity profile :math:`\Lambda = \operatorname{erf}` of Lemma 1
+    (:func:`corner_similarity_profile_value_and_derivatives`) and a fixed
+    :math:`C^\infty` cutoff :math:`\chi` in ``s``,
 
-        Raises:
-            ValueError: If ``r`` or ``sigma`` differ from the ones the digital
-                was built with (the omitted digital residual (19) would then
-                be nonzero).
-        """
-        if r != self.r or sigma != self.sigma:
-            raise ValueError(
-                f"SubtractedDigitalCornerExtension.black_scholes_residual: the digital is "
-                f"operator-exact for (r, sigma) = ({self.r}, {self.sigma}) only; got ({r}, {sigma}). "
-                f"Under other coefficients the omitted term (19) of the note is nonzero."
-            )
-        pi_value, d_s_pi, d_ss_pi, d_t_pi = self.terminal_profile.value_and_derivatives(s, t)
-        pi_at_barrier, d_t_pi_at_barrier = self._profile_at_barrier(s, t)
-        h_value = pi_value - pi_at_barrier
-        d_t_h = d_t_pi - d_t_pi_at_barrier
-        return d_t_h + 0.5 * sigma**2 * s**2 * d_ss_pi + r * s * d_s_pi - r * h_value
+    .. math::
+
+        \chi(s) = 1 - \zeta\!\left(\frac{s - B - \delta_0}{\delta_1 - \delta_0}\right),
+        \qquad \chi \equiv 1 \text{ on } \{s - B \le \delta_0\},
+        \quad \chi \equiv 0 \text{ on } \{s - B \ge \delta_1\},
+
+    (:math:`\zeta` the smooth step of :func:`_smoothstep01`), the object evaluates
+
+    .. math::
+
+        g_2(s,t) = E(s,t) + h(s,t), \qquad
+        E = \chi(s)\,\Delta\,\Lambda\big(\xi(s,t)\big), \qquad
+        h(s,t) = \pi(s,t) - \chi(s)\,\pi(B,t),
+
+    so that :math:`\Phi_\theta = g_2 + d_{\partial_pQ}\Psi_\theta` is the enriched
+    estimator (22).  Traces: on :math:`\Sigma_T`, :math:`\Lambda \to 1` so
+    :math:`E(s,T) = \chi(s)\Delta` and :math:`h(s,T) = (K-s)^+ - \chi(s)\Delta = g - E`,
+    the residual terminal datum of Definition 8; on :math:`\Sigma_B`,
+    :math:`\xi = 0` gives :math:`E = 0` and :math:`\chi(B) = 1` gives :math:`h = 0`.
+    The cutoff depends on ``s`` only -- the same simplification of the
+    :math:`\ell^1` ball as the time-independent :math:`h_\varepsilon` of
+    :func:`make_corner_regularised_extension` -- which is what allows the
+    barrier trace of :math:`h` to hold for every ``t``; its transition strip
+    :math:`\{\delta_0 < s-B < \delta_1\}` is at distance :math:`\delta_0 > 0`
+    from the corner, as the commutator estimate of Proposition 5 requires.
+
+    **Interior residual.** Unlike the digital, :math:`\Lambda(\xi)` is not
+    annihilated by :math:`\mathcal L^{BS}`: in :math:`y = \ln(s/B)` the operator
+    reads :math:`\partial_t + \tfrac12\sigma^2\partial_{yy} + (r - \tfrac12\sigma^2)\partial_y - r`,
+    the first two terms cancel on :math:`\Lambda` and
+    :math:`\mathcal L^{BS}\Lambda = (r - \tfrac12\sigma^2)\,\partial_y\Lambda - r\Lambda`
+    with :math:`\partial_y\Lambda = \Lambda'(\xi)/(\sigma\sqrt{2\tau})`: of order
+    :math:`\tau^{-1/2}e^{-\xi^2}`, unbounded at the corner but square-integrable
+    on :math:`Q` (Proposition 5), and with no small parameter (Remark 10).  The
+    residual of :math:`E` is assembled in closed form from the profile's
+    derivatives and the cutoff product rule; :math:`\mathcal L^{BS}h` as in
+    the base class.  The Proposition-5 bound is on :math:`L^2(Q)`, not
+    :math:`L^\infty`: the training loss samples this residual and is expected
+    to stay above the exact-subtraction one.
+
+    Args:
+        K: Strike.
+        B: Knock-out barrier, ``0 < B < K``.
+        r: Risk-free rate.
+        sigma: Volatility.
+        T: Maturity.
+        terminal_profile: The profile :math:`\pi` (see
+            :class:`SubtractedDigitalCornerExtension`).
+        delta0: Inner radius :math:`\delta_0 > 0` of the cutoff, in price units.
+        delta1: Outer radius :math:`\delta_1 > \delta_0`.
+
+    Raises:
+        ValueError: If ``B >= K``, ``B <= 0``, ``T <= 0``, ``delta0 <= 0`` or
+            ``delta1 <= delta0``.
+    """
+
+    def __init__(
+        self, K: float, B: float, r: float, sigma: float, T: float, terminal_profile,
+        delta0: float, delta1: float,
+    ) -> None:
+        super().__init__(K, B, r, sigma, T, terminal_profile)
+        if delta0 <= 0.0 or delta1 <= delta0:
+            raise ValueError(f"the cutoff radii must satisfy 0 < delta0 < delta1; got {delta0=}, {delta1=}.")
+        self.delta0, self.delta1 = delta0, delta1
+
+    def _cutoff_value_and_derivatives(self, s: torch.Tensor):
+        width = self.delta1 - self.delta0
+        ratio = (s - self.B - self.delta0) / width
+        zeta, zeta_prime, zeta_double_prime = _smoothstep01_value_and_derivatives(ratio)
+        return 1.0 - zeta, -zeta_prime / width, -zeta_double_prime / width**2
+
+    def _similarity_pieces(self, s: torch.Tensor, t: torch.Tensor):
+        broadcast_shape = torch.broadcast_shapes(s.shape, torch.as_tensor(t).shape)
+        s_b = s.expand(broadcast_shape)
+        value, d_s, d_ss, d_t = corner_similarity_profile_value_and_derivatives(
+            s_b, self.B, self.sigma, torch.as_tensor(self.T - t).expand(broadcast_shape),
+        )
+        chi, d_s_chi, d_ss_chi = self._cutoff_value_and_derivatives(s_b)
+        return s_b, value, d_s, d_ss, d_t, chi, d_s_chi, d_ss_chi
+
+    def _singular_value_and_derivatives(self, s: torch.Tensor, t: torch.Tensor):
+        _, value, d_s, d_ss, d_t, chi, d_s_chi, d_ss_chi = self._similarity_pieces(s, t)
+        return (
+            self.jump * chi * value,
+            self.jump * (d_s_chi * value + chi * d_s),
+            self.jump * (d_ss_chi * value + 2.0 * d_s_chi * d_s + chi * d_ss),
+            self.jump * chi * d_t,
+        )
+
+    def _singular_residual(self, s: torch.Tensor, t: torch.Tensor, r: float, sigma: float) -> torch.Tensor:
+        r""":math:`\mathcal L^{BS}E` in closed form (product rule on :math:`\chi\Delta\Lambda`)."""
+        value, d_s, d_ss, d_t = self._singular_value_and_derivatives(s, t)
+        s_b = s.expand(value.shape)
+        return d_t + 0.5 * sigma**2 * s_b**2 * d_ss + r * s_b * d_s - r * value
+
+    def enrichment(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        r"""The enrichment :math:`E = \chi\Delta\Lambda(\xi)` alone."""
+        return self.singular_part(s, t)
+
+
+def _build_terminal_profile(
+    K: float, r: float, sigma: float, T: float, terminal_profile: str,
+    comparison_volatility: float | None, y_lo: float | None, y_hi: float | None,
+    n_quad: int, split_profile: str,
+):
+    """The terminal profile object of a named profile (shared by the two builders)."""
+    if terminal_profile not in SUBTRACTION_TERMINAL_PROFILES:
+        raise ValueError(
+            f"terminal_profile must be one of {SUBTRACTION_TERMINAL_PROFILES}; got {terminal_profile!r}."
+        )
+    if terminal_profile == "raw":
+        return RawPutPayoffTerminalProfile(K)
+    if terminal_profile == "black_scholes":
+        return BlackScholesPutTerminalProfile(K, r, sigma, T)
+    resolved_comparison_volatility = comparison_volatility if comparison_volatility is not None else sigma
+    if split_profile not in SPLIT_PROFILE_ROUTES:
+        raise ValueError(f"split_profile must be one of {SPLIT_PROFILE_ROUTES}; got {split_profile!r}.")
+    if split_profile == "closed_form":
+        split_field = PutPayoffGaussianSemigroupExtensionField(
+            K=K, terminal_time=T, comparison_volatility=resolved_comparison_volatility,
+            name="barrier_resolved_corner_split_semigroup_closed_form",
+        )
+    else:
+        if y_lo is None or y_hi is None:
+            raise ValueError("split_profile='quadrature' requires the log-price quadrature support y_lo/y_hi.")
+
+        def terminal_datum_on_the_log_price_line(x: torch.Tensor) -> torch.Tensor:
+            return payoff_put(torch.exp(x), K)
+
+        split_field = GaussianSemigroupExtensionField(
+            terminal_datum_on_the_log_price_line, terminal_time=T,
+            comparison_volatility=resolved_comparison_volatility,
+            y_lo=y_lo, y_hi=y_hi, n_quad=n_quad, name="barrier_resolved_corner_split_semigroup",
+        )
+    return SplitSemigroupPutTerminalProfile(split_field)
+
+
+def make_corner_enriched_extension(
+    K: float,
+    B: float,
+    r: float,
+    sigma: float,
+    T: float,
+    terminal_profile: str = "black_scholes",
+    delta0: float = 0.1,
+    delta1: float = 0.3,
+    comparison_volatility: float | None = None,
+    y_lo: float | None = None,
+    y_hi: float | None = None,
+    n_quad: int = 8000,
+    split_profile: str = "closed_form",
+) -> CornerEnrichedExtension:
+    r"""Build the corner-enriched extension :math:`g_2 = \chi\Delta\Lambda(\xi) + \pi - \chi\,\pi(B,\cdot)`
+    of :class:`CornerEnrichedExtension` for a named terminal profile.
+
+    Args:
+        K, B, r, sigma, T: Contract, as in :func:`make_subtracted_digital_extension`.
+        terminal_profile: One of :data:`SUBTRACTION_TERMINAL_PROFILES`.
+        delta0, delta1: Cutoff radii, ``0 < delta0 < delta1`` (price units).
+        comparison_volatility, y_lo, y_hi, n_quad, split_profile: Split-profile
+            options, as in :func:`make_subtracted_digital_extension`.
+
+    Returns:
+        The extension object.
+    """
+    profile = _build_terminal_profile(
+        K, r, sigma, T, terminal_profile, comparison_volatility, y_lo, y_hi, n_quad, split_profile,
+    )
+    return CornerEnrichedExtension(K, B, r, sigma, T, profile, delta0, delta1)
 
 
 def make_subtracted_digital_extension(
@@ -1809,34 +2110,7 @@ def make_subtracted_digital_extension(
             :class:`SubtractedDigitalCornerExtension` and of the profile
             fields.
     """
-    if terminal_profile not in SUBTRACTION_TERMINAL_PROFILES:
-        raise ValueError(
-            f"terminal_profile must be one of {SUBTRACTION_TERMINAL_PROFILES}; got {terminal_profile!r}."
-        )
-    if terminal_profile == "raw":
-        profile = RawPutPayoffTerminalProfile(K)
-    elif terminal_profile == "black_scholes":
-        profile = BlackScholesPutTerminalProfile(K, r, sigma, T)
-    else:
-        resolved_comparison_volatility = comparison_volatility if comparison_volatility is not None else sigma
-        if split_profile not in SPLIT_PROFILE_ROUTES:
-            raise ValueError(f"split_profile must be one of {SPLIT_PROFILE_ROUTES}; got {split_profile!r}.")
-        if split_profile == "closed_form":
-            split_field = PutPayoffGaussianSemigroupExtensionField(
-                K=K, terminal_time=T, comparison_volatility=resolved_comparison_volatility,
-                name="barrier_subtraction_split_semigroup_closed_form",
-            )
-        else:
-            if y_lo is None or y_hi is None:
-                raise ValueError("split_profile='quadrature' requires the log-price quadrature support y_lo/y_hi.")
-
-            def terminal_datum_on_the_log_price_line(x: torch.Tensor) -> torch.Tensor:
-                return payoff_put(torch.exp(x), K)
-
-            split_field = GaussianSemigroupExtensionField(
-                terminal_datum_on_the_log_price_line, terminal_time=T,
-                comparison_volatility=resolved_comparison_volatility,
-                y_lo=y_lo, y_hi=y_hi, n_quad=n_quad, name="barrier_subtraction_split_semigroup",
-            )
-        profile = SplitSemigroupPutTerminalProfile(split_field)
+    profile = _build_terminal_profile(
+        K, r, sigma, T, terminal_profile, comparison_volatility, y_lo, y_hi, n_quad, split_profile,
+    )
     return SubtractedDigitalCornerExtension(K, B, r, sigma, T, profile)
