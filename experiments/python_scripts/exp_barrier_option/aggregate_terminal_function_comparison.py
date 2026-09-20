@@ -410,7 +410,11 @@ def write_budget_comparison(aggregated: dict, other_summary_path: Path, metrics:
 
 def plot_comparison(aggregated: dict, path: Path, iters: int, epsilon: float) -> None:
     configurations = list(aggregated)
-    fig, axes = plt.subplots(1, len(METRIC_PANELS), figsize=(4.2 * len(METRIC_PANELS), 4.8))
+    # Panel width grows with the number of configurations so the rotated
+    # multi-line tick labels do not overlap (six configurations once the
+    # analytic corner treatments are in the comparison).
+    panel_width = max(4.2, 1.15 * len(configurations))
+    fig, axes = plt.subplots(1, len(METRIC_PANELS), figsize=(panel_width * len(METRIC_PANELS), 5.2))
     positions = range(len(configurations))
     for ax, (metric, title, scale) in zip(axes, METRIC_PANELS):
         for position, configuration in zip(positions, configurations):
@@ -427,7 +431,7 @@ def plot_comparison(aggregated: dict, path: Path, iters: int, epsilon: float) ->
                 c, {seed: {"corner_excluded_from_collocation": flag}
                     for seed, flag in aggregated[c]["corner_excluded_from_collocation"].items()})
              for c in configurations],
-            rotation=30, ha="right", fontsize=7,
+            rotation=35, ha="right", fontsize=6,
         )
         ax.set_title(title, fontsize=8)
         ax.grid(True, which="both", alpha=0.3)
@@ -439,7 +443,7 @@ def plot_comparison(aggregated: dict, path: Path, iters: int, epsilon: float) ->
     )
     # Explicit margins: the rotated two-line tick labels and the formula box
     # below them need a reserved bottom band that tight_layout does not provide.
-    fig.subplots_adjust(left=0.08, right=0.99, top=0.82, bottom=0.42, wspace=0.32)
+    fig.subplots_adjust(left=0.06, right=0.99, top=0.84, bottom=0.44, wspace=0.28)
     finalize_figure(fig, path, formula=FORMULA_TEXT, axes=list(axes), formula_fontsize=6.5)
 
 

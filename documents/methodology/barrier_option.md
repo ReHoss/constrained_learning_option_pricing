@@ -764,20 +764,77 @@ the Black-Scholes profile at its best $\varepsilon_0$).
 | Decomposition figure | `figures/subtraction_decomposition.png` ($\Delta V_{DOD}$, $h$, $g_1u_\theta$, $\Phi_\theta$, $V_{DO}$ at $t\in\{0,0.5,0.9\}$) |
 | Aggregation and Greeks | `aggregate_terminal_function_comparison.py`, `evaluate_greeks_no_corner.py`: configurations `subtraction_{raw,blackscholes,split}`, collected regardless of `--epsilon` and of the corner-exclusion filter, labelled "[corner included in collocation]" in the figures |
 
-### 15.4 Batch launched (2026-09-20) — not yet measured
+### 15.4 Measured (50000 iterations, 5 seeds per configuration, corner included in collocation)
 
-`bash_scripts/cluster/cmap/joblist_50k_subtraction_republique.txt` (Black-Scholes and split
-profiles, 5 seeds each, 4 jobs $\times$ 4 threads) and `joblist_50k_subtraction_orleans.txt`
-(raw-payoff baseline, 5 seeds, 5 jobs $\times$ 4 threads): 50000 iterations, $n_f = 4096$,
-float32, corner included in collocation, no far-field condition, same seeds and thread count as
-the canonical batch of section 11.1. Both hosts are AVX2 and bit-identical for this pilot.
-Measured cost at start: $0.05$ s per iteration on both hosts, against $0.083$--$0.119$ s for the
-smoothing runs of section 14 (the corner-rejection pass and the cutoff derivatives are absent).
+Batch: `bash_scripts/cluster/cmap/joblist_50k_subtraction_republique.txt` (Black-Scholes and
+split profiles, `republique`, 4 jobs $\times$ 4 threads) and `joblist_50k_subtraction_orleans.txt`
+(raw-payoff baseline, `porte-d-orleans`, 5 jobs $\times$ 4 threads), launched 2026-09-20 20:17,
+finished 22:18; $n_f = 4096$, float32, no far-field condition, seeds 0--4, the same seeds and
+thread count as the canonical smoothing batch of section 11.1. Both hosts are AVX2 and
+bit-identical for this pilot. Cost: $0.050$--$0.051$ s per iteration for the Black-Scholes and
+split profiles and $0.057$--$0.063$ s for the raw profile (measured; $2510$--$3130$ s per run),
+against $0.083$--$0.119$ s for the smoothing runs of section 14.
 
-The comparison to be read once the runs finish: $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$,
-$\mathrm{rel}_{L^2}(\Omega)$, the per-band errors of section 11.2 (in particular on
-$[0.6, 0.7]$, the former transition band), and the Greeks at the strike, against the smoothing
-runs of section 11.1. Two differences must be kept in mind when reading it: the smoothing runs
-excluded the corner window from collocation and the subtraction runs include it (labelled on
-the figures), and the smoothing runs have a bandwidth $\varepsilon = 0.1$ while the subtraction
-runs have none. Results: — (not measured).
+Aggregation: `data/aggregate_terminal_function_comparison/20260921_subtraction_vs_smoothing_iters50000/`
+(`--hosts republique porte-d-orleans --s-band-edges 0.6 0.7 1 2 3`, `table.md`,
+`model_based_diagnostics/s_band_errors.md`); Greeks:
+`data/evaluate_greeks_no_corner/20260921_subtraction_vs_smoothing_iters50000/`. The smoothing
+rows below are the canonical runs of section 11.1 (corner excluded from collocation,
+$\varepsilon = 0.1$), re-read by the same aggregation; the subtraction rows include the corner.
+Medians over 5 seeds, [min, max] in `table.md`.
+
+| Configuration | $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$ | $\mathrm{rel}_{L^2}(\Omega)$ | $\mathrm{rel}_{L^2}(N_{0.1})$ | best loss |
+|---|---|---|---|---|
+| Smoothing, Black-Scholes, ordinary route | $1.22\times10^{-1}$ | $1.86\times10^{-1}$ | $5.84\times10^{-1}$ | $3.7\times10^{-5}$ |
+| Smoothing, Black-Scholes, two-term route | $1.24\times10^{-1}$ | $1.83\times10^{-1}$ | $5.96\times10^{-1}$ | $1.7\times10^{-5}$ |
+| Smoothing, split-semigroup | $1.27\times10^{-1}$ | $1.91\times10^{-1}$ | $5.86\times10^{-1}$ | $1.3\times10^{-5}$ |
+| Exact subtraction, raw payoff | $4.55\times10^{-1}$ | $4.42\times10^{-1}$ | $5.4\times10^{-5}$ | $2.6\times10^{-7}$ |
+| Exact subtraction, Black-Scholes | $4.69\times10^{-3}$ [$2.1\times10^{-3}$, $1.4\times10^{-2}$] | $4.55\times10^{-3}$ | $4.3\times10^{-5}$ | $1.7\times10^{-8}$ |
+| Exact subtraction, split-semigroup | $3.97\times10^{-3}$ [$9.4\times10^{-4}$, $5.2\times10^{-3}$] | $3.85\times10^{-3}$ | $4.1\times10^{-5}$ | $1.1\times10^{-8}$ |
+
+Per band of $s$ (all $t$, $N_{0.1}$ removed, medians; `s_band_errors.md`):
+
+| Configuration | $[0.6, 0.7]$ | $[0.7, 1]$ | $[1, 2]$ | $[2, s_\infty]$ (abs. $L^2$) |
+|---|---|---|---|---|
+| Smoothing, three configurations | $0.20$--$0.22$ | $0.075$--$0.083$ | $0.049$--$0.059$ | $1.5$--$6.4\times10^{-3}$ |
+| Exact subtraction, raw payoff | $4.0\times10^{-2}$ | $0.34$ | $1.29$ | $7.8\times10^{-4}$ |
+| Exact subtraction, Black-Scholes | $1.4\times10^{-4}$ | $1.8\times10^{-4}$ | $1.1\times10^{-3}$ | $3.5\times10^{-4}$ |
+| Exact subtraction, split-semigroup | $1.0\times10^{-4}$ | $1.2\times10^{-4}$ | $5.2\times10^{-4}$ | $3.0\times10^{-4}$ |
+
+Greeks at the strike (`greeks_no_corner_table.md`, medians over 5 seeds of the relative error;
+the smoothing values are those of section 11.1):
+
+| $t$ | $\mathrm{err}_{\mathrm{rel}}\,\Delta$, smoothing $\to$ subtraction (Black-Scholes / split) | $\mathrm{err}_{\mathrm{rel}}\,\Gamma$, smoothing $\to$ subtraction |
+|---|---|---|
+| $0$ | $0.10$--$0.14 \to 1.5\times10^{-4}$ / $3.0\times10^{-4}$ | $0.017$--$0.067 \to 1.5\times10^{-3}$ / $3.0\times10^{-3}$ |
+| $0.5$ | $0.079$--$0.084 \to 2.4\times10^{-4}$ / $2.1\times10^{-4}$ | $0.24$--$0.25 \to 1.1\times10^{-3}$ / $9.7\times10^{-4}$ |
+| $0.9$ | $4\times10^{-4}$--$2.6\times10^{-3} \to 7.9\times10^{-5}$ / $1.9\times10^{-4}$ | $1.1$--$4.2\times10^{-3} \to 8.3\times10^{-5}$ / $5.9\times10^{-4}$ |
+
+**Reading.** With the Black-Scholes or the split profile, the exact subtraction lowers the
+comparison metric by a factor of $26$ to $32$ (medians; the across-seed ranges,
+$[2.1\times10^{-3}, 1.4\times10^{-2}]$ and $[9.4\times10^{-4}, 5.2\times10^{-3}]$ against
+$[0.083, 0.31]$, do not overlap), the error in the former transition band $[0.6, 0.7]$ by a
+factor of about $1400$, and the best interior loss by a factor of about $1000$. The corner
+window, on which nothing was enforced before, now has a relative error of $4\times10^{-5}$ with
+the corner included in collocation. The floor of section 13 is therefore removed with the
+smoothing scale, which is the prediction of Doc A's Proposition 4 and of section 13's
+attribution of the floor to the switching factor. What remains is the far-field component of
+section 12: on $[2, s_\infty]$ the absolute error ($3.0$--$3.5\times10^{-4}$) is $15$ to $30$ times
+the one on the three inner bands, and it is the largest share of the residual error; the
+far-field Dirichlet condition of section 12 (`--far-field-dirichlet`, compatible with this
+ansatz) is the next step and has not been measured with the subtraction yet. The Delta at the
+strike is reproduced to $1$--$3\times10^{-4}$ at every time and the Gamma to $10^{-3}$ or better
+away from maturity, against $0.08$ and $0.24$ at $t = 0.5$ for the smoothing runs.
+
+The raw-payoff profile is the negative control: with the corner resolved exactly, the error is
+the strike singularity's alone, $0.34$ on $[0.7, 1]$ and $1.29$ on $[1, 2]$ (the extension
+$h = (K-s)^+ - \Delta$ has a first-derivative discontinuity at $s = K$ and its residual
+$-rs\mathbf 1_{s<K} - rh$ a jump there), while the corner band $[0.6, 0.7]$ is at $4\times10^{-2}$;
+its Greeks at the strike are meaningless (the profile's one-sided derivative is evaluated exactly
+at the kink). The two constructions that treat the strike singularity remain indistinguishable
+at $n = 5$ (overlapping ranges), as in section 11.
+
+**Comparability caveat.** The smoothing runs exclude the $\ell^1$ corner window from collocation
+and have $\varepsilon = 0.1$; the subtraction runs include the corner and have no bandwidth. The
+comparison is between the two treatments as each is meant to be run, not a one-factor ablation;
+the figure labels the difference.
