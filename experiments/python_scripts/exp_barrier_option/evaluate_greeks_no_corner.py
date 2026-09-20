@@ -100,12 +100,12 @@ DEFAULT_TIMES = [0.0, 0.25, 0.5, 0.75, 0.9]
 ASYMPTOTIC_TAU_GRID = [1e-4, 3e-4, 1e-3, 3e-3, 1e-2]
 
 FORMULA_TEXT = (
-    r"$\Phi_\theta=h_\varepsilon+g_1u_\theta$, $g_1=(T-t)(s-B)$;  "
+    r"$\Phi_\theta=h_\varepsilon+g_1u_\theta$ (smoothing) or $\Delta V_{DOD}+h+g_1u_\theta$ (exact subtraction), $g_1=(T-t)(s-B)$;  "
     r"$\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)=|\partial_{ss}\Phi_\theta(K,t)-\partial_{ss}V_{DO}(K,t)|"
     r"\,/\,|\partial_{ss}V_{DO}(K,t)|$, $\tau=T-t$."
     "\n"
     r"$\partial_{ss}(g_1u_\theta)$: two nested autograd passes on the frozen network;  "
-    r"$\partial_{ss}h_\varepsilon$: analytic (split) or autograd with gradients enabled (Black-Scholes);  "
+    r"$\partial_{ss}h_\varepsilon$: analytic (split, exact subtraction) or autograd with gradients enabled (Black-Scholes);  "
     r"$\partial_{ss}V_{DO}$: sympy.diff of the Reiner-Rubinstein closed form, evaluated with mpmath."
     "\n"
     "Solid line: median over master seeds; faint points: individual seeds."
@@ -434,7 +434,9 @@ def main() -> None:
         sanity["phase2_full_model_vs_decomposed_max_rel"][configuration] = {}
         for seed in sorted(runs[configuration]):
             run_dir = Path(runs[configuration][seed]["run_dir"])
-            model = load_trained_model(run_dir, args.epsilon)
+            # Exact-subtraction runs carry the placeholder epsilon 0 in their
+            # file names (see collect_runs); every summary records its own.
+            model = load_trained_model(run_dir, runs[configuration][seed].get("epsilon", args.epsilon))
             barrier_residual = barrier_condition_residual(model, B, T)
             sanity["barrier_condition_max_abs"][configuration][seed] = barrier_residual
             worst_phase2 = 0.0

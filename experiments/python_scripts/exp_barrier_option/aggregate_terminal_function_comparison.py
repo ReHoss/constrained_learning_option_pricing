@@ -144,7 +144,30 @@ CONFIGURATION_LABELS: dict[str, str] = {
     "blackscholes": "Black-Scholes put price\n(ordinary autograd route)",
     "blackscholes_analyticres": "Black-Scholes put price\n(two-term analytic-residual route)",
     "split": "Split-semigroup profile",
+    # Exact-subtraction ansatz (Method 1, Section 5.1 of the note): no corner
+    # layer, the run-directory epsilon is the placeholder 0.
+    "subtraction_raw": "Exact subtraction,\nraw payoff profile",
+    "subtraction_blackscholes": "Exact subtraction,\nBlack-Scholes profile",
+    "subtraction_split": "Exact subtraction,\nsplit-semigroup profile",
 }
+
+
+def is_subtraction_configuration(configuration: str) -> bool:
+    return configuration.startswith("subtraction_")
+
+
+def configuration_tick_label(configuration: str, per_seed: dict) -> str:
+    """Figure label of a configuration, annotated with the corner treatment of
+    its runs when they were trained with the corner INCLUDED in collocation
+    (the smoothing runs of the canonical comparison exclude it): a comparison
+    across different training sets must be labelled as such."""
+    label = CONFIGURATION_LABELS[configuration]
+    corner_flags = {bool(s.get("corner_excluded_from_collocation")) for s in per_seed.values()}
+    if corner_flags == {False}:
+        label += "\n[corner included in collocation]"
+    elif corner_flags == {True, False}:
+        label += "\n[mixed corner exclusion]"
+    return label
 
 METRIC_PANELS: list[tuple[str, str, str]] = [
     ("rel_l2_outside_corner", "Relative $L^2$ error outside the corner window\n(comparison metric)", "log"),
@@ -178,6 +201,12 @@ def configuration_key_from_payoff_tag(payoff_tag: str) -> str:
         return "blackscholes_analyticres"
     if payoff_tag.startswith("_split"):
         return "split"
+    if payoff_tag.startswith("_subtraction_raw"):
+        return "subtraction_raw"
+    if payoff_tag.startswith("_subtraction_blackscholes"):
+        return "subtraction_blackscholes"
+    if payoff_tag.startswith("_subtraction_split"):
+        return "subtraction_split"
     raise ValueError(f"unrecognised payoff tag {payoff_tag!r}")
 
 
@@ -206,6 +235,14 @@ def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: b
     the joblists under bash_scripts/cluster/cmap/). When several run
     directories share a configuration and a seed, the most recent timestamp
     is kept and the others are reported.
+
+    Exact-subtraction runs (``_subtraction_<profile>`` tags) have no corner
+    layer: their directory epsilon is the placeholder ``0`` and the corner is
+    ordinarily included in their collocation. They are therefore collected
+    regardless of ``epsilon`` and of ``require_nocorner`` (both filters act on
+    the smoothing runs only), and each summary records its own ``epsilon`` so
+    the model loaders use the right file name. The figures label such
+    configurations with their corner treatment.
     """
     runs: dict[str, dict[int, dict]] = defaultdict(dict)
     for run_dir in sorted(base_dir.iterdir()):
@@ -214,10 +251,15 @@ def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: b
         match = RUN_DIRECTORY_PATTERN.match(run_dir.name)
         if match is None:
             continue
-        if int(match["iters"]) != iters or float(match["eps"]) != epsilon:
+        configuration = configuration_key_from_payoff_tag(match["payoff_tag"])
+        subtraction = is_subtraction_configuration(configuration)
+        run_epsilon = float(match["eps"])
+        if int(match["iters"]) != iters:
+            continue
+        if not subtraction and run_epsilon != epsilon:
             continue
         corner_excluded = match["nocorner"] is not None
-        if require_nocorner and not corner_excluded:
+        if require_nocorner and not corner_excluded and not subtraction:
             logger.info(f"  skipping {run_dir.name}: corner not excluded from collocation")
             continue
         has_far_field = match["farfield"] is not None
@@ -225,11 +267,10 @@ def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: b
             logger.info(f"  skipping {run_dir.name}: far-field Dirichlet {'present' if has_far_field else 'absent'}, "
                         f"--far-field {far_field}")
             continue
-        summary_path = run_dir / f"summary_eps{epsilon:g}.yaml"
+        summary_path = run_dir / f"summary_eps{run_epsilon:g}.yaml"
         if not summary_path.exists():
             logger.warning(f"  skipping {run_dir.name}: no {summary_path.name} (run incomplete?)")
             continue
-        configuration = configuration_key_from_payoff_tag(match["payoff_tag"])
         seed = int(match["seed"])
         host = training_host_of_run(run_dir)
         if hosts is not None and (host or "unknown") not in hosts:
@@ -238,6 +279,7 @@ def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: b
         with open(summary_path) as f:
             summary = yaml.safe_load(f)
         summary["run_dir"] = str(run_dir)
+        summary["epsilon"] = run_epsilon
         summary["timestamp"] = match["timestamp"]
         summary["corner_excluded_from_collocation"] = corner_excluded
         summary["training_host"] = host
@@ -268,6 +310,8 @@ def aggregate(runs: dict[str, dict[int, dict]], metrics: list[str]) -> dict:
             "seeds": sorted(per_seed),
             "runs": {seed: per_seed[seed]["run_dir"] for seed in sorted(per_seed)},
             "training_hosts": {seed: per_seed[seed].get("training_host") for seed in sorted(per_seed)},
+            "corner_excluded_from_collocation": {
+                seed: per_seed[seed].get("corner_excluded_from_collocation") for seed in sorted(per_seed)},
             "metrics": {},
         }
         for metric in metrics:
@@ -366,13 +410,19 @@ def plot_comparison(aggregated: dict, path: Path, iters: int, epsilon: float) ->
                            edgecolor="black", zorder=3)
         ax.set_yscale(scale)
         ax.set_xticks(list(positions))
-        ax.set_xticklabels([CONFIGURATION_LABELS[c] for c in configurations], rotation=30, ha="right", fontsize=7)
+        ax.set_xticklabels(
+            [configuration_tick_label(
+                c, {seed: {"corner_excluded_from_collocation": flag}
+                    for seed, flag in aggregated[c]["corner_excluded_from_collocation"].items()})
+             for c in configurations],
+            rotation=30, ha="right", fontsize=7,
+        )
         ax.set_title(title, fontsize=8)
         ax.grid(True, which="both", alpha=0.3)
     axes[0].set_ylabel("Metric value")
     fig.suptitle(
         f"Down-and-out put — terminal-function comparison, {iters} iterations, "
-        f"$\\varepsilon={epsilon:g}$, corner window excluded from collocation",
+        f"$\\varepsilon={epsilon:g}$ for the smoothing runs (corner excluded from collocation unless labelled)",
         fontsize=10,
     )
     # Explicit margins: the rotated two-line tick labels and the formula box
@@ -514,7 +564,7 @@ def model_based_diagnostics(runs: dict[str, dict[int, dict]], epsilon: float, ba
         sweep[configuration], band[configuration], s_bands[configuration] = {}, {}, {}
         for seed in sorted(runs[configuration]):
             run_dir = Path(runs[configuration][seed]["run_dir"])
-            grid = evaluate_run_on_grid(run_dir, epsilon)
+            grid = evaluate_run_on_grid(run_dir, runs[configuration][seed].get("epsilon", epsilon))
             torch.save({k: v for k, v in grid.items() if k not in ("ss", "tt")}, grids_dir / f"{run_dir.name}.pt")
             sweep[configuration][seed] = window_shape_sweep_for_run(grid)
             band[configuration][seed] = band_network_contribution_for_run(grid, band_lo, band_hi)
