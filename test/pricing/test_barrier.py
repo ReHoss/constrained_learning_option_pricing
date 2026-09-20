@@ -32,8 +32,16 @@ from learning_option_pricing.pricing.barrier import (
     mangasarian_smoothed_put_payoff,
     reiner_rubinstein_down_and_out_put,
     reiner_rubinstein_down_and_out_put_gamma,
+    down_and_out_digital_price,
+    down_and_out_digital_price_and_derivatives,
+    make_subtracted_digital_extension,
+    SubtractedDigitalCornerExtension,
+    SUBTRACTION_TERMINAL_PROFILES,
+    RawPutPayoffTerminalProfile,
+    BlackScholesPutTerminalProfile,
+    SplitSemigroupPutTerminalProfile,
 )
-from learning_option_pricing.pricing.terminal import black_scholes_put, payoff_put
+from learning_option_pricing.pricing.terminal import black_scholes_put, bsm_operator, payoff_put
 
 
 # ---------------------------------------------------------------------------
@@ -895,3 +903,295 @@ class TestExactTerminalTrace:
         assert torch.isfinite(grad).all()
         _, delta = g2._european_put_price_and_delta(s.detach(), t)
         assert torch.equal(delta, -(s.detach() < self.K).to(delta.dtype))
+
+
+# ---------------------------------------------------------------------------
+# down_and_out_digital_price  (equation (15) of the note, Method 1 / Section 5.1)
+# ---------------------------------------------------------------------------
+
+class TestDownAndOutDigitalPrice:
+    """The digital reproduces the two data of a unit-jump knock-out claim and is
+    annihilated by the constant-coefficient operator (Propositions 3 and 4)."""
+    K, B, r, sigma, T = 1.0, 0.6, 0.03, 0.3, 1.0
+
+    def _interior(self, requires_grad: bool = False):
+        s = torch.linspace(self.B + 0.005, 3.0, 600, dtype=torch.float64)
+        t = torch.linspace(0.0, self.T - 1e-3, 600, dtype=torch.float64)
+        ss, tt = torch.meshgrid(s, t, indexing="ij")
+        ss = ss.reshape(-1).clone().requires_grad_(requires_grad)
+        tt = tt.reshape(-1).clone().requires_grad_(requires_grad)
+        return ss, tt
+
+    def test_values_in_unit_interval(self) -> None:
+        ss, tt = self._interior()
+        price = down_and_out_digital_price(ss, self.B, self.r, self.sigma, self.T - tt)
+        assert float(price.min()) >= 0.0 and float(price.max()) <= 1.0
+
+    def test_zero_on_the_barrier_face(self) -> None:
+        t = torch.linspace(0.0, self.T, 101, dtype=torch.float64)
+        s = torch.full_like(t, self.B)
+        assert torch.equal(down_and_out_digital_price(s, self.B, self.r, self.sigma, self.T - t), torch.zeros_like(t))
+
+    def test_zero_below_the_barrier(self) -> None:
+        s = torch.linspace(0.1, self.B, 50, dtype=torch.float64)
+        assert torch.equal(down_and_out_digital_price(s, self.B, self.r, self.sigma, torch.tensor(0.5)), torch.zeros_like(s))
+
+    def test_unit_indicator_on_the_terminal_face(self) -> None:
+        """V_DOD(s, T) = 1_{s > B} exactly (the closed form's limit, returned at tau = 0)."""
+        s = torch.linspace(0.3, 3.0, 901, dtype=torch.float64)
+        price = down_and_out_digital_price(s, self.B, self.r, self.sigma, torch.zeros_like(s))
+        assert torch.equal(price, (s > self.B).to(price.dtype))
+
+    def test_continuous_at_maturity_away_from_the_corner(self) -> None:
+        """For s - B fixed, V_DOD = e^{-r tau} + o(1) as tau -> 0 (Gaussian tails on
+        both terms leave only the discount factor)."""
+        s = torch.linspace(self.B + 0.05, 3.0, 300, dtype=torch.float64)
+        tau = 1e-5
+        gap = (math.exp(-self.r * tau)
+               - down_and_out_digital_price(s, self.B, self.r, self.sigma, torch.full_like(s, tau))).abs().max()
+        assert float(gap) < 1e-12
+
+    def test_annihilated_by_the_black_scholes_operator(self) -> None:
+        """L^BS V_DOD = 0 on Q, checked by float64 autograd on a 600 x 600 grid
+        (Proposition 4: the subtracted singular part contributes exactly zero
+        residual)."""
+        ss, tt = self._interior(requires_grad=True)
+        price = down_and_out_digital_price(ss, self.B, self.r, self.sigma, self.T - tt)
+        residual = bsm_operator(price, ss, tt, self.r, 0.0, self.sigma)
+        assert float(residual.abs().max()) < 1e-10
+
+    def test_closed_form_derivatives_match_autograd(self) -> None:
+        ss, tt = self._interior(requires_grad=True)
+        price = down_and_out_digital_price(ss, self.B, self.r, self.sigma, self.T - tt)
+        delta_ag = torch.autograd.grad(price.sum(), ss, create_graph=True)[0]
+        gamma_ag = torch.autograd.grad(delta_ag.sum(), ss, retain_graph=True)[0]
+        theta_ag = torch.autograd.grad(price.sum(), tt)[0]
+        value, delta, gamma, theta = down_and_out_digital_price_and_derivatives(
+            ss.detach(), self.B, self.r, self.sigma, self.T - tt.detach(),
+        )
+        assert torch.allclose(value, price.detach(), atol=1e-14)
+        assert torch.allclose(delta, delta_ag.detach(), atol=1e-10)
+        assert torch.allclose(gamma, gamma_ag.detach(), atol=1e-8, rtol=1e-8)
+        assert torch.allclose(theta, theta_ag.detach(), atol=1e-10)
+
+    def test_derivatives_vanish_at_maturity_and_below_the_barrier(self) -> None:
+        s = torch.linspace(0.3, 3.0, 271, dtype=torch.float64)
+        _, delta, gamma, theta = down_and_out_digital_price_and_derivatives(
+            s, self.B, self.r, self.sigma, torch.zeros_like(s),
+        )
+        for derivative in (delta, gamma, theta):
+            assert torch.equal(derivative, torch.zeros_like(s))
+        _, delta, gamma, theta = down_and_out_digital_price_and_derivatives(
+            s, self.B, self.r, self.sigma, torch.tensor(0.5, dtype=torch.float64),
+        )
+        below = s <= self.B
+        for derivative in (delta, gamma, theta):
+            assert torch.equal(derivative[below], torch.zeros_like(s[below]))
+
+    def test_corner_gamma_is_unbounded_as_t_to_T(self) -> None:
+        """Along a path of fixed similarity variable xi = ln(s/B)/(sigma sqrt(2 tau))
+        (here s - B = sqrt(tau)) the digital's curvature grows like 1/tau as
+        tau -> 0: it reproduces the jump. This is the singularity the two-term
+        residual assembly keeps out of autograd."""
+        gammas = [abs(float(down_and_out_digital_price_and_derivatives(
+            torch.tensor([self.B + math.sqrt(tau)], dtype=torch.float64),
+            self.B, self.r, self.sigma, torch.tensor(tau, dtype=torch.float64))[2]))
+            for tau in (1e-2, 1e-3, 1e-4)]
+        assert gammas[0] < gammas[1] < gammas[2]
+        assert gammas[2] / gammas[1] > 5.0  # about 10 for a 1/tau growth
+
+    def test_rejects_nonpositive_barrier(self) -> None:
+        with pytest.raises(ValueError):
+            down_and_out_digital_price(torch.tensor([1.0]), 0.0, self.r, self.sigma, torch.tensor(0.5))
+
+
+# ---------------------------------------------------------------------------
+# Terminal profiles and SubtractedDigitalCornerExtension  (Definition 7)
+# ---------------------------------------------------------------------------
+
+class TestTerminalProfiles:
+    K, B, r, sigma, T = 1.0, 0.6, 0.03, 0.3, 1.0
+
+    def _profiles(self):
+        return (
+            RawPutPayoffTerminalProfile(self.K),
+            BlackScholesPutTerminalProfile(self.K, self.r, self.sigma, self.T),
+            make_subtracted_digital_extension(self.K, self.B, self.r, self.sigma, self.T, "split").terminal_profile,
+        )
+
+    def test_every_profile_equals_the_payoff_at_maturity(self) -> None:
+        s = torch.linspace(0.3, 3.0, 541, dtype=torch.float64)
+        t = torch.full_like(s, self.T)
+        for profile in self._profiles():
+            value, _, _, _ = profile.value_and_derivatives(s, t)
+            assert torch.allclose(value, payoff_put(s, self.K), atol=1e-14), profile.name
+
+    def test_smooth_profiles_derivatives_match_autograd(self) -> None:
+        """Delta, Gamma and theta of the Black-Scholes and split profiles
+        against float64 autograd of their own value."""
+        s = torch.linspace(self.B, 3.0, 400, dtype=torch.float64).requires_grad_(True)
+        t = torch.full_like(s, 0.3).requires_grad_(True)
+        for profile in self._profiles()[1:]:
+            value, delta, gamma, theta = profile.value_and_derivatives(s, t)
+            delta_ag = torch.autograd.grad(value.sum(), s, create_graph=True)[0]
+            gamma_ag = torch.autograd.grad(delta_ag.sum(), s, retain_graph=True)[0]
+            theta_ag = torch.autograd.grad(value.sum(), t)[0]
+            assert torch.allclose(delta, delta_ag, atol=1e-10), profile.name
+            assert torch.allclose(gamma, gamma_ag, atol=1e-8), profile.name
+            assert torch.allclose(theta, theta_ag, atol=1e-10), profile.name
+
+    def test_black_scholes_profile_is_annihilated_by_the_operator(self) -> None:
+        profile = BlackScholesPutTerminalProfile(self.K, self.r, self.sigma, self.T)
+        s = torch.linspace(self.B, 3.0, 400, dtype=torch.float64)
+        t = torch.full_like(s, 0.3)
+        value, delta, gamma, theta = profile.value_and_derivatives(s, t)
+        residual = theta + 0.5 * self.sigma**2 * s**2 * gamma + self.r * s * delta - self.r * value
+        assert float(residual.abs().max()) < 1e-14
+
+    def test_raw_profile_derivatives(self) -> None:
+        profile = RawPutPayoffTerminalProfile(self.K)
+        s = torch.tensor([0.7, 1.5], dtype=torch.float64)
+        value, delta, gamma, theta = profile.value_and_derivatives(s, torch.tensor(0.2, dtype=torch.float64))
+        assert torch.allclose(value, torch.tensor([0.3, 0.0], dtype=torch.float64), atol=1e-15)
+        assert torch.equal(delta, torch.tensor([-1.0, 0.0], dtype=torch.float64))
+        assert torch.equal(gamma, torch.zeros(2, dtype=torch.float64))
+        assert torch.equal(theta, torch.zeros(2, dtype=torch.float64))
+
+
+class TestSubtractedDigitalCornerExtension:
+    """g2 = Delta V_DOD + pi - pi(B, .) reproduces both data exactly with no
+    corner layer, and its closed-form residual and derivatives agree with
+    float64 autograd of its own value."""
+    K, B, r, sigma, T = 1.0, 0.6, 0.03, 0.3, 1.0
+
+    def _extensions(self):
+        return [make_subtracted_digital_extension(self.K, self.B, self.r, self.sigma, self.T, name)
+                for name in SUBTRACTION_TERMINAL_PROFILES]
+
+    def test_profile_names_are_exposed(self) -> None:
+        assert [g2.profile_name for g2 in self._extensions()] == list(SUBTRACTION_TERMINAL_PROFILES)
+
+    def test_terminal_trace_is_the_payoff_exactly(self) -> None:
+        """g2(s, T) = Delta 1_{s>B} + (K-s)^+ - Delta = (K-s)^+ for s > B, with no
+        epsilon layer: the identity holds down to s = B^+."""
+        s = torch.linspace(self.B + 1e-9, 3.0, 1000, dtype=torch.float64)
+        t = torch.full_like(s, self.T)
+        for g2 in self._extensions():
+            assert torch.allclose(g2(s, t), payoff_put(s, self.K), atol=1e-13), g2.profile_name
+
+    def test_barrier_trace_is_zero_for_every_t(self) -> None:
+        """h(B, t) = pi(B, t) - pi(B, t) = 0 and V_DOD(B, t) = 0: the subtraction
+        of pi(B, .) rather than of the constant Delta is what makes this exact
+        for the time-dependent profiles."""
+        t = torch.linspace(0.0, self.T, 201, dtype=torch.float64)
+        s = torch.full_like(t, self.B)
+        for g2 in self._extensions():
+            assert torch.equal(g2(s, t), torch.zeros_like(t)), g2.profile_name
+
+    def test_corner_compatible_traces(self) -> None:
+        """The two traces coincide at the corner (both zero): lim_{s->B+} g2(s, T)
+        = (K - B) - Delta + Delta V_DOD(B+, T) ... = 0 = g2(B, t) for t -> T."""
+        for g2 in self._extensions():
+            terminal_near_corner = g2(torch.tensor([self.B + 1e-6], dtype=torch.float64), torch.tensor([self.T], dtype=torch.float64))
+            assert abs(float(terminal_near_corner) - (self.K - self.B - 1e-6)) < 1e-12
+            # The regular part h alone vanishes at the corner from both faces.
+            h_terminal = g2.subtracted_data_extension(torch.tensor([self.B + 1e-6], dtype=torch.float64), torch.tensor([self.T], dtype=torch.float64))
+            h_barrier = g2.subtracted_data_extension(torch.tensor([self.B], dtype=torch.float64), torch.tensor([self.T - 1e-6], dtype=torch.float64))
+            assert abs(float(h_terminal)) < 2e-6 and abs(float(h_barrier)) < 1e-12
+
+    def test_decomposition_sums_to_the_value(self) -> None:
+        s = torch.linspace(self.B, 3.0, 300, dtype=torch.float64)
+        t = torch.full_like(s, 0.4)
+        for g2 in self._extensions():
+            assert torch.allclose(g2(s, t), g2.digital_price(s, t) + g2.subtracted_data_extension(s, t), atol=1e-15)
+            assert torch.allclose(
+                g2.digital_price(s, t),
+                (self.K - self.B) * down_and_out_digital_price(s, self.B, self.r, self.sigma, self.T - t), atol=1e-15,
+            )
+
+    def _interior_off_strike(self):
+        s = torch.cat([torch.linspace(self.B + 0.005, self.K - 0.01, 300, dtype=torch.float64),
+                       torch.linspace(self.K + 0.01, 3.0, 300, dtype=torch.float64)]).requires_grad_(True)
+        t = torch.linspace(0.0, self.T - 1e-3, 600, dtype=torch.float64).requires_grad_(True)
+        return s, t
+
+    def test_closed_form_residual_matches_autograd_through_the_whole_extension(self) -> None:
+        """L^BS g2 by autograd (through the digital AND the profile) equals the
+        closed-form residual, which omits the digital (Proposition 4). Off the
+        strike for the raw profile, whose second derivative is not defined there."""
+        s, t = self._interior_off_strike()
+        for g2 in self._extensions():
+            with torch.enable_grad():
+                value = g2(s, t)
+                residual_autograd = bsm_operator(value, s, t, self.r, 0.0, self.sigma)
+            residual_closed_form = g2.black_scholes_residual(s.detach(), t.detach(), self.r, self.sigma)
+            assert torch.allclose(residual_closed_form, residual_autograd.detach(), atol=1e-9), g2.profile_name
+
+    def test_residual_is_bounded_up_to_the_corner(self) -> None:
+        """No corner layer: the residual of the regular part stays O(1) on a
+        sequence of points approaching (B, T), whereas the smoothing
+        construction's residual grows like Delta / epsilon."""
+        for g2 in self._extensions():
+            values = [abs(float(g2.black_scholes_residual(
+                torch.tensor([self.B + 10 * tau], dtype=torch.float64), torch.tensor([self.T - tau], dtype=torch.float64),
+                self.r, self.sigma))) for tau in (1e-2, 1e-4, 1e-6)]
+            assert max(values) < 1.0, (g2.profile_name, values)
+
+    def test_price_and_time_derivatives_match_autograd(self) -> None:
+        s, t = self._interior_off_strike()
+        for g2 in self._extensions():
+            value = g2(s, t)
+            delta_ag = torch.autograd.grad(value.sum(), s, create_graph=True)[0]
+            gamma_ag = torch.autograd.grad(delta_ag.sum(), s, retain_graph=True)[0]
+            theta_ag = torch.autograd.grad(value.sum(), t)[0]
+            assert torch.allclose(g2.first_price_derivative(s.detach(), t.detach()), delta_ag, atol=1e-10), g2.profile_name
+            assert torch.allclose(g2.second_price_derivative(s.detach(), t.detach()), gamma_ag, atol=1e-7, rtol=1e-8), g2.profile_name
+            assert torch.allclose(g2.first_time_derivative(s.detach(), t.detach()), theta_ag, atol=1e-9), g2.profile_name
+
+    def test_broadcasts_scalar_time(self) -> None:
+        s = torch.linspace(self.B, 3.0, 50, dtype=torch.float64)
+        for g2 in self._extensions():
+            assert g2(s, torch.tensor(0.3, dtype=torch.float64)).shape == s.shape
+            assert g2.black_scholes_residual(s, torch.tensor(0.3, dtype=torch.float64), self.r, self.sigma).shape == s.shape
+
+    def test_residual_refuses_other_coefficients(self) -> None:
+        g2 = self._extensions()[1]
+        s = torch.tensor([1.0], dtype=torch.float64)
+        t = torch.tensor([0.3], dtype=torch.float64)
+        with pytest.raises(ValueError):
+            g2.black_scholes_residual(s, t, self.r, 2 * self.sigma)
+        with pytest.raises(ValueError):
+            g2.black_scholes_residual(s, t, self.r + 0.01, self.sigma)
+
+    def test_split_profile_matches_the_smoothing_construction_far_from_the_corner(self) -> None:
+        """Where zeta = 1, the split terminal function of the smoothing ansatz is
+        the same profile pi; the subtracted extension equals pi shifted by
+        Delta V_DOD - pi(B, t)."""
+        epsilon = 0.1
+        smoothing = make_corner_regularised_extension_split(self.K, self.B, epsilon, self.T, self.sigma)
+        subtraction = make_subtracted_digital_extension(self.K, self.B, self.r, self.sigma, self.T, "split")
+        s = torch.linspace(self.B + 2 * epsilon, 3.0, 200, dtype=torch.float64)
+        t = torch.full_like(s, 0.4)
+        pi_at_barrier = subtraction.terminal_profile.value_and_derivatives(torch.full_like(s, self.B), t)[0]
+        expected = smoothing(s, t) - pi_at_barrier + subtraction.digital_price(s, t)
+        assert torch.allclose(subtraction(s, t), expected, atol=1e-13)
+
+    def test_quadrature_route_of_the_split_profile(self) -> None:
+        closed = make_subtracted_digital_extension(self.K, self.B, self.r, self.sigma, self.T, "split")
+        quadrature = make_subtracted_digital_extension(
+            self.K, self.B, self.r, self.sigma, self.T, "split",
+            y_lo=math.log(self.B) - 2.0, y_hi=math.log(3.0) + 2.0, n_quad=20000, split_profile="quadrature",
+        )
+        s = torch.linspace(self.B + 0.1, 2.5, 60, dtype=torch.float64)
+        t = torch.full_like(s, 0.5)
+        assert torch.allclose(closed(s, t), quadrature(s, t), atol=1e-6)
+
+    def test_builder_rejects_bad_arguments(self) -> None:
+        with pytest.raises(ValueError):
+            make_subtracted_digital_extension(self.K, self.B, self.r, self.sigma, self.T, "mangasarian")
+        with pytest.raises(ValueError):
+            make_subtracted_digital_extension(self.K, self.K + 0.1, self.r, self.sigma, self.T, "raw")
+        with pytest.raises(ValueError):
+            make_subtracted_digital_extension(self.K, self.B, self.r, self.sigma, self.T, "split", split_profile="quadrature")
+        with pytest.raises(ValueError):
+            SubtractedDigitalCornerExtension(self.K, self.B, self.r, self.sigma, 0.0, RawPutPayoffTerminalProfile(self.K))
