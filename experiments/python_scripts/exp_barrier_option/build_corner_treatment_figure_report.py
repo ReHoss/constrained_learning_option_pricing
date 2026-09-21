@@ -329,6 +329,20 @@ def main() -> None:
                      r"colonnes : $t\in\{0,0.5,0.9,0.99\}$ ; forme fermée en tirets noirs. Prix en échelle "
                      r"linéaire ; $\Delta$ et $\Gamma$ en échelle symlog (linéaire sous $0.1$, logarithmique "
                      r"au-delà, des deux côtés de zéro).", "fig:profiles", landscape=True))
+        rel = copy_figure(profiles_dir / "figures" / "profiles_price_delta_gamma_corner_zoom.png",
+                          "profiles_price_delta_gamma_corner_zoom.png")
+        if rel:
+            sections.append(figure_block(
+                rel, r"Même figure, restreinte à la région du coin $s\in(B, B+0.3)$ et évaluée sur sa propre grille "
+                     r"dense (600 points, pas $5\times10^{-4}$). Tirets gris verticaux : $s=B+B\sigma\sqrt{2(T-t)}$, "
+                     r"la longueur de diffusion de la couche de coin à ce $t$. Les ondulations de $\partial_{ss}\Phi_\theta$ "
+                     r"des runs de lissage (bleu, rouge) sont confinées à la bande de transition du cutoff "
+                     r"$\zeta((s-B)/\varepsilon)$, $s\in[0.6,0.7]$, d'amplitude $\pm10$ à $t=0$ et $\pm30$ à $t=0.9$ "
+                     r"contre un $\Gamma$ exact de $-3$ à $-10$ : c'est la courbure de $\zeta$ ($\zeta''\sim\varepsilon^{-2}$) "
+                     r"que le réseau n'annule pas. La soustraction (vert, orange) est confondue avec la forme fermée "
+                     r"sur les trois lignes ; l'enrichissement (cyan, rose) l'est aussi sauf de petites ondulations de "
+                     r"$\partial_{ss}$ dans la bande de transition de $\chi$, $[0.7,0.9]$, visibles à $t=0.99$.",
+                "fig:profiles-zoom", landscape=True))
         rel = copy_figure(profiles_dir / "figures" / "absolute_errors_along_s.png", "absolute_errors_along_s.png")
         if rel:
             sections.append(figure_block(

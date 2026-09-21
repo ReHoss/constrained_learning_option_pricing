@@ -25,6 +25,9 @@ Three figures, all from the same saved curves (``curves.pt``, replot with
   |d_ss Phi - d_ss V_DO| along s (log scale) -- WHERE each treatment's error is.
 - ``greeks_at_strike_vs_time.png``: Delta(K, t) and Gamma(K, t), numerical and
   exact, against t, plus their relative errors.
+- ``profiles_price_delta_gamma_corner_zoom.png``: the first figure restricted to
+  the corner region s in (B, B + --zoom-width), evaluated on its own dense grid
+  (--zoom-n-s points), where the Gamma of the smoothing runs oscillates.
 
 Usage:
     python3 experiments/python_scripts/exp_barrier_option/compare_corner_treatments_profiles.py \
@@ -145,19 +148,23 @@ def reference_profiles(s: torch.Tensor, t: torch.Tensor, K, B, r, sigma, T):
 
 
 def evaluate_curves(runs: dict[str, Path], times: list[float], strike_times: list[float],
-                    n_s: int, s_max: float) -> dict:
-    """All curves of all configurations; contract read from the first run."""
+                    n_s: int, s_max: float, zoom_width: float, zoom_n_s: int) -> dict:
+    """All curves of all configurations; contract read from the first run. The
+    corner zoom is evaluated on its own dense grid ``(B, B + zoom_width)``."""
     first_meta = read_run_metadata(next(iter(runs.values())))
     K, B, r, sigma, T = (first_meta["contract"][k] for k in ("K", "B", "r", "sigma", "T"))
     s_grid = torch.linspace(B + 1e-4, s_max, n_s, dtype=torch.float64)
+    s_zoom = torch.linspace(B + 1e-5, B + zoom_width, zoom_n_s, dtype=torch.float64)
     curves: dict = {
         "contract": {"K": K, "B": B, "r": r, "sigma": sigma, "T": T},
-        "s_grid": s_grid, "times": times, "strike_times": strike_times,
-        "reference": {}, "configurations": {},
+        "s_grid": s_grid, "s_zoom": s_zoom, "times": times, "strike_times": strike_times,
+        "reference": {}, "reference_zoom": {}, "configurations": {},
     }
     for t_value in times:
         t = torch.full_like(s_grid, t_value)
         curves["reference"][t_value] = torch.stack(reference_profiles(s_grid, t, K, B, r, sigma, T))
+        t_zoom = torch.full_like(s_zoom, t_value)
+        curves["reference_zoom"][t_value] = torch.stack(reference_profiles(s_zoom, t_zoom, K, B, r, sigma, T))
     strike_t = torch.tensor(strike_times, dtype=torch.float64)
     strike_s = torch.full_like(strike_t, K)
     curves["reference"]["strike"] = torch.stack(reference_profiles(strike_s, strike_t, K, B, r, sigma, T))
@@ -169,10 +176,12 @@ def evaluate_curves(runs: dict[str, Path], times: list[float], strike_times: lis
         with open(run_dir / f"summary_eps{_run_epsilon(run_dir):g}.yaml") as f:
             epsilon = yaml.safe_load(f)["epsilon"]
         model = load_trained_model(run_dir, epsilon, meta)
-        entry = {"run_dir": str(run_dir)}
+        entry = {"run_dir": str(run_dir), "zoom": {}}
         for t_value in times:
             t = torch.full_like(s_grid, t_value)
             entry[t_value] = torch.stack(trained_profiles(model, s_grid.to(DEVICE), t.to(DEVICE))).cpu()
+            t_zoom = torch.full_like(s_zoom, t_value)
+            entry["zoom"][t_value] = torch.stack(trained_profiles(model, s_zoom.to(DEVICE), t_zoom.to(DEVICE))).cpu()
         entry["strike"] = torch.stack(trained_profiles(model, strike_s.to(DEVICE), strike_t.to(DEVICE))).cpu()
         curves["configurations"][configuration] = entry
         logger.info(f"  {configuration:<26s} {run_dir.name}: evaluated at {len(times)} times x {n_s} prices "
@@ -193,19 +202,22 @@ def _run_epsilon(run_dir: Path) -> float:
 ROW_LABELS = [r"$\Phi_\theta(s,t)$ (price)", r"$\partial_s\Phi_\theta(s,t)$ (Delta)", r"$\partial_{ss}\Phi_\theta(s,t)$ (Gamma)"]
 
 
-def plot_profiles(curves: dict, path: Path, s_plot_max: float) -> None:
+def plot_profiles(curves: dict, path: Path, s_plot_max: float, zoom: bool = False) -> None:
+    """Rows Phi, d_s Phi, d_ss Phi; columns t. ``zoom`` uses the dense corner
+    grid ``s_zoom`` and its own reference (the whole grid is plotted)."""
     times = curves["times"]
-    s = curves["s_grid"].numpy()
-    keep = s <= s_plot_max
+    s = (curves["s_zoom"] if zoom else curves["s_grid"]).numpy()
+    keep = np.ones_like(s, dtype=bool) if zoom else s <= s_plot_max
     K, B, T = curves["contract"]["K"], curves["contract"]["B"], curves["contract"]["T"]
     fig, axes = plt.subplots(3, len(times), figsize=(4.4 * len(times), 11), squeeze=False)
     handles = []
     for j, t_value in enumerate(times):
-        reference = curves["reference"][t_value].numpy()
+        reference = (curves["reference_zoom"] if zoom else curves["reference"])[t_value].numpy()
         for i in range(3):
             ax = axes[i, j]
             for configuration, entry in curves["configurations"].items():
-                (line,) = ax.plot(s[keep], entry[t_value].numpy()[i][keep], lw=1.5,
+                trained = (entry["zoom"][t_value] if zoom else entry[t_value]).numpy()
+                (line,) = ax.plot(s[keep], trained[i][keep], lw=1.5,
                                   color=COLOURS.get(configuration, None),
                                   label=CONFIGURATION_LABELS[configuration].replace("\n", " "))
                 if i == 0 and j == 0:
@@ -215,6 +227,11 @@ def plot_profiles(curves: dict, path: Path, s_plot_max: float) -> None:
                 handles.insert(0, ref_line)
             for x in (B, K):
                 ax.axvline(x, color="grey", linestyle=":", lw=1)
+            if zoom:
+                # Diffusion length of the corner layer at this t: B sigma sqrt(2 tau).
+                layer = B * curves["contract"]["sigma"] * np.sqrt(2.0 * max(T - t_value, 0.0))
+                ax.axvline(B + layer, color="tab:grey", linestyle="--", lw=0.8)
+                ax.set_xlim(s[0], s[-1])
             if i > 0:
                 ax.set_yscale("symlog", linthresh=0.1)
             ax.axhline(0, color="grey", lw=0.6)
@@ -226,9 +243,13 @@ def plot_profiles(curves: dict, path: Path, s_plot_max: float) -> None:
             if j == 0:
                 ax.set_ylabel(ROW_LABELS[i])
     legend = fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, 0.095), ncol=4, fontsize=8)
-    fig.suptitle("Down-and-out put — price, Delta and Gamma profiles of the corner treatments (one seed)", fontsize=11)
+    title = ("Down-and-out put — price, Delta and Gamma profiles near the corner (one seed)" if zoom
+             else "Down-and-out put — price, Delta and Gamma profiles of the corner treatments (one seed)")
+    formula = FORMULA_PROFILES + ("\nZoom on the corner region; dashed grey vertical: $s = B + B\sigma\sqrt{2(T-t)}$, "
+                                  "the diffusion length of the corner layer at that $t$." if zoom else "")
+    fig.suptitle(title, fontsize=11)
     fig.subplots_adjust(left=0.06, right=0.99, top=0.93, bottom=0.21, wspace=0.25, hspace=0.3)
-    finalize_figure(fig, path, legends=[legend], formula=FORMULA_PROFILES, axes=list(axes.reshape(-1)), formula_fontsize=7)
+    finalize_figure(fig, path, legends=[legend], formula=formula, axes=list(axes.reshape(-1)), formula_fontsize=7)
 
 
 def plot_absolute_errors(curves: dict, path: Path, s_plot_max: float, window: float = 0.1) -> None:
@@ -318,6 +339,8 @@ def main() -> None:
     parser.add_argument("--n-s", type=int, default=800, help="Number of s points of the profiles.")
     parser.add_argument("--s-max", type=float, default=3.0, help="Upper end of the evaluated s range.")
     parser.add_argument("--s-plot-max", type=float, default=2.0, help="Upper end of the PLOTTED s range.")
+    parser.add_argument("--zoom-width", type=float, default=0.3, help="Width s - B of the corner zoom.")
+    parser.add_argument("--zoom-n-s", type=int, default=600, help="Number of s points of the corner zoom grid.")
     parser.add_argument("--out-dir", type=str, default=None, help="Output directory override.")
     parser.add_argument("--replot", type=str, default=None, metavar="OUT_DIR",
                         help="Rebuild the figures from a previous run's curves.pt, no evaluation.")
@@ -355,7 +378,8 @@ def main() -> None:
                 continue
             run_dir = Path(run_dir_text)
             runs[configuration] = run_dir if run_dir.is_absolute() else repo_root / run_dir
-        curves = evaluate_curves(runs, args.times, DEFAULT_STRIKE_TIMES, args.n_s, args.s_max)
+        curves = evaluate_curves(runs, args.times, DEFAULT_STRIKE_TIMES, args.n_s, args.s_max,
+                                 args.zoom_width, args.zoom_n_s)
         torch.save(curves, out_dir / "curves.pt")
         with open(out_dir / "runs.yaml", "w") as f:
             yaml.dump({"command": " ".join(sys.argv), "seed": args.seed,
@@ -364,6 +388,10 @@ def main() -> None:
 
     (out_dir / "figures").mkdir(exist_ok=True)
     plot_profiles(curves, out_dir / "figures" / "profiles_price_delta_gamma.png", args.s_plot_max)
+    if "s_zoom" in curves:
+        plot_profiles(curves, out_dir / "figures" / "profiles_price_delta_gamma_corner_zoom.png", args.s_plot_max, zoom=True)
+    else:
+        logger.warning("curves.pt predates the corner zoom; re-run without --replot to produce it.")
     plot_absolute_errors(curves, out_dir / "figures" / "absolute_errors_along_s.png", args.s_plot_max)
     plot_greeks_at_strike(curves, out_dir / "figures" / "greeks_at_strike_vs_time.png")
     logger.info(f"Figures -> {out_dir / 'figures'}")

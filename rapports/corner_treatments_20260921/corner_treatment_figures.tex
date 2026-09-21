@@ -194,6 +194,16 @@ Une seule graine, pas de médiane : ces figures montrent \emph{où} l'erreur de 
 \begin{landscape}
 \begin{figure}[H]
 \centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/profiles_price_delta_gamma_corner_zoom.png}
+\caption{Même figure, restreinte à la région du coin $s\in(B, B+0.3)$ et évaluée sur sa propre grille dense (600 points, pas $5\times10^{-4}$). Tirets gris verticaux : $s=B+B\sigma\sqrt{2(T-t)}$, la longueur de diffusion de la couche de coin à ce $t$. Les ondulations de $\partial_{ss}\Phi_\theta$ des runs de lissage (bleu, rouge) sont confinées à la bande de transition du cutoff $\zeta((s-B)/\varepsilon)$, $s\in[0.6,0.7]$, d'amplitude $\pm10$ à $t=0$ et $\pm30$ à $t=0.9$ contre un $\Gamma$ exact de $-3$ à $-10$ : c'est la courbure de $\zeta$ ($\zeta''\sim\varepsilon^{-2}$) que le réseau n'annule pas. La soustraction (vert, orange) est confondue avec la forme fermée sur les trois lignes ; l'enrichissement (cyan, rose) l'est aussi sauf de petites ondulations de $\partial_{ss}$ dans la bande de transition de $\chi$, $[0.7,0.9]$, visibles à $t=0.99$.}
+\label{fig:profiles-zoom}
+\end{figure}
+
+\end{landscape}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
 \includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/absolute_errors_along_s.png}
 \caption{Erreurs absolues ponctuelles le long de $s$ : $e_0=|\Phi_\theta-V_{DO}|$, $e_1=|\partial_s\Phi_\theta-\partial_sV_{DO}|$, $e_2=|\partial_{ss}\Phi_\theta-\partial_{ss}V_{DO}|$ (échelle log). C'est la figure qui localise la valeur ajoutée des traitements analytiques : le lissage (bleu, rouge) est à $10^{-3}$--$10^{-2}$ partout et à $10^{-1}$ près du coin vers $t=T$ ; la soustraction (vert, orange) à $10^{-6}$--$10^{-5}$ ; l'enrichissement (cyan, rose) est entre les deux \emph{près du coin} ($s\in[0.6,1]$, bande de transition de $\chi$) et rejoint la soustraction au-delà de $s\approx1.2$. Les erreurs relatives par bande grandissent avec $s$ pour toutes les configurations parce que $V_{DO}\to0$, pas parce que l'erreur absolue grandit.}
 \label{fig:abs-errors}
