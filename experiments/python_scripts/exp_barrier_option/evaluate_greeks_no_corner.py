@@ -253,7 +253,8 @@ def _stats(values: list[float]) -> dict:
 
 def write_table(results: dict, times: list[float], T: float, path: Path, iters: int, epsilon: float) -> None:
     lines = [
-        f"# Delta and Gamma at the strike — corner-excluded runs, {iters} iterations, epsilon = {epsilon:g}",
+        f"# Delta and Gamma at the strike — {iters} iterations, epsilon = {epsilon:g} for the smoothing runs "
+        "(corner excluded from collocation for the smoothing runs, included for the analytic corner treatments)",
         "",
         "Pointwise relative error |numerical - exact| / |exact| at s = K; median over master seeds [min, max].",
         "Reference: sympy symbolic derivative of the Reiner-Rubinstein closed form (mpmath evaluation).",
@@ -320,7 +321,7 @@ def plot_gamma_error(results: dict, times: list[float], T: float, path: Path, it
     ax.set_yscale("log")
     ax.set_xlabel(r"Time to maturity $\tau = T - t$")
     ax.set_ylabel(r"Relative error of $\Gamma$ at the strike, $\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$")
-    ax.set_title(f"Down-and-out put — Gamma error at $s=K$, corner-excluded runs, {iters} iterations, "
+    ax.set_title(f"Down-and-out put — Gamma error at $s=K$, {iters} iterations, "
                  f"$\\varepsilon={epsilon:g}$", fontsize=9)
     ax.grid(True, which="both", alpha=0.3)
     legend = ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8,

@@ -1037,23 +1037,29 @@ def plot_log_slice(
     eval_result: dict, epsilon: float, B: float, out_path: Path,
     formula_text: str = FORMULA_TEXT_RAW_PAYOFF,
 ) -> None:
-    """Coupe V(s) à t fixé, échelle log : révèle les écarts invisibles en linéaire."""
+    """Slices V(s, t) at fixed t on a symmetric-log axis: the price spans six
+    decades between the barrier region and the far field, invisible on a linear
+    axis; the axis is linear below ``linthresh`` so that a trained price that
+    crosses zero (the unconstrained far-field component, methodology section
+    12) is shown as a signed value instead of being clipped to a floor."""
     s_grid = eval_result["s_grid"].numpy()
     t_grid = eval_result["t_grid"].numpy()
     learned = eval_result["learned"].numpy()
     reference = eval_result["reference"].numpy()
 
-    floor = 1e-12
+    linthresh = 1e-6
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5), sharey=True)
     for ax, t_target in zip(axes, (0.0, 0.5, 0.9)):
         j = int(np.argmin(np.abs(t_grid - t_target)))
-        ax.semilogy(s_grid, np.maximum(learned[:, j], floor), lw=2, label="trained")
-        ax.semilogy(s_grid, np.maximum(reference[:, j], floor), lw=2, ls="--", label="closed form")
+        ax.plot(s_grid, learned[:, j], lw=2, label="trained")
+        ax.plot(s_grid, reference[:, j], lw=2, ls="--", label="closed form")
+        ax.set_yscale("symlog", linthresh=linthresh)
+        ax.axhline(0.0, color="grey", lw=0.6)
         ax.axvline(B, color="black", lw=1.0)
         ax.set_xlabel("Underlying price $s$")
         ax.set_title(f"$t = {t_grid[j]:.2f}$")
-        ax.grid(alpha=0.3)
-    axes[0].set_ylabel("$V(s,t)$  (log scale)")
+        ax.grid(alpha=0.3, which="both")
+    axes[0].set_ylabel(f"$V(s,t)$  (symlog, linear below {linthresh:g})")
     axes[0].legend(loc="lower left")
     fig.subplots_adjust(bottom=0.34)
     finalize_figure(fig, out_path, formula=formula_text, axes=list(axes))

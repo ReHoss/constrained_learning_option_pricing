@@ -839,6 +839,45 @@ and have $\varepsilon = 0.1$; the subtraction runs include the corner and have n
 comparison is between the two treatments as each is meant to be run, not a one-factor ablation;
 the figure labels the difference.
 
+### 15.5 Resolution control of the band metrics, and what the Greeks at the strike are
+
+Two remarks on the numbers of sections 11, 15.4 and 16.4, prompted by a review of the report.
+
+**The band and outside-corner norms are norms of the value, not of a curvature.** The factor-29
+overestimate recorded in `rapports/strike_g2` concerned $\|\partial_{ss}\Phi_\theta\|_{L^2}$ on a strike
+band at $t = 0.9999$, where the Gamma peak of width $K\sigma\sqrt{T-t} = 0.003$ was narrower than
+the grid step $0.005$. The quantities $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$ and
+$\mathrm{rel}_{L^2}(\mathcal B)$ integrate $\Phi_\theta - V_{DO}$, a continuous field with bounded
+derivative whose terminal trace is exact, so no layer narrows towards $t = T$. Measured on the saved
+seed-0 models, refining the $300\times100$ grid (steps $0.008$, $0.01$) to $1200\times400$ and
+$2400\times800$ changes $\mathrm{rel}_{L^2}[0.7,1]$ from $0.3389$ to $0.3434$ (raw profile,
+subtraction), from $1.831\times10^{-4}$ to $1.837\times10^{-4}$ (Black-Scholes profile,
+subtraction) and from $5.84\times10^{-4}$ to $5.83\times10^{-4}$ (Black-Scholes profile,
+enrichment); $\mathrm{rel}_{L^2}[1,2]$ and $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$ move by
+at most $1.3$ per cent. The reported band numbers are therefore not quadrature artefacts.
+
+**The Greeks at the strike are pointwise, not integrated.** $\mathrm{err}_{\mathrm{rel}}\,\Delta(t)$
+and $\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$ are $|\partial_s^k\Phi_\theta(K,t) - \partial_s^kV_{DO}(K,t)| / |\partial_s^kV_{DO}(K,t)|$
+at the single point $(K,t)$, the trained side by nested autograd on $g_1u_\theta$ plus the
+closed-form derivatives of $g_2$, the reference by symbolic differentiation; no grid enters, so
+the peak width is irrelevant to them. Their fragility is that of a point: $\partial_{ss}V_{DO}(K,\cdot)$
+vanishes near $t = 0.27$ and the relative error at $t = 0.25$ is ill-conditioned (marked in the
+tables). A band-averaged Gamma error would be more robust but would need the curvature term
+integrated exactly — which the two-term route allows ($\partial_{ss}g_2$ in closed form, only the
+smooth $\partial_{ss}(g_1u_\theta)$ on the grid); it is not implemented.
+
+**Where the error of each treatment is** (`compare_corner_treatments_profiles.py`,
+`data/compare_corner_treatments_profiles/20260921_seed0/`, seed 0, pointwise in float64): along
+$s$ at $t\in\{0, 0.5, 0.9, 0.99\}$, $|\Phi_\theta - V_{DO}|$ is $10^{-3}$--$10^{-2}$ everywhere for the
+smoothing runs and $10^{-1}$ near the corner as $t\to T$; $10^{-6}$--$10^{-5}$ for the subtraction;
+for the enrichment, $10^{-4}$ on $s\in[0.6, 1]$ (the cutoff's transition strip, where $h$ has the
+compensating dip visible on the decomposition figure) and $10^{-5}$ beyond $s\approx1.2$, where it
+coincides with the subtraction. The relative band errors grow with $s$ for every configuration
+because $\|V_{DO}\|$ decreases, not because the absolute error does; the enrichment's deficit is at
+the corner, not in the far field. The smoothing runs' trained price changes sign beyond
+$s\approx2.2$ (the unconstrained far-field component of section 12), which the symmetric-log slices
+now show as a crossing below zero rather than as a drop to a floor.
+
 ## 16. Corner enrichment (Method 2, Section 5.2 of Doc A)
 
 Method 2 is the short-time limit of Method 1: when no closed-form digital exists, only the
