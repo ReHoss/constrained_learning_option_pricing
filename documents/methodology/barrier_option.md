@@ -923,8 +923,56 @@ Doc A.
 | $\delta_0$, $\delta_1$ | `pilot_down_and_out_put.py --corner-treatment enrichment --enrichment-delta0 --enrichment-delta1`; directory tag `_enrichment_<profile>_d0<δ0>_d1<δ1>`; metadata keys `enrichment_delta0`, `enrichment_delta1` |
 | Aggregation and Greeks | configurations `enrichment_{raw,blackscholes,split}`, same conventions as section 15 |
 
-### 16.4 Batch launched (2026-09-21) — not yet measured
+### 16.4 Measured (50000 iterations, 5 seeds per configuration, corner included in collocation)
 
-`bash_scripts/cluster/cmap/joblist_50k_enrichment_republique.txt` (Black-Scholes and split
-profiles) and `joblist_50k_enrichment_orleans.txt` (raw profile), $\delta_0 = 0.1$, $\delta_1 = 0.3$,
-otherwise identical to the subtraction batch of section 15.4. Results: — (not measured).
+Batch: `bash_scripts/cluster/cmap/joblist_50k_enrichment_republique.txt` (Black-Scholes and split
+profiles, `republique`) and `joblist_50k_enrichment_orleans.txt` (raw profile, `porte-d-orleans`),
+$\delta_0 = 0.1$, $\delta_1 = 0.3$, launched 2026-09-21 00:30/00:33, finished 01:24/02:40;
+otherwise identical to the subtraction batch of section 15.4 ($0.053$ s per iteration measured).
+Aggregation of the nine configurations:
+`data/aggregate_terminal_function_comparison/20260921_corner_treatments_iters50000/`; Greeks:
+`data/evaluate_greeks_no_corner/20260921_corner_treatments_iters50000/`; figure report:
+`rapports/corner_treatments_20260921/corner_treatment_figures.pdf`
+(`build_corner_treatment_figure_report.py`). Medians over 5 seeds, [min, max] in `table.md`.
+
+| Configuration | $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$ | $\mathrm{rel}_{L^2}(N_{0.1})$ | $[0.6,0.7]$ | $[0.7,1]$ | $[1,2]$ | best loss |
+|---|---|---|---|---|---|---|
+| Smoothing, Black-Scholes / split (section 11.1) | $0.12$--$0.13$ | $0.58$--$0.59$ | $0.20$--$0.22$ | $0.075$--$0.083$ | $0.049$--$0.059$ | $1$--$4\times10^{-5}$ |
+| Exact subtraction, Black-Scholes | $4.7\times10^{-3}$ [$2.1\times10^{-3}$, $1.4\times10^{-2}$] | $4.3\times10^{-5}$ | $1.4\times10^{-4}$ | $1.8\times10^{-4}$ | $1.1\times10^{-3}$ | $1.7\times10^{-8}$ |
+| Exact subtraction, split | $4.0\times10^{-3}$ [$9.4\times10^{-4}$, $5.2\times10^{-3}$] | $4.1\times10^{-5}$ | $1.0\times10^{-4}$ | $1.2\times10^{-4}$ | $5.2\times10^{-4}$ | $1.1\times10^{-8}$ |
+| Corner enrichment, Black-Scholes | $7.3\times10^{-3}$ [$2.2\times10^{-3}$, $1.8\times10^{-2}$] | $7.9\times10^{-4}$ | $4.4\times10^{-4}$ | $5.8\times10^{-4}$ | $1.7\times10^{-3}$ | $2.8\times10^{-7}$ |
+| Corner enrichment, split | $6.9\times10^{-3}$ [$2.9\times10^{-3}$, $1.5\times10^{-2}$] | $8.7\times10^{-4}$ | $5.3\times10^{-4}$ | $8.4\times10^{-4}$ | $3.0\times10^{-3}$ | $4.4\times10^{-7}$ |
+| Corner enrichment, raw payoff | $0.456$ | $6.4\times10^{-4}$ | $3.9\times10^{-2}$ | $0.34$ | $1.30$ | $6.2\times10^{-7}$ |
+
+Greeks at the strike (medians over 5 seeds of the relative error):
+
+| $t$ | $\mathrm{err}_{\mathrm{rel}}\,\Delta$: subtraction / enrichment (Black-Scholes profile) | $\mathrm{err}_{\mathrm{rel}}\,\Gamma$: subtraction / enrichment |
+|---|---|---|
+| $0$ | $1.5\times10^{-4}$ / $1.4\times10^{-3}$ | $1.5\times10^{-3}$ / $4.7\times10^{-2}$ |
+| $0.5$ | $2.4\times10^{-4}$ / $1.2\times10^{-3}$ | $1.1\times10^{-3}$ / $4.9\times10^{-3}$ |
+| $0.9$ | $7.9\times10^{-5}$ / $6.0\times10^{-4}$ | $8.3\times10^{-5}$ / $9.6\times10^{-4}$ |
+
+**Reading.** The enrichment removes the smoothing floor as the subtraction does: the comparison
+metric drops from $0.12$--$0.13$ to $7\times10^{-3}$ (a factor of $17$ to $18$; the across-seed
+ranges $[2.2\times10^{-3}, 1.8\times10^{-2}]$ do not overlap with the smoothing ones), the former
+transition band from $0.20$ to $5\times10^{-4}$, and the corner window to $8\times10^{-4}$. It is
+however measurably behind the exact subtraction on every quantity that is sensitive to the
+corner: corner-window error $8\times10^{-4}$ against $4\times10^{-5}$ (a factor of $19$),
+band $[0.6, 0.7]$ $4.4$--$5.3\times10^{-4}$ against $1.0$--$1.4\times10^{-4}$ (a factor of $3$ to $5$),
+best interior loss $3$--$4\times10^{-7}$ against $1$--$2\times10^{-8}$ (a factor of $20$ to $40$),
+Gamma at the strike $5\times10^{-3}$ against $1\times10^{-3}$ at $t = 0.5$ and $5\times10^{-2}$
+against $1.5\times10^{-3}$ at $t = 0$. On the comparison metric itself the two treatments are close
+(medians $7\times10^{-3}$ against $4$--$5\times10^{-3}$, ranges overlapping at $n = 5$), because that
+metric is dominated by the far-field component of section 12 in both cases (absolute error
+$5.2$--$5.5\times10^{-4}$ on $[2, s_\infty]$ for the enrichment, $3.0$--$3.5\times10^{-4}$ for the
+subtraction, against $10^{-5}$ on the inner bands). The ordering of the losses is the one predicted
+by Table 1 of Doc A: the digital contributes exactly zero residual (Proposition 4), the enrichment
+a square-integrable but nonzero residual $\Delta[(r-\tfrac12\sigma^2)\partial_y\Lambda - r\Lambda]$
+plus the commutator of the cutoff (Proposition 5), which the interior loss must absorb through the
+network. Under constant coefficients, where the closed form exists, Method 1 is therefore the one to
+use; Method 2 is the fallback for variable coefficients, and these measurements bound the price of
+the fallback for this contract at a factor of $3$ to $20$ on the corner quantities and none on the
+far-field-dominated global metric. The raw-payoff profile again fails at the strike ($0.34$ on
+$[0.7, 1]$), identically for the two treatments, confirming that this failure is the strike's and
+not the corner's. The cutoff radii $(\delta_0, \delta_1) = (0.1, 0.3)$ were not swept; whether a
+wider $\delta_0$ narrows the gap to Method 1 is not measured.
