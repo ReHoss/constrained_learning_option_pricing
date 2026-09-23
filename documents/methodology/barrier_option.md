@@ -1015,3 +1015,97 @@ far-field-dominated global metric. The raw-payoff profile again fails at the str
 $[0.7, 1]$), identically for the two treatments, confirming that this failure is the strike's and
 not the corner's. The cutoff radii $(\delta_0, \delta_1) = (0.1, 0.3)$ were not swept; whether a
 wider $\delta_0$ narrows the gap to Method 1 is not measured.
+
+## 17. The collocation domain as an explicit factor of the corner-treatment comparison
+
+Sections 15.4 and 16.4 compare the two analytic corner treatments, trained on the whole domain
+$\Omega = (B, s_\infty) \times (0, T)$, with the smoothing runs of section 11.1, trained on
+$\Omega \setminus N_{0.1}$ with $N_w = \{(s,t) : |s-B| + (T-t) \le w\}$. Three factors separate the
+two groups: the collocation domain, the presence of a corner layer of bandwidth $\varepsilon$, and
+— for the split-semigroup profile — the evaluation route of the profile (quadrature in the runs of
+2026-09-12, closed form in the analytic batches, section 14). The comparability caveat of section
+15.4 records this; the figure labels it; neither removes it.
+
+The corner $(B,T)$ is the object the two methods are built to resolve, so the domain that contains
+it is the reference domain of the comparison, and the collocation domain of the analytic batches is
+the correct one. The corner-excluded smoothing runs are therefore not to be reproduced on
+$\Omega$ in place of the existing ones: a whole-domain smoothing batch is added, and the collocation
+domain becomes a second level of an explicit factor rather than a confound.
+
+### 17.1 Reproduction audit of the two analytic batches (measured, 2026-09-23)
+
+The thirty runs of sections 15.4 and 16.4 were audited before being retained as the reference set.
+
+- **Layout and configuration.** All thirty run directories hold `metadata.yaml`,
+  `summary_eps0.yaml`, `training.log` and one saved model. Every run has
+  `corner_exclusion_window: null` (whole domain), `iters: 50000`, `n_f: 4096`, `dtype: float32`,
+  `corner_window: 0.1`, `split_profile: closed_form`, four threads, no far-field condition; the
+  enrichment runs all have $(\delta_0,\delta_1) = (0.1,0.3)$. The summary key sets are identical
+  across the thirty.
+- **Seeding.** The derived seeds are identical across the six configurations at equal master seed
+  (master seed $0$: model-initialisation seed $723863346$, sampler seed $599362081$), and the
+  parameter count is $20601$ everywhere: the shared-seeding policy holds, so a difference between
+  two configurations at equal seed is not an initialisation difference.
+- **Completion and clamps.** All thirty logs reach `Total wall-clock time`; none contains a
+  `WARNING` or `ERROR` line, so no numerical clamp activated. The best-loss iteration lies between
+  $20057$ and $49974$; the best-loss state is restored before the model is saved
+  (`model.load_state_dict(best_model_state)` in `train_one_epsilon`).
+- **Provenance.** The git tree was clean on tracked files for all thirty (only untracked paths in
+  `status_porcelain`). The exact-subtraction batch ran at `67d2176`, the corner-enrichment batch at
+  `8a78b01`; nothing in `learning_option_pricing/` has changed between `8a78b01` and `HEAD`.
+- **Reproduction from the saved models.** Recomputing the six evaluation metrics of every run from
+  its saved model with the code at `HEAD`, on this laptop, reproduces the stored values: the worst
+  relative deviation over $30 \times 6$ values is $1.4\times10^{-3}$, on `rel_l2_corner` (of order
+  $10^{-5}$ to $10^{-3}$, so $10^{-8}$ in absolute value), and at most $7\times10^{-5}$ on the
+  comparison metric `rel_l2_outside_corner`. This is the cross-machine float32 dispersion already
+  recorded in section 11.1, not a code change.
+- **Behaviour preservation of the `8a78b01` refactor.** The exact-subtraction batch was trained
+  before `SubtractedDigitalCornerExtension` was rewritten as a subclass of
+  `_AnalyticallyResolvedCornerExtension`. The value, the three derivatives and the closed-form
+  interior residual of the two implementations were compared in float64 on a $400\times200$ grid of
+  $\Omega$ for the three terminal profiles: the relative maximum deviation is $0$ on the value,
+  $\partial_s$, $\partial_{ss}$ and the residual, and $4.6\times10^{-17}$ on $\partial_t$ (a
+  floating-point reassociation). The refactor is behaviour-preserving, so the subtraction batch is
+  reproducible at `HEAD`.
+- **Correctness of the two-term residual route used in training.** The closed-form derivatives and
+  the closed-form residual $\mathcal L^{BS} g_2$ agree with autograd differentiation of the same
+  extension to $\le 5\times10^{-16}$ (derivatives) and $\le 1.2\times10^{-11}$ (residual) in
+  float64, for both treatments and the three profiles, both in the bulk and on a band approaching
+  the corner ($T - t \in [10^{-5}, 10^{-2}]$, $s - B \in [10^{-4}, 0.3]$).
+- **Exactness of the two traces.** $g_2(s,T) = (K-s)^+$ and $g_2(B,t) = 0$ hold to floating-point
+  zero on a $2001$-point grid of each face, for both treatments and the three profiles, at every
+  point except the conflicting corner $(B,T)$ itself, where $g_2$ takes the barrier value and the
+  deviation from the payoff is exactly $K - B = 0.4$. Since $g_1$ vanishes on both faces, the
+  trained price inherits both traces exactly.
+- **Host assignment.** The raw-payoff runs of both treatments ran on `porte-d-orleans`, the
+  Black-Scholes and split runs of both on `republique`. At fixed terminal profile the treatment
+  comparison is therefore host-matched; comparisons **across** terminal profiles cross a host
+  boundary, whose effect section 11.1 measures as of the order of the across-seed dispersion.
+
+No defect was found. These thirty runs are retained and are not to be retrained.
+
+### 17.2 Whole-domain smoothing batch (design)
+
+Twenty runs, $\varepsilon = 0.1$, $50000$ iterations, master seeds $0$–$4$, four threads, corner
+window kept in the collocation sampler, one configuration per terminal function: raw payoff,
+Black-Scholes profile by the ordinary autograd route, Black-Scholes profile by the two-term
+analytic-residual route, and split-semigroup profile by the **closed-form** route (as in the
+analytic batches, not the quadrature route of the corner-excluded runs). Joblists
+`bash_scripts/cluster/cmap/joblist_50k_smoothing_wholedomain_{orleans,republique}.txt`, with the
+raw-payoff configuration on `porte-d-orleans` and the other three on `republique`, so that each
+configuration is host-matched with its exact-subtraction and corner-enrichment counterpart. Cost,
+extrapolated from the analytic batches at $0.053$ s/iteration: $\approx 45$ minutes per run,
+$\approx 15$ hours of processor time.
+
+The raw-payoff configuration has no corner-excluded counterpart at this budget; the other three do,
+so for them the pair of runs isolates the collocation domain at fixed terminal function, except for
+the split profile, where the evaluation route changes with it.
+
+**Aggregation.** A whole-domain smoothing run and its corner-excluded twin are different objects
+and are keyed as such: `collect_runs` appends `_corner_included` to the configuration key of a
+smoothing run whose sampler kept the corner, and `CONFIGURATION_LABELS` holds the matching label
+(`aggregate_terminal_function_comparison.py`). Before this, both shared one key, so that under
+`--include-corner-trained-runs` two runs of the same terminal function and master seed collided and
+the more recent timestamp displaced the other from every figure and table — a silent loss, reported
+only as a `duplicate (...)` warning line. The analytic treatments always include the corner and keep
+their existing keys.
