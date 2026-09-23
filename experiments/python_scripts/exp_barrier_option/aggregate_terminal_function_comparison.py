@@ -137,8 +137,10 @@ RUN_DIRECTORY_PATTERN = re.compile(
 )
 
 # Ordered so that the figure's abscissa reads from the least to the most
-# structured terminal function.
-CONFIGURATION_LABELS: dict[str, str] = {
+# structured terminal function. Smoothing entries are listed once here; the
+# whole-domain twin of each is inserted right after it by
+# _with_corner_included_twins below, so the abscissa reads pairwise.
+_BASE_CONFIGURATION_LABELS: dict[str, str] = {
     "raw": "Raw payoff $(K-s)^+$",
     "smoothed": "Chen-Mangasarian smoothed payoff",
     "blackscholes": "Black-Scholes put price\n(ordinary autograd route)",
@@ -155,6 +157,16 @@ CONFIGURATION_LABELS: dict[str, str] = {
     "enrichment_split": "Corner enrichment,\nsplit-semigroup profile",
 }
 
+#: Suffix appended to the configuration key of a SMOOTHING run trained with the
+#: corner window kept in the collocation sampler, i.e. on the whole domain
+#: :math:`\Omega`, as the analytic corner treatments are. The collocation domain
+#: belongs in the key rather than in an annotation computed at plotting time:
+#: the same terminal function trained on the two domains gives two different
+#: objects, and a shared key would make them collide in :func:`collect_runs`,
+#: where the more recent timestamp is kept and the other run is dropped.
+CORNER_INCLUDED_SUFFIX = "_corner_included"
+CORNER_INCLUDED_ANNOTATION = "\n[whole domain: corner in collocation]"
+
 
 def is_subtraction_configuration(configuration: str) -> bool:
     """True for the analytic corner treatments (exact subtraction, corner
@@ -162,17 +174,32 @@ def is_subtraction_configuration(configuration: str) -> bool:
     return configuration.startswith("subtraction_") or configuration.startswith("enrichment_")
 
 
+def _with_corner_included_twins(labels: dict[str, str]) -> dict[str, str]:
+    """Insert, immediately after every smoothing configuration, the key of its
+    whole-domain twin. The analytic corner treatments always include the corner
+    (they have no corner layer to exclude) and are left without a twin."""
+    extended: dict[str, str] = {}
+    for configuration, label in labels.items():
+        extended[configuration] = label
+        if not is_subtraction_configuration(configuration):
+            extended[configuration + CORNER_INCLUDED_SUFFIX] = label + CORNER_INCLUDED_ANNOTATION
+    return extended
+
+
+#: Public label table, indexed by the configuration keys :func:`collect_runs`
+#: produces (imported by the Greeks, profile-comparison and report scripts).
+CONFIGURATION_LABELS: dict[str, str] = _with_corner_included_twins(_BASE_CONFIGURATION_LABELS)
+
+
 def configuration_tick_label(configuration: str, per_seed: dict) -> str:
-    """Figure label of a configuration, annotated with the corner treatment of
-    its runs when they were trained with the corner INCLUDED in collocation
-    (the smoothing runs of the canonical comparison exclude it): a comparison
-    across different training sets must be labelled as such."""
+    """Figure label of a configuration. The collocation domain is part of the
+    configuration key, so the label already names it; runs disagreeing on the
+    flag within one configuration would be a collection defect and are
+    labelled as such rather than silently pooled."""
     label = CONFIGURATION_LABELS[configuration]
     corner_flags = {bool(s.get("corner_excluded_from_collocation")) for s in per_seed.values()}
-    if corner_flags == {False}:
-        label += "\n[corner included in collocation]"
-    elif corner_flags == {True, False}:
-        label += "\n[mixed corner exclusion]"
+    if len(corner_flags) > 1:
+        label += "\n[MIXED corner exclusion: collection defect]"
     return label
 
 METRIC_PANELS: list[tuple[str, str, str]] = [
@@ -274,6 +301,10 @@ def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: b
         if require_nocorner and not corner_excluded and not subtraction:
             logger.info(f"  skipping {run_dir.name}: corner not excluded from collocation")
             continue
+        if not subtraction and not corner_excluded:
+            # Whole-domain smoothing run: a configuration of its own, so that it
+            # neither collides with nor is pooled with its corner-excluded twin.
+            configuration += CORNER_INCLUDED_SUFFIX
         has_far_field = match["farfield"] is not None
         if (far_field == "no" and has_far_field) or (far_field == "yes" and not has_far_field):
             logger.info(f"  skipping {run_dir.name}: far-field Dirichlet {'present' if has_far_field else 'absent'}, "
@@ -760,9 +791,13 @@ def main() -> None:
                         help="Directory holding the pilot's run directories "
                              "(default: the pilot's own data directory).")
     parser.add_argument("--include-corner-trained-runs", action="store_true",
-                        help="Also aggregate runs whose collocation sampler did NOT exclude the corner "
-                             "window (default: only _nocorner runs, so all configurations share the "
-                             "same training domain).")
+                        help="Also aggregate the SMOOTHING runs whose collocation sampler did NOT "
+                             "exclude the corner window (default: only _nocorner smoothing runs). They "
+                             "enter as configurations of their own, keyed "
+                             "'<configuration>_corner_included', so that a whole-domain run and its "
+                             "corner-excluded twin are both reported instead of one displacing the "
+                             "other. The analytic corner treatments always include the corner and are "
+                             "collected either way.")
     parser.add_argument("--metrics", nargs="+", type=str,
                         default=["rel_l2_outside_corner", "rel_l2_global", "rel_l2_corner",
                                  "max_abs_error_outside_corner", "best_loss", "best_iter"],
