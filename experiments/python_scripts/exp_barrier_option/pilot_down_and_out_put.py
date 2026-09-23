@@ -1581,6 +1581,16 @@ def main() -> None:
     else:
         logger.info(f"  Epsilons swept: {sorted(args.epsilons)}")
     logger.info(f"  Corner window (evaluation only): {corner_window:g}")
+    # The collocation domain is an experimental factor of the corner-treatment
+    # comparison, not an implementation detail: it is stated for every run, in
+    # the smoothing treatment as well as in the analytic ones.
+    logger.info(
+        "  Collocation domain: "
+        + (f"Omega minus the ell^1 corner window (s-B)+(T-t) <= {corner_window:g} "
+           f"(--exclude-corner-from-collocation): the interior residual is never enforced there"
+           if args.exclude_corner_from_collocation
+           else "the whole domain Omega = (B, s_inf) x (0, T), corner window INCLUDED")
+    )
     logger.info(f"  Iterations per epsilon: {args.iters}, n_f={args.n_f}")
     logger.info(f"  Master seed: {args.seed}")
     logger.info(f"    -> model_init seed: {derive_seed(args.seed, 'model_init')}")
