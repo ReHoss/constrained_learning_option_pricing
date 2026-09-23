@@ -1084,7 +1084,7 @@ The thirty runs of sections 15.4 and 16.4 were audited before being retained as 
 
 No defect was found. These thirty runs are retained and are not to be retrained.
 
-### 17.2 Whole-domain smoothing batch (design)
+### 17.2 Whole-domain smoothing batch (run on 2026-09-23)
 
 Twenty runs, $\varepsilon = 0.1$, $50000$ iterations, master seeds $0$–$4$, four threads, corner
 window kept in the collocation sampler, one configuration per terminal function: raw payoff,
@@ -1097,9 +1097,18 @@ configuration is host-matched with its exact-subtraction and corner-enrichment c
 extrapolated from the analytic batches at $0.053$ s/iteration: $\approx 45$ minutes per run,
 $\approx 15$ hours of processor time.
 
-The raw-payoff configuration has no corner-excluded counterpart at this budget; the other three do,
-so for them the pair of runs isolates the collocation domain at fixed terminal function, except for
-the split profile, where the evaluation route changes with it.
+The twenty runs completed on 2026-09-23 (`orleans` 12:36, `republique` 14:45, no failed job). All
+twenty have `corner_exclusion_window: null`, `split_profile: closed_form`, four threads and commit
+`e278d7e`; none emitted a `WARNING` or `ERROR` line, so no clamp activated; the derived seeds
+coincide with those of the two analytic batches at equal master seed, so the shared-seeding policy
+holds across the ten configurations.
+
+The split profile is evaluated by the same object in the three treatments, not merely by the same
+option: both construction paths instantiate `PutPayoffGaussianSemigroupExtensionField` with
+$K = 1$, $T = 1$, $\sigma_c = 0.3$, and the two fields agree to floating-point zero on $\pi$,
+$\partial_x\pi$ and $\partial_{xx}\pi$ over a $400\times200$ grid of $\Omega$ in float64. The
+corner-excluded split runs of 2026-09-12 use the quadrature route instead, so they are not the
+comparison of interest here and are not reproduced (no further corner-excluded training).
 
 **Aggregation.** A whole-domain smoothing run and its corner-excluded twin are different objects
 and are keyed as such: `collect_runs` appends `_corner_included` to the configuration key of a
@@ -1108,4 +1117,58 @@ smoothing run whose sampler kept the corner, and `CONFIGURATION_LABELS` holds th
 `--include-corner-trained-runs` two runs of the same terminal function and master seed collided and
 the more recent timestamp displaced the other from every figure and table — a silent loss, reported
 only as a `duplicate (...)` warning line. The analytic treatments always include the corner and keep
-their existing keys.
+their existing keys. The selector is `--collocation-domain {excluded, included, both}` on the
+aggregation and on the Greeks script; two figure captions that asserted the corner-excluded domain
+in fixed text now name the domain actually plotted.
+
+### 17.3 Measured on the common collocation domain (50000 iterations, 5 seeds per configuration)
+
+`data/aggregate_terminal_function_comparison/20260923_wholedomain_corner_treatments_iters50000`,
+figure report `rapports/corner_treatments_wholedomain_20260923`. Medians over five master seeds,
+ranges in brackets, every configuration trained on $\Omega$ with $w = 0.1$ for the evaluation
+windows.
+
+| Corner treatment, terminal profile | $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$ | $\mathrm{rel}_{L^2}(N_{0.1})$ | best interior loss |
+|---|---|---|---|
+| Smoothing, raw payoff | $0.520$ | $0.578$ | $1.74\times10^{-4}$ |
+| Smoothing, Black-Scholes, ordinary route | $0.277$ | $0.586$ | $1.77\times10^{-4}$ |
+| Smoothing, Black-Scholes, two-term route | $0.142$ | $0.591$ | $2.60\times10^{-4}$ |
+| Smoothing, split-semigroup | $0.283$ | $0.584$ | $2.11\times10^{-4}$ |
+| Exact subtraction, raw payoff | $0.455$ | $5.38\times10^{-5}$ | $2.58\times10^{-7}$ |
+| Exact subtraction, Black-Scholes | $4.69\times10^{-3}$ | $4.33\times10^{-5}$ | $1.71\times10^{-8}$ |
+| Exact subtraction, split-semigroup | $3.97\times10^{-3}$ | $4.05\times10^{-5}$ | $1.06\times10^{-8}$ |
+| Corner enrichment, raw payoff | $0.456$ | $6.42\times10^{-4}$ | $6.16\times10^{-7}$ |
+| Corner enrichment, Black-Scholes | $7.32\times10^{-3}$ | $7.85\times10^{-4}$ | $2.85\times10^{-7}$ |
+| Corner enrichment, split-semigroup | $6.85\times10^{-3}$ | $8.73\times10^{-4}$ | $4.41\times10^{-7}$ |
+
+Three readings, now free of the collocation-domain confound.
+
+**Enforcing the interior residual inside the corner window does not repair the smoothing ansatz
+there.** The four smoothing configurations sit at $\mathrm{rel}_{L^2}(N_{0.1}) = 0.578$–$0.591$,
+against $4\times10^{-5}$ for the exact subtraction (a factor of about $1.4\times10^{4}$) and
+$6$–$9\times10^{-4}$ for the corner enrichment (a factor of about $700$), although in all ten the
+residual is penalised at collocation points drawn from $N_{0.1}$. This is the prediction of section
+13 measured on the common domain: inside the layer the error of the smoothing ansatz is the terminal
+-trace defect $-(1-\zeta)(K-s)^+$ of $g_2$ itself, which the network cannot remove because $g_1$
+vanishes on the terminal face — it is a defect of the datum the ansatz reproduces, not of the
+equation it satisfies, so adding collocation points cannot act on it.
+
+**On the comparison metric the ordering is unchanged and the margin is a factor of 20 to 70.** With
+a terminal profile that treats the strike, the smoothing runs give $0.142$–$0.283$ against
+$4$–$5\times10^{-3}$ (exact subtraction) and $7\times10^{-3}$ (corner enrichment). The raw payoff
+profile fails at the strike in all three treatments ($0.455$–$0.520$), confirming again that this
+failure is the strike's and not the corner's.
+
+**Including the corner in collocation degrades the smoothing solution outside the corner as well.**
+At fixed terminal function, the Black-Scholes configurations move from
+$\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1}) = 0.122$ (ordinary route) and $0.124$ (two-term
+route) on $\Omega\setminus N_{0.1}$ (section 11.1) to $0.277$ and $0.142$ on $\Omega$: a factor of
+$2.3$ and of $1.15$. The interpretation — that the large residual the $\zeta$ layer generates near
+the corner competes for network capacity with the rest of the domain — is the reading of two
+measurements at $n = 5$ with overlapping ranges on the two-term route, not a controlled test. The
+split pair is not usable for this comparison, its evaluation route having changed with the domain.
+
+The best interior loss separates the treatments by three to four orders of magnitude
+($10^{-4}$ against $10^{-8}$–$10^{-7}$), in the order Table 1 of Doc A predicts: the smoothing
+ansatz must absorb through the network the $O(\varepsilon^{-2})$ residual of the cutoff, the
+enrichment a square-integrable residual, and the subtraction none at all.
