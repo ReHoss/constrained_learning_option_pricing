@@ -245,8 +245,9 @@ def plot_profiles(curves: dict, path: Path, s_plot_max: float, zoom: bool = Fals
     legend = fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, 0.095), ncol=4, fontsize=8)
     title = ("Down-and-out put — price, Delta and Gamma profiles near the corner (one seed)" if zoom
              else "Down-and-out put — price, Delta and Gamma profiles of the corner treatments (one seed)")
-    formula = FORMULA_PROFILES + ("\nZoom on the corner region; dashed grey vertical: $s = B + B\sigma\sqrt{2(T-t)}$, "
-                                  "the diffusion length of the corner layer at that $t$." if zoom else "")
+    formula = FORMULA_PROFILES + (
+        "\n" + r"Zoom on the corner region; dashed grey vertical: $s = B + B\sigma\sqrt{2(T-t)}$, "
+        "the diffusion length of the corner layer at that $t$." if zoom else "")
     fig.suptitle(title, fontsize=11)
     fig.subplots_adjust(left=0.06, right=0.99, top=0.93, bottom=0.21, wspace=0.25, hspace=0.3)
     finalize_figure(fig, path, legends=[legend], formula=formula, axes=list(axes.reshape(-1)), formula_fontsize=7)
