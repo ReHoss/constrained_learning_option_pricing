@@ -1,0 +1,12 @@
+# porte-d-orleans (AVX2, 20 physical cores -> 5 jobs x 4 threads; bit-identical to republique):
+# raw-payoff baseline of the whole-domain smoothing batch (no strike treatment), epsilon = 0.1,
+# 50000 iterations, corner KEPT in collocation, seeds 0-4, 4 threads.
+# Same host as the raw-payoff runs of the exact-subtraction and corner-enrichment batches
+# (joblist_50k_subtraction_orleans.txt, joblist_50k_enrichment_orleans.txt), so the three
+# corner treatments are host-matched at this terminal profile.
+# No corner-excluded counterpart exists at this budget: this configuration is new.
+--epsilons 0.1 --iters 50000 --seed 0
+--epsilons 0.1 --iters 50000 --seed 1
+--epsilons 0.1 --iters 50000 --seed 2
+--epsilons 0.1 --iters 50000 --seed 3
+--epsilons 0.1 --iters 50000 --seed 4

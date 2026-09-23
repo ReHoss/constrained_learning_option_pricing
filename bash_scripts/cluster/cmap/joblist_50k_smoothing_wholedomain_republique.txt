@@ -1,0 +1,31 @@
+# republique (AVX2, 16 physical cores -> 4 jobs x 4 threads): corner-regularised SMOOTHING
+# ansatz trained on the WHOLE domain, i.e. with the ell^1 corner window KEPT in the collocation
+# sampler (no --exclude-corner-from-collocation). epsilon = 0.1, 50000 iterations, seeds 0-4.
+#
+# Purpose: make the smoothing treatment comparable with the exact-subtraction batch
+# (joblist_50k_subtraction_*.txt) and the corner-enrichment batch (joblist_50k_enrichment_*.txt),
+# which both train on the whole domain. The corner is the object under study, so the domain that
+# contains it is the reference domain and it is the smoothing runs that must follow; the
+# corner-excluded smoothing runs of section 11.1 remain as the second level of the collocation
+# -domain factor (aggregation keys '<configuration>_corner_included' against '<configuration>').
+#
+# Same budget, seeds, thread count and hosts as the two analytic batches, so that at fixed
+# terminal profile the three corner treatments are host-matched: the Black-Scholes and split
+# profiles run here, the raw-payoff baseline on porte-d-orleans.
+# The split profile uses the closed-form evaluation route (--split-profile default), as the
+# analytic batches do, and not the quadrature route of the 2026-09-12 corner-excluded runs.
+--epsilons 0.1 --iters 50000 --seed 0 --black-scholes-payoff
+--epsilons 0.1 --iters 50000 --seed 1 --black-scholes-payoff
+--epsilons 0.1 --iters 50000 --seed 2 --black-scholes-payoff
+--epsilons 0.1 --iters 50000 --seed 3 --black-scholes-payoff
+--epsilons 0.1 --iters 50000 --seed 4 --black-scholes-payoff
+--epsilons 0.1 --iters 50000 --seed 0 --black-scholes-payoff --analytic-residual
+--epsilons 0.1 --iters 50000 --seed 1 --black-scholes-payoff --analytic-residual
+--epsilons 0.1 --iters 50000 --seed 2 --black-scholes-payoff --analytic-residual
+--epsilons 0.1 --iters 50000 --seed 3 --black-scholes-payoff --analytic-residual
+--epsilons 0.1 --iters 50000 --seed 4 --black-scholes-payoff --analytic-residual
+--epsilons 0.1 --iters 50000 --seed 0 --split-payoff
+--epsilons 0.1 --iters 50000 --seed 1 --split-payoff
+--epsilons 0.1 --iters 50000 --seed 2 --split-payoff
+--epsilons 0.1 --iters 50000 --seed 3 --split-payoff
+--epsilons 0.1 --iters 50000 --seed 4 --split-payoff

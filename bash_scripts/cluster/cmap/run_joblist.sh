@@ -29,5 +29,16 @@ grep -vE '^\s*(#|$)' "$JOBLIST" | while read -r args; do
     n=$((n + 1)); tag=$(printf 'job%02d' "$n")
     printf 'python3 %s %s --num-threads %s > %s/%s.log 2>&1\n' "$PILOT" "$args" "$THREADS" "$LOGDIR" "$tag" > "$LOGDIR/jobs/$tag.sh"
 done
-ls "$LOGDIR"/jobs/*.sh | xargs -P "$MAX_PARALLEL" -n 1 bash
-echo "ALL JOBS FINISHED $(date)"
+# A job that exits non-zero (e.g. "Illegal instruction" in libtorch_cpu.so on a
+# host without AVX2) makes xargs return non-zero, which under "set -e" would
+# abort the launcher before the final marker and silently break any chained
+# relaunch waiting for it. The status is captured instead, reported, and the
+# marker is always printed, so the surviving jobs are still accounted for.
+xargs_status=0
+ls "$LOGDIR"/jobs/*.sh | xargs -P "$MAX_PARALLEL" -n 1 bash || xargs_status=$?
+if [ "$xargs_status" -ne 0 ]; then
+    echo "WARNING: xargs exited with status $xargs_status: at least one job failed"
+    echo "         (BSD and GNU xargs both use 123 for 'one or more invocations returned non-zero')."
+    echo "         Per-job logs, one per line of the joblist, are in $LOGDIR."
+fi
+echo "ALL JOBS FINISHED $(date)  (xargs status $xargs_status)"
