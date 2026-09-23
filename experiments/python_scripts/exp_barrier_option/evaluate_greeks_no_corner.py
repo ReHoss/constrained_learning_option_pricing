@@ -88,7 +88,7 @@ from learning_option_pricing.pricing.barrier import (  # noqa: E402
 from learning_option_pricing.utils.figure_layout import finalize_figure  # noqa: E402
 from learning_option_pricing.utils.run_context import script_data_dir  # noqa: E402
 from aggregate_terminal_function_comparison import (  # noqa: E402
-    CONFIGURATION_LABELS, PILOT_SCRIPT_PATH, collect_runs,
+    COLLOCATION_DOMAINS, CONFIGURATION_LABELS, PILOT_SCRIPT_PATH, collect_runs,
 )
 from pilot_down_and_out_put import DEVICE, load_trained_model, read_run_metadata  # noqa: E402
 
@@ -350,6 +350,11 @@ def main() -> None:
     parser.add_argument("--hosts", nargs="+", type=str, default=None,
                         help="Keep only runs whose last training segment ran on one of these short host names "
                              "(see aggregate_terminal_function_comparison.py --hosts).")
+    parser.add_argument("--collocation-domain", type=str, default="excluded", choices=COLLOCATION_DOMAINS,
+                        help="Which SMOOTHING runs to evaluate, by the domain their collocation sampler "
+                             "drew from (see aggregate_terminal_function_comparison.py "
+                             "--collocation-domain). The two sets must match between the aggregation and "
+                             "the Greeks, since the report puts their figures side by side.")
     parser.add_argument("--out-dir", type=str, default=None, help="Output directory override.")
     args = parser.parse_args()
 
@@ -373,7 +378,7 @@ def main() -> None:
     logger.info(f"  times t = {args.times}")
     torch.set_default_dtype(torch.float64 if args.dtype == "float64" else torch.float32)
 
-    runs = collect_runs(base_dir, args.iters, args.epsilon, require_nocorner=True, hosts=args.hosts,
+    runs = collect_runs(base_dir, args.iters, args.epsilon, collocation_domain=args.collocation_domain, hosts=args.hosts,
                         far_field=args.far_field)
     if not runs:
         logger.error("No matching corner-excluded run directory found.")

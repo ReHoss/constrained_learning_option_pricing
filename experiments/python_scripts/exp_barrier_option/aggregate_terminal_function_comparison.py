@@ -202,12 +202,32 @@ def configuration_tick_label(configuration: str, per_seed: dict) -> str:
         label += "\n[MIXED corner exclusion: collection defect]"
     return label
 
-METRIC_PANELS: list[tuple[str, str, str]] = [
-    ("rel_l2_outside_corner", "Relative $L^2$ error outside the corner window\n(comparison metric)", "log"),
-    ("rel_l2_global", "Relative $L^2$ error, whole domain\n(corner window INCLUDED: contaminated by the corner)", "log"),
-    ("rel_l2_corner", "Relative $L^2$ error inside the corner window\n(diagnostic: residual not enforced there)", "log"),
-    ("best_loss", "Best interior residual loss\n(minimum over iterations of a noisy batch loss)", "log"),
-]
+#: Second line of the ``rel_l2_corner`` panel title. Whether the interior
+#: residual is enforced inside the corner window is a property of the runs
+#: shown, not of the metric: with the corner excluded the value diagnoses an
+#: unconstrained region, with it included it measures a region the training
+#: actually penalised.
+CORNER_PANEL_SUBTITLES = {
+    "excluded": "(diagnostic: residual not enforced there)",
+    "included": "(residual enforced there: the corner is in the collocation domain)",
+    "both": "(residual enforced there only in the whole-domain runs)",
+}
+
+
+def metric_panels(collocation_domain: str) -> list[tuple[str, str, str]]:
+    """Panels of the comparison figure, with the corner panel's subtitle set by
+    the collocation domain of the runs being plotted."""
+    return [
+        ("rel_l2_outside_corner", "Relative $L^2$ error outside the corner window\n(comparison metric)", "log"),
+        ("rel_l2_global", "Relative $L^2$ error, whole domain\n(corner window INCLUDED: contaminated by the corner)", "log"),
+        ("rel_l2_corner", "Relative $L^2$ error inside the corner window\n"
+         + CORNER_PANEL_SUBTITLES[collocation_domain], "log"),
+        ("best_loss", "Best interior residual loss\n(minimum over iterations of a noisy batch loss)", "log"),
+    ]
+
+
+#: Default panels, kept for callers that do not select a collocation domain.
+METRIC_PANELS: list[tuple[str, str, str]] = metric_panels("excluded")
 
 FORMULA_TEXT = (
     r"$\mathrm{rel}_{L^2}(\Omega)=\|V_\theta-V_{DO}\|_{L^2(\Omega)}/\|V_{DO}\|_{L^2(\Omega)}$ on a "
@@ -263,7 +283,22 @@ def training_host_of_run(run_dir: Path) -> str | None:
     return host.split(".")[0] if host else None
 
 
-def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: bool,
+#: Values of ``collocation_domain`` in :func:`collect_runs`: which SMOOTHING runs
+#: to keep, by the domain their collocation sampler drew from. The analytic
+#: corner treatments have no corner layer to exclude and are collected whichever
+#: value is given.
+COLLOCATION_DOMAINS = ("excluded", "included", "both")
+
+#: Figure-caption clause naming the collocation domain of the runs plotted, so
+#: that a figure is never read against the wrong training set.
+COLLOCATION_DOMAIN_CAPTIONS = {
+    "excluded": "corner window excluded from the collocation of the smoothing runs",
+    "included": "whole domain, corner window included in collocation for every treatment",
+    "both": "both collocation domains, each configuration labelled with its own",
+}
+
+
+def collect_runs(base_dir: Path, iters: int, epsilon: float, collocation_domain: str = "excluded",
                  hosts: list[str] | None = None, far_field: str = "no") -> dict[str, dict[int, dict]]:
     """Return ``{configuration_key: {seed: summary_with_run_dir}}``.
 
@@ -278,11 +313,13 @@ def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: b
     Exact-subtraction and corner-enrichment runs (``_subtraction_<profile>``,
     ``_enrichment_<profile>_...`` tags) have no corner layer: their directory epsilon is the placeholder ``0`` and the corner is
     ordinarily included in their collocation. They are therefore collected
-    regardless of ``epsilon`` and of ``require_nocorner`` (both filters act on
+    regardless of ``epsilon`` and of ``collocation_domain`` (both filters act on
     the smoothing runs only), and each summary records its own ``epsilon`` so
     the model loaders use the right file name. The figures label such
     configurations with their corner treatment.
     """
+    if collocation_domain not in COLLOCATION_DOMAINS:
+        raise ValueError(f"collocation_domain must be one of {COLLOCATION_DOMAINS}; got {collocation_domain!r}.")
     runs: dict[str, dict[int, dict]] = defaultdict(dict)
     for run_dir in sorted(base_dir.iterdir()):
         if not run_dir.is_dir() or run_dir.name.startswith("_debug_"):
@@ -298,9 +335,13 @@ def collect_runs(base_dir: Path, iters: int, epsilon: float, require_nocorner: b
         if not subtraction and run_epsilon != epsilon:
             continue
         corner_excluded = match["nocorner"] is not None
-        if require_nocorner and not corner_excluded and not subtraction:
-            logger.info(f"  skipping {run_dir.name}: corner not excluded from collocation")
-            continue
+        if not subtraction and collocation_domain != "both":
+            wanted = collocation_domain == "excluded"
+            if corner_excluded is not wanted:
+                logger.info(f"  skipping {run_dir.name}: corner "
+                            f"{'excluded from' if corner_excluded else 'included in'} collocation, "
+                            f"--collocation-domain {collocation_domain}")
+                continue
         if not subtraction and not corner_excluded:
             # Whole-domain smoothing run: a configuration of its own, so that it
             # neither collides with nor is pooled with its corner-excluded twin.
@@ -439,7 +480,8 @@ def write_budget_comparison(aggregated: dict, other_summary_path: Path, metrics:
     path.write_text("\n".join(lines) + "\n")
 
 
-def plot_comparison(aggregated: dict, path: Path, iters: int, epsilon: float) -> None:
+def plot_comparison(aggregated: dict, path: Path, iters: int, epsilon: float,
+                    collocation_domain: str = "excluded") -> None:
     configurations = list(aggregated)
     # Panel width grows with the number of configurations so the rotated
     # multi-line tick labels do not overlap (six configurations once the
@@ -451,7 +493,7 @@ def plot_comparison(aggregated: dict, path: Path, iters: int, epsilon: float) ->
     fig, axes_grid = plt.subplots(n_rows, n_cols, figsize=(panel_width * n_cols, 5.4 * n_rows))
     axes = list(axes_grid.reshape(-1))
     positions = range(len(configurations))
-    for ax, (metric, title, scale) in zip(axes, METRIC_PANELS):
+    for ax, (metric, title, scale) in zip(axes, metric_panels(collocation_domain)):
         for position, configuration in zip(positions, configurations):
             stats = aggregated[configuration]["metrics"][metric]
             values = [v for v in stats["per_seed"].values() if v is not None]
@@ -474,7 +516,7 @@ def plot_comparison(aggregated: dict, path: Path, iters: int, epsilon: float) ->
         ax.set_ylabel("Metric value")
     fig.suptitle(
         f"Down-and-out put — terminal-function comparison, {iters} iterations, "
-        f"$\\varepsilon={epsilon:g}$ for the smoothing runs (corner excluded from collocation unless labelled)",
+        f"$\\varepsilon={epsilon:g}$ for the smoothing runs; " + COLLOCATION_DOMAIN_CAPTIONS[collocation_domain],
         fontsize=10,
     )
     # Explicit margins: the rotated two-line tick labels and the formula box
@@ -664,7 +706,8 @@ def _median_over_seeds(per_seed: dict, extract) -> float | None:
     return statistics.median(values) if values else None
 
 
-def plot_window_shape_sweep(sweep: dict, path: Path, iters: int, epsilon: float) -> None:
+def plot_window_shape_sweep(sweep: dict, path: Path, iters: int, epsilon: float,
+                            collocation_domain: str = "excluded") -> None:
     configurations = list(sweep)
     # At most three panels per row so the figure keeps a page-friendly aspect ratio.
     n_cols = min(3, len(configurations))
@@ -706,7 +749,7 @@ def plot_window_shape_sweep(sweep: dict, path: Path, iters: int, epsilon: float)
                         ncol=len(handles), fontsize=8, title="Excluded window family (shape)")
     fig.suptitle(
         f"Down-and-out put — error vs. excluded area for three window shapes, {iters} iterations, "
-        f"$\\varepsilon={epsilon:g}$, corner window excluded from collocation",
+        f"$\\varepsilon={epsilon:g}$; " + COLLOCATION_DOMAIN_CAPTIONS[collocation_domain],
         fontsize=10,
     )
     fig.subplots_adjust(left=0.08, right=0.98, top=0.90, bottom=0.22, wspace=0.12, hspace=0.35)
@@ -790,14 +833,15 @@ def main() -> None:
     parser.add_argument("--base-dir", type=str, default=None,
                         help="Directory holding the pilot's run directories "
                              "(default: the pilot's own data directory).")
-    parser.add_argument("--include-corner-trained-runs", action="store_true",
-                        help="Also aggregate the SMOOTHING runs whose collocation sampler did NOT "
-                             "exclude the corner window (default: only _nocorner smoothing runs). They "
-                             "enter as configurations of their own, keyed "
-                             "'<configuration>_corner_included', so that a whole-domain run and its "
-                             "corner-excluded twin are both reported instead of one displacing the "
-                             "other. The analytic corner treatments always include the corner and are "
-                             "collected either way.")
+    parser.add_argument("--collocation-domain", type=str, default="excluded", choices=COLLOCATION_DOMAINS,
+                        help="Which SMOOTHING runs to aggregate, by the domain their collocation "
+                             "sampler drew from. 'excluded' (default): the _nocorner runs of the "
+                             "section-11.1 comparison. 'included': the whole-domain runs, the domain "
+                             "the analytic corner treatments train on, so that a corner-treatment "
+                             "comparison varies only the treatment. 'both': the two sets side by "
+                             "side, the whole-domain runs keyed '<configuration>_corner_included' so "
+                             "that neither displaces the other. The analytic corner treatments have "
+                             "no corner layer to exclude and are collected whichever value is given.")
     parser.add_argument("--metrics", nargs="+", type=str,
                         default=["rel_l2_outside_corner", "rel_l2_global", "rel_l2_corner",
                                  "max_abs_error_outside_corner", "best_loss", "best_iter"],
@@ -828,7 +872,8 @@ def main() -> None:
     args = parser.parse_args()
 
     base_dir = Path(args.base_dir) if args.base_dir is not None else script_data_dir(PILOT_SCRIPT_PATH)
-    corner_tag = ("" if args.include_corner_trained_runs else "_nocorner") + {"no": "", "yes": "_farfield", "any": "_anyfarfield"}[args.far_field]
+    corner_tag = {"excluded": "_nocorner", "included": "_wholedomain", "both": "_bothdomains"}[
+        args.collocation_domain] + {"no": "", "yes": "_farfield", "any": "_anyfarfield"}[args.far_field]
     out_dir = (Path(args.out_dir) if args.out_dir is not None else script_data_dir(__file__) / (
         f"{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}_iters{args.iters}_eps{args.epsilon:g}{corner_tag}"
     ))
@@ -844,9 +889,9 @@ def main() -> None:
     logger.info(f"  Run directories read from: {base_dir}")
     logger.info(f"  Output directory: {out_dir}")
     logger.info(f"  iters={args.iters}  epsilon={args.epsilon:g}  corner-trained runs included: "
-                f"{args.include_corner_trained_runs}  metrics={args.metrics}")
+                f"{args.collocation_domain}  metrics={args.metrics}")
 
-    runs = collect_runs(base_dir, args.iters, args.epsilon, require_nocorner=not args.include_corner_trained_runs,
+    runs = collect_runs(base_dir, args.iters, args.epsilon, collocation_domain=args.collocation_domain,
                         hosts=args.hosts, far_field=args.far_field)
     if not runs:
         logger.error("No matching run directory found.")
@@ -860,7 +905,7 @@ def main() -> None:
         yaml.dump({
             "command": " ".join(sys.argv),
             "iters": args.iters, "epsilon": args.epsilon,
-            "corner_trained_runs_included": args.include_corner_trained_runs,
+            "collocation_domain": args.collocation_domain,
             "hosts_filter": args.hosts,
             "far_field_filter": args.far_field,
             "base_dir": str(base_dir),
@@ -874,7 +919,7 @@ def main() -> None:
                                 out_dir / "budget_comparison.md", args.iters)
         logger.info(f"  Budget comparison saved -> {out_dir / 'budget_comparison.md'}")
     figure_path = out_dir / "figures" / "terminal_function_comparison.png"
-    plot_comparison(aggregated, figure_path, args.iters, args.epsilon)
+    plot_comparison(aggregated, figure_path, args.iters, args.epsilon, args.collocation_domain)
     logger.info(f"  Figure saved -> {figure_path}")
     for configuration, entry in aggregated.items():
         stats = entry["metrics"].get("rel_l2_outside_corner")
@@ -919,7 +964,7 @@ def main() -> None:
     logger.info(f"  Diagnostics saved -> {diagnostics_dir} (window_shape_sweep.yaml, "
                 f"band_network_contribution.yaml, diagnostics.md, evaluation_grids/)")
     sweep_figure = diagnostics_dir / "figures" / "rel_l2_vs_excluded_area_by_window_shape.png"
-    plot_window_shape_sweep(sweep, sweep_figure, args.iters, args.epsilon)
+    plot_window_shape_sweep(sweep, sweep_figure, args.iters, args.epsilon, args.collocation_domain)
     logger.info(f"  Figure saved -> {sweep_figure}")
     band_figure = diagnostics_dir / "figures" / "band_network_contribution.png"
     plot_band_network_contribution(band, band_figure, args.iters, args.epsilon, args.band_lo, args.band_hi)
