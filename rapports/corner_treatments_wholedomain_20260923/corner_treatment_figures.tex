@@ -336,6 +336,57 @@ Les deux résolutions analytiques écrivent l'extension comme une partie singuli
 
 \end{landscape}
 
+\section{Gamma de l'enrichissement contre Gamma de la soustraction}
+La dérivée seconde en prix est la quantité la plus exposée au forçage intérieur de la section précédente, et c'est celle à réduire si l'enrichissement doit être amélioré. La figure de zoom du coin de la section précédente trace les deux traitements analytiques \emph{avec} le run de lissage, dont $\partial_{ss}\Phi_\theta$ oscille sur quatre décades dans le même panneau : à cette échelle les deux courbes analytiques sont confondues et leur écart n'est pas lisible. Les figures ci-dessous retirent le lissage et résolvent les deux traitements analytiques seuls, sur les cinq graines maîtresses. Évaluation ponctuelle en float64 à partir des modèles sauvegardés, sans réentraînement. Source : \path{data/compare_gamma_subtraction_enrichment/20260924_blackscholes_allseeds}.
+\begin{table}[H]
+\centering
+\scriptsize
+\begin{adjustbox}{max width=\textwidth}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Bande $s-B$} & \textbf{Rôle du cutoff} & \textbf{$\|e_\Gamma\|_{L^2}$ soustraction} & \textbf{$\|e_\Gamma\|_{L^2}$ enrichissement} & \textbf{Rapport} \\
+\midrule
+$[0, 0.1)$ & plateau, $\chi\equiv1$ & 2.384e-02 & 8.113e-02 & 3.4 \\
+$[0.1, 0.3)$ & transition, $\chi'\neq0$ & 7.270e-04 & 2.566e-02 & 35.3 \\
+$[0.3, 0.4)$ & $\chi\equiv0$, avant le strike & 2.598e-04 & 4.196e-03 & 16.2 \\
+$[0.4, 0.6)$ & $\chi\equiv0$, après le strike & 1.999e-04 & 1.401e-03 & 7.0 \\
+\bottomrule
+\end{tabular}
+\end{adjustbox}
+\caption{Norme $L^2$ en $s$ de l'erreur de Gamma sur chaque bande de prix, médiane sur les cinq graines puis moyenne sur le temps calendaire. Le rapport est le facteur que l'enrichissement doit gagner pour rejoindre la soustraction.}
+\label{tab:gamma-bands}
+\end{table}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/gamma_profiles_corner.png}
+\caption{Ligne du haut : $\partial_{ss}\Phi_\theta(s,t)$ des deux traitements (médiane sur les graines en trait épais, graines individuelles en trait fin) et $\partial_{ss}V_{DO}$ en tirets noirs. Ligne du milieu : l'erreur signée $e_\Gamma$, en échelle symlog. Ligne du bas : $|e_\Gamma|$ en échelle logarithmique, avec $|\mathcal L^{BS}S_{\mathrm{enr}}|$ superposé en pointillé sur l'axe de droite. La lecture : l'erreur de Gamma de l'enrichissement oscille entre la barrière et $s=B+\delta_1=0.9$, exactement le support du forçage, et rejoint celle de la soustraction au-delà.}
+\label{fig:gamma-profiles}
+\end{figure}
+
+\end{landscape}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/gamma_error_heatmaps.png}
+\caption{$|e_\Gamma|$ sur $(s,t)$ pour chaque traitement, échelle logarithmique commune, médiane sur les graines ; à droite leur rapport en $\log_{10}$. Le rouge domine : l'enrichissement est moins bon presque partout. Les filaments bleus sont les lignes nodales où l'erreur de l'un des deux change de signe et passe par zéro, pas des régions où l'enrichissement est meilleur. La tranche terminale $t=T$ est exclue : l'erreur y est nulle par construction.}
+\label{fig:gamma-heatmaps}
+\end{figure}
+
+\end{landscape}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/gamma_error_by_band.png}
+\caption{Norme $L^2$ en $s$ de l'erreur de Gamma sur chaque bande, en fonction du temps calendaire ; traits fins : graines individuelles. L'écart entre les deux traitements est reproductible sur les cinq graines (les faisceaux ne se croisent pas dans les deux premières bandes), donc il vient de la construction et non du bruit d'optimisation.}
+\label{fig:gamma-bands}
+\end{figure}
+
+\end{landscape}
+
 \section{Figures par run (graine 0)}
 Pour chaque configuration, le run de la graine 0 : surface de prix sur la grille d'évaluation (entraîné, forme fermée, différence signée) ; coupes $V(s,t)$ à $t$ fixé en échelle symlog (linéaire sous $10^{-6}$, logarithmique au-delà) --- le prix va de $0.4$ près de la barrière à $10^{-5}$ dans le champ lointain, invisible en linéaire, et un prix entraîné qui change de signe y apparaît comme un passage sous zéro, pas comme une chute vers un plancher ; et, pour les traitements analytiques, la décomposition de l'estimateur $\Phi_\theta=S+h+g_1u_\theta$ ($S=\Delta V_{DOD}$ ou $S=\chi\Delta\,\mathrm{erf}(\xi)$, $h=\pi-\chi\,\pi(B,\cdot)$). Cette dernière montre ce que la partie en forme fermée reproduit à elle seule, ce que l'extension régulière ajoute et ce qui reste au réseau : pour la soustraction le réseau est presque nul (l'ansatz porte la solution) ; pour l'enrichissement $E$ est localisé par $\chi$ et $h$ présente un creux compensateur dans la bande de transition $[B+\delta_0,B+\delta_1]$, que le réseau doit corriger --- c'est là que se situe son surcroît d'erreur.
 \subsection{Raw payoff $(K-s)^+$ [whole domain: corner in collocation]}

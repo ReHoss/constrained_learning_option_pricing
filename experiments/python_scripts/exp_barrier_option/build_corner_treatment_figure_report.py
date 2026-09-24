@@ -100,7 +100,13 @@ def markdown_tables(markdown_path: Path) -> list[tuple[str, list[list[str]]]]:
     return tables
 
 
-def table_to_latex(rows: list[list[str]], caption: str, label: str, font_size: str = r"\scriptsize") -> str:
+def table_to_latex(rows: list[list[str]], caption: str, label: str, font_size: str = r"\scriptsize",
+                   escape: bool = True) -> str:
+    """``escape=False`` passes the cells through as LaTeX source, for a table
+    whose own cells carry maths (band intervals, cutoff conditions)."""
+    def cell(text: str) -> str:
+        return latex_escape_text(text) if escape else text
+
     header, body = rows[0], rows[1:]
     n_columns = len(header)
     column_spec = "l" + "c" * (n_columns - 1)
@@ -108,11 +114,11 @@ def table_to_latex(rows: list[list[str]], caption: str, label: str, font_size: s
         r"\begin{table}[H]", r"\centering", font_size,
         r"\begin{adjustbox}{max width=\textwidth}",
         rf"\begin{{tabular}}{{{column_spec}}}", r"\toprule",
-        " & ".join(r"\textbf{" + latex_escape_text(c) + "}" for c in header) + r" \\", r"\midrule",
+        " & ".join(r"\textbf{" + cell(c) + "}" for c in header) + r" \\", r"\midrule",
     ]
     for row in body:
         row = row + [""] * (n_columns - len(row))
-        lines.append(" & ".join(latex_escape_text(c) for c in row[:n_columns]) + r" \\")
+        lines.append(" & ".join(cell(c) for c in row[:n_columns]) + r" \\")
     lines += [r"\bottomrule", r"\end{tabular}", r"\end{adjustbox}",
               rf"\caption{{{caption}}}", rf"\label{{{label}}}", r"\end{table}", ""]
     return "\n".join(lines)
@@ -194,6 +200,11 @@ def main() -> None:
                              "(optional). One directory per terminal function gives one subsection each, "
                              "so the three corner treatments are compared at fixed terminal function in "
                              "every figure; the terminal function is read from each directory's curves.pt.")
+    parser.add_argument("--gamma-dir", type=str, default=None,
+                        help="Output directory of "
+                             "diagnostic_scripts/compare_gamma_subtraction_enrichment.py (optional): "
+                             "the second price derivative of the two analytic corner resolutions "
+                             "resolved against each other, without the smoothing runs.")
     parser.add_argument("--singular-parts-dir", type=str, default=None,
                         help="Output directory of "
                              "diagnostic_scripts/compare_singular_parts_subtraction_enrichment.py "
@@ -213,6 +224,7 @@ def main() -> None:
     greeks_dir = Path(args.greeks_dir).resolve() if args.greeks_dir else None
     profiles_dirs = [Path(d).resolve() for d in (args.profiles_dir or [])]
     singular_parts_dir = Path(args.singular_parts_dir).resolve() if args.singular_parts_dir else None
+    gamma_dir = Path(args.gamma_dir).resolve() if args.gamma_dir else None
     out_dir = Path(args.out_dir).resolve() if args.out_dir else (
         repo_root / "rapports" / f"corner_treatments_{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}"
     )
@@ -226,6 +238,7 @@ def main() -> None:
     for profiles_dir in profiles_dirs:
         logger.info(f"Profiles: {profiles_dir}")
     logger.info(f"Singular parts: {singular_parts_dir}")
+    logger.info(f"Gamma comparison: {gamma_dir}")
     logger.info(f"Report directory: {out_dir}")
 
     with open(aggregation_dir / "summary.yaml") as f:
@@ -490,6 +503,78 @@ def main() -> None:
                      r"reste sous $0.09$. Ligne du bas : $|\mathcal L^{BS}S|$ en échelle logarithmique ; celui de "
                      r"la soustraction est exactement nul et ne peut pas être tracé sur un axe logarithmique, ce "
                      r"que le panneau indique.", "fig:singular-parts-slices", landscape=True))
+
+    # ---- 4c. Gamma of the two analytic resolutions against each other --------
+    if gamma_dir is not None and gamma_dir.exists():
+        sections.append(r"\section{Gamma de l'enrichissement contre Gamma de la soustraction}")
+        measured = {}
+        summary_path = gamma_dir / "summary.yaml"
+        if summary_path.exists():
+            with open(summary_path) as handle:
+                measured = yaml.safe_load(handle).get("measured", {}).get("bands", {})
+        sections.append(
+            r"La dérivée seconde en prix est la quantité la plus exposée au forçage intérieur de la section "
+            r"précédente, et c'est celle à réduire si l'enrichissement doit être amélioré. La figure de zoom du "
+            r"coin de la section précédente trace les deux traitements analytiques \emph{avec} le run de "
+            r"lissage, dont $\partial_{ss}\Phi_\theta$ oscille sur quatre décades dans le même panneau : à cette "
+            r"échelle les deux courbes analytiques sont confondues et leur écart n'est pas lisible. Les figures "
+            r"ci-dessous retirent le lissage et résolvent les deux traitements analytiques seuls, sur les cinq "
+            r"graines maîtresses. Évaluation ponctuelle en float64 à partir des modèles sauvegardés, sans "
+            r"réentraînement. "
+            "Source : " + path_block(str(gamma_dir.relative_to(repo_root))) + "."
+        )
+        if measured:
+            rows = [["Bande $s-B$", "Rôle du cutoff",
+                     r"$\|e_\Gamma\|_{L^2}$ soustraction", r"$\|e_\Gamma\|_{L^2}$ enrichissement",
+                     "Rapport"]]
+            roles = {"s-B in [0, 0.1)": r"plateau, $\chi\equiv1$",
+                     "s-B in [0.1, 0.3)": r"transition, $\chi'\neq0$",
+                     "s-B in [0.3, 0.4)": r"$\chi\equiv0$, avant le strike",
+                     "s-B in [0.4, 0.6)": r"$\chi\equiv0$, après le strike"}
+            for band, per_configuration in measured.items():
+                values = [v for k, v in per_configuration.items() if isinstance(v, dict)]
+                ratio = per_configuration.get("ratio_enrichment_over_subtraction")
+                if len(values) != 2:
+                    continue
+                rows.append([
+                    band.replace("s-B in ", "$") + "$", roles.get(band, ""),
+                    f"{values[0]['median_over_seeds_time_mean']:.3e}",
+                    f"{values[1]['median_over_seeds_time_mean']:.3e}",
+                    f"{ratio:.1f}" if ratio is not None else "---",
+                ])
+            sections.append(table_to_latex(
+                rows, r"Norme $L^2$ en $s$ de l'erreur de Gamma sur chaque bande de prix, médiane sur les cinq "
+                      r"graines puis moyenne sur le temps calendaire. Le rapport est le facteur que "
+                      r"l'enrichissement doit gagner pour rejoindre la soustraction.",
+                "tab:gamma-bands", escape=False))
+        rel = copy_figure(gamma_dir / "figures" / "gamma_profiles_corner.png", "gamma_profiles_corner.png")
+        if rel:
+            sections.append(figure_block(
+                rel, r"Ligne du haut : $\partial_{ss}\Phi_\theta(s,t)$ des deux traitements (médiane sur les "
+                     r"graines en trait épais, graines individuelles en trait fin) et $\partial_{ss}V_{DO}$ en "
+                     r"tirets noirs. Ligne du milieu : l'erreur signée $e_\Gamma$, en échelle symlog. Ligne du "
+                     r"bas : $|e_\Gamma|$ en échelle logarithmique, avec $|\mathcal L^{BS}S_{\mathrm{enr}}|$ "
+                     r"superposé en pointillé sur l'axe de droite. La lecture : l'erreur de Gamma de "
+                     r"l'enrichissement oscille entre la barrière et $s=B+\delta_1=0.9$, exactement le support du "
+                     r"forçage, et rejoint celle de la soustraction au-delà.",
+                "fig:gamma-profiles", landscape=True))
+        rel = copy_figure(gamma_dir / "figures" / "gamma_error_heatmaps.png", "gamma_error_heatmaps.png")
+        if rel:
+            sections.append(figure_block(
+                rel, r"$|e_\Gamma|$ sur $(s,t)$ pour chaque traitement, échelle logarithmique commune, médiane "
+                     r"sur les graines ; à droite leur rapport en $\log_{10}$. Le rouge domine : l'enrichissement "
+                     r"est moins bon presque partout. Les filaments bleus sont les lignes nodales où l'erreur de "
+                     r"l'un des deux change de signe et passe par zéro, pas des régions où l'enrichissement est "
+                     r"meilleur. La tranche terminale $t=T$ est exclue : l'erreur y est nulle par construction.",
+                "fig:gamma-heatmaps", landscape=True))
+        rel = copy_figure(gamma_dir / "figures" / "gamma_error_by_band.png", "gamma_error_by_band.png")
+        if rel:
+            sections.append(figure_block(
+                rel, r"Norme $L^2$ en $s$ de l'erreur de Gamma sur chaque bande, en fonction du temps calendaire ; "
+                     r"traits fins : graines individuelles. L'écart entre les deux traitements est reproductible "
+                     r"sur les cinq graines (les faisceaux ne se croisent pas dans les deux premières bandes), "
+                     r"donc il vient de la construction et non du bruit d'optimisation.",
+                "fig:gamma-bands", landscape=True))
 
     # ---- 5. per-run figures ------------------------------------------------
     sections.append(rf"\section{{Figures par run (graine {args.seed})}}")
