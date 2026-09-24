@@ -1208,3 +1208,60 @@ about $1.5$ on the comparison metric while their losses differ by a factor of $2
 
 Figures: `rapports/corner_treatments_wholedomain_20260923`, section "Ce qui sépare analytiquement
 l'enrichissement de la soustraction".
+
+### 17.5 Where the enrichment's Gamma is worse, and by how much (measured)
+
+`data/compare_gamma_subtraction_enrichment/20260924_blackscholes_allseeds`, produced by
+`experiments/python_scripts/exp_barrier_option/diagnostic_scripts/compare_gamma_subtraction_enrichment.py`.
+Second price derivative of the two analytic corner resolutions at the Black-Scholes terminal
+profile, all five master seeds, evaluated in float64 from the saved models on $800$ price nodes of
+$(B, 1.2)$ and $200$ calendar times of $[0, T)$. The terminal slice is excluded: there both the
+trial solution and the closed form equal the payoff, whose second derivative vanishes away from the
+strike, so the error is zero by construction.
+
+The corner-zoom figure of section 15.5 cannot answer this question: it plots the two analytic
+treatments together with the smoothing run, whose $\partial_{ss}\Phi_\theta$ oscillates over four
+decades on the same panel, and at that scale the two analytic curves are indistinguishable. The
+figures below exclude the smoothing runs for that reason.
+
+Let $e_\Gamma(s,t) = \partial_{ss}\Phi_\theta(s,t) - \partial_{ss}V_{DO}(s,t)$. Band norms
+$\|e_\Gamma(\cdot,t)\|_{L^2(\mathcal B)}$, median over the five seeds then averaged over calendar
+time:
+
+| Band $s-B$ | Role of the cutoff | Exact subtraction | Corner enrichment | Ratio |
+|---|---|---|---|---|
+| $[0, 0.1)$ | plateau, $\chi\equiv1$ | $2.38\times10^{-2}$ | $8.11\times10^{-2}$ | $3.4$ |
+| $[0.1, 0.3)$ | transition, $\chi'\neq0$ | $7.27\times10^{-4}$ | $2.57\times10^{-2}$ | $35.3$ |
+| $[0.3, 0.4)$ | $\chi\equiv0$, up to the strike | $2.60\times10^{-4}$ | $4.20\times10^{-3}$ | $16.2$ |
+| $[0.4, 0.6)$ | $\chi\equiv0$, past the strike | $2.00\times10^{-4}$ | $1.40\times10^{-3}$ | $7.0$ |
+
+Three readings.
+
+**The deficit is largest, relatively, exactly on the cutoff's transition strip.** The ratio peaks at
+$35.3$ on $[B+\delta_0, B+\delta_1)$, the only band where $\chi' \neq 0$ and therefore the only band
+where the commutator terms of Proposition 5 are present, and falls monotonically to $7.0$ two bands
+further out. In absolute terms the largest error of both treatments is on the plateau
+$[B, B+\delta_0)$, where the exact Gamma itself is largest, but there the two treatments are within
+a factor of $3.4$.
+
+**The Gamma error of the enrichment is supported where its forcing is.** On the profile figure,
+$|e_\Gamma|$ of the enrichment oscillates at $10^{-2}$ to $10^{-1}$ between the barrier and
+$s = B+\delta_1 = 0.9$ — the support of $|\mathcal L^{BS}S_{\mathrm{enr}}|$, overlaid on the same
+panel — and drops towards the subtraction's level beyond it. This is a co-location of two measured
+fields on one seed set, not a proof that the forcing causes the error; the controlled test is a
+sweep of $(\delta_0, \delta_1)$, which has not been run.
+
+**The gap is a property of the construction, not of the optimisation.** On the band-norm figure the
+five per-seed curves of the two treatments form two disjoint bundles in the first two bands at every
+calendar time: no seed of the enrichment reaches any seed of the subtraction there.
+
+**What this suggests for improving Method 2**, stated as conjecture and not as measurement: the two
+bands where $\chi' \neq 0$ or $\chi'' \neq 0$ carry the largest relative deficit, so a wider
+transition strip (smaller $\chi'$, $\chi''$ at fixed $\Delta$) or a cutoff with more vanishing
+derivatives at $\delta_0$ and $\delta_1$ would reduce the commutator contribution. Whether this
+actually lowers $\|e_\Gamma\|$ is not measured: the cutoff radii $(\delta_0,\delta_1) = (0.1, 0.3)$
+have not been swept, and widening the strip also widens the region where the similarity profile,
+which only solves the leading-order problem, is switched on.
+
+Figures: `rapports/corner_treatments_wholedomain_20260923`, section "Gamma de l'enrichissement
+contre Gamma de la soustraction".
