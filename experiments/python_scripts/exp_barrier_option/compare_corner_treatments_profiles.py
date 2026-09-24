@@ -56,7 +56,9 @@ from learning_option_pricing.pricing.barrier import (  # noqa: E402
 )
 from learning_option_pricing.utils.figure_layout import finalize_figure  # noqa: E402
 from learning_option_pricing.utils.run_context import find_repo_root, script_data_dir  # noqa: E402
-from aggregate_terminal_function_comparison import CONFIGURATION_LABELS  # noqa: E402
+from aggregate_terminal_function_comparison import (  # noqa: E402
+    CONFIGURATION_LABELS, CORNER_INCLUDED_SUFFIX,
+)
 from pilot_down_and_out_put import DEVICE, load_trained_model, read_run_metadata  # noqa: E402
 
 logger = logging.getLogger("compare_corner_treatments_profiles")
@@ -68,12 +70,103 @@ DEFAULT_CONFIGURATIONS = [
     "subtraction_blackscholes", "subtraction_split",
     "enrichment_blackscholes", "enrichment_split",
 ]
-COLOURS = {
-    "raw": "tab:brown", "smoothed": "tab:olive",
-    "blackscholes": "tab:blue", "blackscholes_analyticres": "tab:purple", "split": "tab:red",
-    "subtraction_raw": "peru", "subtraction_blackscholes": "tab:green", "subtraction_split": "tab:orange",
-    "enrichment_raw": "tan", "enrichment_blackscholes": "tab:cyan", "enrichment_split": "tab:pink",
+#: Colour encodes the CORNER TREATMENT, the axis these figures compare, and the
+#: three values are taken far apart in hue and in luminance (Okabe-Ito, legible
+#: for the common colour-vision deficiencies) so that three curves on one panel
+#: are told apart without reading the legend order. Earlier versions keyed the
+#: colour on the configuration and left the whole-domain smoothing keys absent
+#: from the table, which fell back to the default cycle and put three nearby
+#: blues on the same panel.
+TREATMENT_COLOURS = {
+    "smoothing": "#D55E00",    # vermillion
+    "subtraction": "#009E73",  # bluish green
+    "enrichment": "#7B3294",   # violet
 }
+#: Marker encodes the TERMINAL PROFILE. It is drawn only when the selected
+#: configurations mix several profiles, in which case colour alone would not
+#: separate them; linestyle is not available for this (solid is reserved for a
+#: trained curve and dashed for the analytical reference).
+PROFILE_MARKERS = {
+    "raw": "o", "smoothed": "v", "blackscholes": "s",
+    "blackscholes_analyticres": "D", "split": "^",
+}
+
+
+def corner_treatment_of(configuration: str) -> str:
+    """"subtraction", "enrichment" or "smoothing" for a configuration key."""
+    for treatment in ("subtraction", "enrichment"):
+        if configuration.startswith(treatment + "_"):
+            return treatment
+    return "smoothing"
+
+
+def terminal_profile_of(configuration: str) -> str:
+    """The terminal-function part of a configuration key, without the corner
+    treatment prefix and without the whole-domain suffix."""
+    name = configuration
+    for treatment in ("subtraction_", "enrichment_"):
+        if name.startswith(treatment):
+            name = name[len(treatment):]
+    return name.removesuffix(CORNER_INCLUDED_SUFFIX)
+
+
+#: Legend text of a curve. These figures fix the terminal function and the
+#: collocation domain and vary the corner treatment, so the legend names the
+#: treatment alone and the shared part of the description goes to the subtitle:
+#: the full CONFIGURATION_LABELS entries are three lines of repeated text that
+#: pushed the legend past the edge of the figure.
+TREATMENT_LABELS = {
+    "smoothing": r"Smoothing (corner layer, $\varepsilon=0.1$)",
+    "subtraction": "Exact subtraction (Method 1)",
+    "enrichment": "Corner enrichment (Method 2)",
+}
+TERMINAL_PROFILE_LABELS = {
+    "raw": r"raw payoff $(K-s)^+$",
+    "smoothed": "Chen-Mangasarian smoothed payoff",
+    "blackscholes": "Black-Scholes put price (ordinary autograd route)",
+    "blackscholes_analyticres": "Black-Scholes put price (two-term analytic-residual route)",
+    "split": "split-semigroup profile",
+}
+
+
+def curve_label(configuration: str, mixed_profiles: bool) -> str:
+    """Legend entry: the corner treatment, plus the terminal function when the
+    figure mixes several of them."""
+    label = TREATMENT_LABELS[corner_treatment_of(configuration)]
+    if mixed_profiles:
+        label += f" — {TERMINAL_PROFILE_LABELS[terminal_profile_of(configuration)]}"
+    return label
+
+
+def shared_context_line(configurations) -> str:
+    """Subtitle clause naming what every curve of the figure has in common: the
+    terminal function when they share one, and the collocation domain."""
+    profiles = {terminal_profile_of(c) for c in configurations}
+    smoothing = [c for c in configurations if corner_treatment_of(c) == "smoothing"]
+    domain = ("whole domain, corner in collocation"
+              if all(c.endswith(CORNER_INCLUDED_SUFFIX) for c in smoothing) and smoothing
+              else "corner window excluded from the collocation of the smoothing runs"
+              if smoothing else "whole domain (the analytic treatments have no corner layer)")
+    if len(profiles) == 1:
+        return f"terminal function: {TERMINAL_PROFILE_LABELS[profiles.pop()]};  {domain}"
+    return domain
+
+
+def has_mixed_profiles(configurations) -> bool:
+    """True when the selected configurations do not all share one terminal
+    function, so that colour alone (keyed on the corner treatment) would leave
+    two curves of one panel with the same style."""
+    return len({terminal_profile_of(c) for c in configurations}) > 1
+
+
+def curve_style(configuration: str, mixed_profiles: bool) -> dict:
+    """Plot keywords of one configuration: colour by corner treatment, marker by
+    terminal profile when the figure mixes several of them."""
+    style = {"color": TREATMENT_COLOURS[corner_treatment_of(configuration)]}
+    if mixed_profiles:
+        style |= {"marker": PROFILE_MARKERS.get(terminal_profile_of(configuration), "x"),
+                  "markevery": 0.12, "markersize": 4.5, "markerfacecolor": "none"}
+    return style
 
 FORMULA_PROFILES = (
     r"Trained (solid): $\Phi_\theta=g_1u_\theta+g_2$; $\partial_s\Phi_\theta$, $\partial_{ss}\Phi_\theta$ = "
@@ -205,6 +298,7 @@ ROW_LABELS = [r"$\Phi_\theta(s,t)$ (price)", r"$\partial_s\Phi_\theta(s,t)$ (Del
 def plot_profiles(curves: dict, path: Path, s_plot_max: float, zoom: bool = False) -> None:
     """Rows Phi, d_s Phi, d_ss Phi; columns t. ``zoom`` uses the dense corner
     grid ``s_zoom`` and its own reference (the whole grid is plotted)."""
+    mixed_profiles = has_mixed_profiles(curves["configurations"])
     times = curves["times"]
     s = (curves["s_zoom"] if zoom else curves["s_grid"]).numpy()
     keep = np.ones_like(s, dtype=bool) if zoom else s <= s_plot_max
@@ -218,8 +312,8 @@ def plot_profiles(curves: dict, path: Path, s_plot_max: float, zoom: bool = Fals
             for configuration, entry in curves["configurations"].items():
                 trained = (entry["zoom"][t_value] if zoom else entry[t_value]).numpy()
                 (line,) = ax.plot(s[keep], trained[i][keep], lw=1.5,
-                                  color=COLOURS.get(configuration, None),
-                                  label=CONFIGURATION_LABELS[configuration].replace("\n", " "))
+                                  **curve_style(configuration, mixed_profiles),
+                                  label=curve_label(configuration, mixed_profiles))
                 if i == 0 and j == 0:
                     handles.append(line)
             (ref_line,) = ax.plot(s[keep], reference[i][keep], "k--", lw=1.8, label=r"$V_{DO}$ (Reiner-Rubinstein, exact)")
@@ -248,12 +342,13 @@ def plot_profiles(curves: dict, path: Path, s_plot_max: float, zoom: bool = Fals
     formula = FORMULA_PROFILES + (
         "\n" + r"Zoom on the corner region; dashed grey vertical: $s = B + B\sigma\sqrt{2(T-t)}$, "
         "the diffusion length of the corner layer at that $t$." if zoom else "")
-    fig.suptitle(title, fontsize=11)
-    fig.subplots_adjust(left=0.06, right=0.99, top=0.93, bottom=0.21, wspace=0.25, hspace=0.3)
+    fig.suptitle(title + "\n" + shared_context_line(curves["configurations"]), fontsize=11)
+    fig.subplots_adjust(left=0.06, right=0.99, top=0.90, bottom=0.21, wspace=0.25, hspace=0.3)
     finalize_figure(fig, path, legends=[legend], formula=formula, axes=list(axes.reshape(-1)), formula_fontsize=7)
 
 
 def plot_absolute_errors(curves: dict, path: Path, s_plot_max: float, window: float = 0.1) -> None:
+    mixed_profiles = has_mixed_profiles(curves["configurations"])
     times = curves["times"]
     s = curves["s_grid"].numpy()
     keep = s <= s_plot_max
@@ -269,8 +364,8 @@ def plot_absolute_errors(curves: dict, path: Path, s_plot_max: float, window: fl
             for configuration, entry in curves["configurations"].items():
                 error = np.abs(entry[t_value].numpy()[i] - reference[i])
                 (line,) = ax.semilogy(s[keep], np.maximum(error[keep], 1e-9), lw=1.4,
-                                      color=COLOURS.get(configuration, None),
-                                      label=CONFIGURATION_LABELS[configuration].replace("\n", " "))
+                                      **curve_style(configuration, mixed_profiles),
+                                      label=curve_label(configuration, mixed_profiles))
                 if i == 0 and j == 0:
                     handles.append(line)
             half_width = window - (T - t_value)
@@ -286,27 +381,32 @@ def plot_absolute_errors(curves: dict, path: Path, s_plot_max: float, window: fl
             if j == 0:
                 ax.set_ylabel(labels[i])
     legend = fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, 0.095), ncol=4, fontsize=8)
-    fig.suptitle("Down-and-out put — where the error of each corner treatment is (absolute, pointwise, one seed)", fontsize=11)
+    fig.suptitle("Down-and-out put — where the error of each corner treatment is (absolute, pointwise, one seed)\n"
+                 + shared_context_line(curves["configurations"]), fontsize=11)
     fig.subplots_adjust(left=0.06, right=0.99, top=0.93, bottom=0.21, wspace=0.25, hspace=0.3)
     finalize_figure(fig, path, legends=[legend], formula=FORMULA_ERRORS, axes=list(axes.reshape(-1)), formula_fontsize=7)
 
 
 def plot_greeks_at_strike(curves: dict, path: Path) -> None:
+    mixed_profiles = has_mixed_profiles(curves["configurations"])
     t = np.array(curves["strike_times"])
     reference = curves["reference"]["strike"].numpy()
-    fig, axes = plt.subplots(2, 2, figsize=(11, 8))
+    # Width reserved on the right for the legend: the configuration labels carry
+    # the corner treatment, the terminal function and the collocation domain, and
+    # at the previous width the legend was drawn outside the figure and cropped.
+    fig, axes = plt.subplots(2, 2, figsize=(14.5, 8))
     handles = []
     sign_change = np.where(np.diff(np.sign(reference[2])) != 0)[0]
     for column, k in enumerate((1, 2)):
         ax_value, ax_error = axes[0, column], axes[1, column]
         for configuration, entry in curves["configurations"].items():
             numerical = entry["strike"].numpy()[k]
-            (line,) = ax_value.plot(t, numerical, lw=1.5, color=COLOURS.get(configuration, None),
-                                    label=CONFIGURATION_LABELS[configuration].replace("\n", " "))
+            (line,) = ax_value.plot(t, numerical, lw=1.5, **curve_style(configuration, mixed_profiles),
+                                    label=curve_label(configuration, mixed_profiles))
             if column == 0:
                 handles.append(line)
             ax_error.semilogy(t, np.abs(numerical - reference[k]) / np.abs(reference[k]), lw=1.5,
-                              color=COLOURS.get(configuration, None))
+                              **curve_style(configuration, mixed_profiles))
         (ref_line,) = ax_value.plot(t, reference[k], "k--", lw=1.8, label="exact (closed form)")
         if column == 0:
             handles.insert(0, ref_line)
@@ -319,9 +419,10 @@ def plot_greeks_at_strike(curves: dict, path: Path) -> None:
         ax_value.set_title("Delta at the strike" if k == 1 else "Gamma at the strike")
         for ax in (ax_value, ax_error):
             ax.grid(alpha=0.3, which="both")
-    legend = fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.0, 0.95), fontsize=8)
-    fig.suptitle("Down-and-out put — Delta and Gamma at the strike against calendar time (one seed)", fontsize=11)
-    fig.subplots_adjust(left=0.09, right=0.98, top=0.92, bottom=0.2, wspace=0.3, hspace=0.3)
+    legend = fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.755, 0.90), fontsize=8)
+    fig.suptitle("Down-and-out put — Delta and Gamma at the strike against calendar time (one seed)\n"
+                 + shared_context_line(curves["configurations"]), fontsize=11)
+    fig.subplots_adjust(left=0.07, right=0.74, top=0.88, bottom=0.2, wspace=0.3, hspace=0.3)
     finalize_figure(fig, path, legends=[legend], formula=FORMULA_STRIKE, axes=list(axes.reshape(-1)), formula_fontsize=7)
 
 

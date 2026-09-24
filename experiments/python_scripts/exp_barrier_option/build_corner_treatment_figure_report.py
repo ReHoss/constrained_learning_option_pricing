@@ -34,6 +34,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import torch
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -41,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from learning_option_pricing.utils.run_context import find_repo_root  # noqa: E402
 from aggregate_terminal_function_comparison import CONFIGURATION_LABELS  # noqa: E402
+from compare_corner_treatments_profiles import terminal_profile_of  # noqa: E402
 
 logger = logging.getLogger("build_corner_treatment_figure_report")
 
@@ -154,14 +156,49 @@ def path_block(path_text: str) -> str:
     return r"\path{" + path_text + "}"
 
 
+#: Subsection title of each terminal function. These are LaTeX source, not text
+#: to be escaped: they carry their own maths.
+PROFILE_TITLES = {
+    "raw": r"payoff brut $(K-s)^+$",
+    "smoothed": r"payoff lissé de Chen-Mangasarian",
+    "blackscholes": r"prix Black-Scholes du put (route autograd ordinaire)",
+    "blackscholes_analyticres": r"prix Black-Scholes du put (route analytique à deux termes)",
+    "split": r"profil de semi-groupe scindé",
+    "unknown": r"non identifiée",
+}
+
+
+def terminal_profile_of_profiles_dir(profiles_dir: Path) -> str:
+    """The terminal function the configurations of a profile-comparison
+    directory share, read from its saved curves rather than from its name."""
+    curves_path = profiles_dir / "curves.pt"
+    if not curves_path.exists():
+        logger.warning(f"  no curves.pt in {profiles_dir}: terminal function not identified")
+        return "unknown"
+    configurations = torch.load(curves_path, weights_only=False)["configurations"].keys()
+    profiles = {terminal_profile_of(configuration) for configuration in configurations}
+    if len(profiles) != 1:
+        logger.warning(f"  {profiles_dir.name} mixes the terminal functions {sorted(profiles)}")
+        return "unknown"
+    return profiles.pop()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--aggregation-dir", type=str, required=True,
                         help="Output directory of aggregate_terminal_function_comparison.py.")
     parser.add_argument("--greeks-dir", type=str, default=None,
                         help="Output directory of evaluate_greeks_no_corner.py (optional).")
-    parser.add_argument("--profiles-dir", type=str, default=None,
-                        help="Output directory of compare_corner_treatments_profiles.py (optional).")
+    parser.add_argument("--profiles-dir", nargs="+", type=str, default=None, metavar="DIR",
+                        help="One or more output directories of compare_corner_treatments_profiles.py "
+                             "(optional). One directory per terminal function gives one subsection each, "
+                             "so the three corner treatments are compared at fixed terminal function in "
+                             "every figure; the terminal function is read from each directory's curves.pt.")
+    parser.add_argument("--singular-parts-dir", type=str, default=None,
+                        help="Output directory of "
+                             "diagnostic_scripts/compare_singular_parts_subtraction_enrichment.py "
+                             "(optional): the heatmaps of the two singular parts, their difference and "
+                             "their interior residuals.")
     parser.add_argument("--seed", type=int, default=0,
                         help="Master seed whose per-run figures (price surface, log slices, decomposition) are shown.")
     parser.add_argument("--out-dir", type=str, default=None,
@@ -174,7 +211,8 @@ def main() -> None:
     repo_root = find_repo_root(Path(__file__).resolve())
     aggregation_dir = Path(args.aggregation_dir).resolve()
     greeks_dir = Path(args.greeks_dir).resolve() if args.greeks_dir else None
-    profiles_dir = Path(args.profiles_dir).resolve() if args.profiles_dir else None
+    profiles_dirs = [Path(d).resolve() for d in (args.profiles_dir or [])]
+    singular_parts_dir = Path(args.singular_parts_dir).resolve() if args.singular_parts_dir else None
     out_dir = Path(args.out_dir).resolve() if args.out_dir else (
         repo_root / "rapports" / f"corner_treatments_{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}"
     )
@@ -185,6 +223,9 @@ def main() -> None:
     logger.info(f"Command: {' '.join(sys.argv)}")
     logger.info(f"Aggregation: {aggregation_dir}")
     logger.info(f"Greeks: {greeks_dir}")
+    for profiles_dir in profiles_dirs:
+        logger.info(f"Profiles: {profiles_dir}")
+    logger.info(f"Singular parts: {singular_parts_dir}")
     logger.info(f"Report directory: {out_dir}")
 
     with open(aggregation_dir / "summary.yaml") as f:
@@ -314,54 +355,141 @@ def main() -> None:
             break
 
     # ---- 4. profiles along s and Greeks against t (one seed) -----------------
-    if profiles_dir is not None and profiles_dir.exists():
+    if profiles_dirs:
         sections.append(r"\section{Profils en $s$ et grecques en fonction de $t$ (graine " + str(args.seed) + ")}")
         sections.append(
             r"Une seule graine, pas de médiane : ces figures montrent \emph{où} l'erreur de chaque traitement se "
             r"trouve, ce que les métriques intégrées ne disent pas. Évaluation ponctuelle en float64 ; dérivées "
             r"comme à la section précédente (autograd imbriqué sur $g_1u_\theta$, forme fermée pour $g_2$). "
-            "Source : " + path_block(str(profiles_dir.relative_to(repo_root))) + "."
+            r"Une sous-section par fonction terminale : à fonction terminale fixée, les trois courbes d'un panneau "
+            r"ne diffèrent que par le traitement du coin. Code couleur commun à toutes ces figures : "
+            r"\textbf{orange} lissage (couche de coin, $\varepsilon=0.1$), \textbf{vert} soustraction exacte "
+            r"(Méthode 1), \textbf{violet} enrichissement de coin (Méthode 2) ; \textbf{tirets noirs} forme fermée."
         )
-        rel = copy_figure(profiles_dir / "figures" / "profiles_price_delta_gamma.png", "profiles_price_delta_gamma.png")
+        for index, profiles_dir in enumerate(profiles_dirs):
+            if not profiles_dir.exists():
+                logger.warning(f"  missing profiles directory: {profiles_dir}")
+                continue
+            profile_name = terminal_profile_of_profiles_dir(profiles_dir)
+            suffix = f"_{profile_name}"
+            sections.append(rf"\subsection{{Fonction terminale : {PROFILE_TITLES[profile_name]}}}")
+            sections.append("Source : " + path_block(str(profiles_dir.relative_to(repo_root))) + ".")
+
+            rel = copy_figure(profiles_dir / "figures" / "profiles_price_delta_gamma.png",
+                              f"profiles_price_delta_gamma{suffix}.png")
+            if rel:
+                sections.append(figure_block(
+                    rel, r"Lignes : $\Phi_\theta(s,t)$, $\partial_s\Phi_\theta(s,t)$, $\partial_{ss}\Phi_\theta(s,t)$ ; "
+                         r"colonnes : $t\in\{0,0.5,0.9,0.99\}$ ; forme fermée en tirets noirs. Prix en échelle "
+                         r"linéaire ; $\Delta$ et $\Gamma$ en échelle symlog (linéaire sous $0.1$, logarithmique "
+                         r"au-delà, des deux côtés de zéro).", f"fig:profiles{suffix}", landscape=True))
+
+            rel = copy_figure(profiles_dir / "figures" / "profiles_price_delta_gamma_corner_zoom.png",
+                              f"profiles_price_delta_gamma_corner_zoom{suffix}.png")
+            if rel:
+                sections.append(figure_block(
+                    rel, r"Même figure, restreinte à la région du coin $s\in(B, B+0.3)$ et évaluée sur sa propre "
+                         r"grille dense (600 points, pas $5\times10^{-4}$). Tirets gris verticaux : "
+                         r"$s=B+B\sigma\sqrt{2(T-t)}$, la longueur de diffusion de la couche de coin à ce $t$. "
+                         r"Les ondulations de $\partial_{ss}\Phi_\theta$ du run de lissage (orange) sont confinées "
+                         r"à la bande de transition du cutoff $\zeta((s-B)/\varepsilon)$, $s\in[0.6,0.7]$ : c'est la "
+                         r"courbure de $\zeta$ ($\zeta''\sim\varepsilon^{-2}$) que le réseau n'annule pas. "
+                         r"La soustraction (vert) est confondue avec la forme fermée sur les trois lignes ; "
+                         r"l'enrichissement (violet) l'est aussi hors de la bande de transition de $\chi$, "
+                         r"$[0.7,0.9]$.", f"fig:profiles-zoom{suffix}", landscape=True))
+
+            rel = copy_figure(profiles_dir / "figures" / "absolute_errors_along_s.png",
+                              f"absolute_errors_along_s{suffix}.png")
+            if rel:
+                sections.append(figure_block(
+                    rel, r"Erreurs absolues ponctuelles le long de $s$ : $e_0=|\Phi_\theta-V_{DO}|$, "
+                         r"$e_1=|\partial_s\Phi_\theta-\partial_sV_{DO}|$, "
+                         r"$e_2=|\partial_{ss}\Phi_\theta-\partial_{ss}V_{DO}|$ (échelle log). C'est la figure qui "
+                         r"localise la valeur ajoutée des traitements analytiques. Les erreurs relatives par bande "
+                         r"grandissent avec $s$ pour toutes les configurations parce que $V_{DO}\to0$, pas parce "
+                         r"que l'erreur absolue grandit.", f"fig:abs-errors{suffix}", landscape=True))
+
+            rel = copy_figure(profiles_dir / "figures" / "greeks_at_strike_vs_time.png",
+                              f"greeks_at_strike_vs_time{suffix}.png")
+            if rel:
+                sections.append(figure_block(
+                    rel, r"Haut : $\partial_s\Phi_\theta(K,t)$ et $\partial_{ss}\Phi_\theta(K,t)$ en fonction de $t$ "
+                         r"(traits pleins), valeurs exactes en tirets. Bas : $\mathrm{err}_{\mathrm{rel}}\,\Delta(t)$ "
+                         r"et $\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$ (échelle log). La verticale grise marque le "
+                         r"zéro de $\partial_{ss}V_{DO}(K,\cdot)$, où l'erreur relative est mal conditionnée.",
+                    f"fig:greeks-vs-t{suffix}", width=r"0.95\linewidth"))
+
+    # ---- 4b. singular parts of the two analytic corner resolutions -----------
+    if singular_parts_dir is not None and singular_parts_dir.exists():
+        sections.append(r"\section{Ce qui sépare analytiquement l'enrichissement de la soustraction}")
+        measured = {}
+        summary_path = singular_parts_dir / "summary.yaml"
+        if summary_path.exists():
+            with open(summary_path) as handle:
+                measured = yaml.safe_load(handle).get("measured", {})
+        whole = measured.get("whole_domain", {})
+        residual_enrichment = whole.get("residual_singular_enrichment", {})
+        residual_subtraction = whole.get("residual_singular_subtraction", {})
+        difference = whole.get("singular_difference", {})
+        extension_difference = whole.get("extension_difference", {})
+        sections.append(
+            r"Les deux résolutions analytiques écrivent l'extension comme une partie singulière qui reproduit le "
+            r"saut du coin plus un reste régulier, $g_2 = S + h$ avec $\Delta = K-B$, et ne diffèrent que par le "
+            r"choix de $S$ : $S_{\mathrm{sub}} = \Delta\,V_{DOD}$ (la digitale down-and-out, Définition 7) contre "
+            r"$S_{\mathrm{enr}} = \chi(s)\,\Delta\,\mathrm{erf}(\xi)$ avec "
+            r"$\xi = \ln(s/B)/(\sigma\sqrt{2(T-t)})$ (le profil de similarité de la limite en temps court, "
+            r"Définition 8). Les deux reproduisent exactement les deux traces, donc les prix entraînés ne sont pas "
+            r"séparés par leurs contraintes : ce qui les sépare est le forçage intérieur que le réseau doit "
+            r"absorber. Ces figures sont des évaluations en forme fermée, en float64, sans aucun réseau entraîné. "
+            "Source : " + path_block(str(singular_parts_dir.relative_to(repo_root))) + "."
+        )
+        if residual_subtraction and residual_enrichment:
+            sections.append(
+                r"\textbf{Mesuré sur la grille du domaine complet.} "
+                rf"$\max|\mathcal L^{{BS}}S_{{\mathrm{{sub}}}}| = {residual_subtraction.get('max_abs', float('nan')):.3g}$ "
+                r"(exactement zéro en tout point, Proposition 4) contre "
+                rf"$\max|\mathcal L^{{BS}}S_{{\mathrm{{enr}}}}| = {residual_enrichment.get('max_abs', float('nan')):.3g}$ "
+                rf"et une moyenne quadratique de ${residual_enrichment.get('l2', float('nan')):.3g}$ "
+                r"(Proposition 5 : de carré intégrable, non nul). "
+                rf"La différence des deux parties singulières atteint ${difference.get('max_abs', float('nan')):.3g}$, "
+                r"soit $\Delta = K - B$ lui-même, tandis que celle des extensions complètes ne dépasse pas "
+                rf"${extension_difference.get('max_abs', float('nan')):.3g}$ : les parties régulières compensent "
+                r"l'essentiel de l'écart, et c'est bien le résidu, non la valeur de l'extension, qui sépare les "
+                r"deux méthodes."
+            )
+        rel = copy_figure(singular_parts_dir / "figures" / "singular_parts_and_difference.png",
+                          "singular_parts_and_difference.png")
         if rel:
             sections.append(figure_block(
-                rel, r"Lignes : $\Phi_\theta(s,t)$, $\partial_s\Phi_\theta(s,t)$, $\partial_{ss}\Phi_\theta(s,t)$ ; "
-                     r"colonnes : $t\in\{0,0.5,0.9,0.99\}$ ; forme fermée en tirets noirs. Prix en échelle "
-                     r"linéaire ; $\Delta$ et $\Gamma$ en échelle symlog (linéaire sous $0.1$, logarithmique "
-                     r"au-delà, des deux côtés de zéro).", "fig:profiles", landscape=True))
-        rel = copy_figure(profiles_dir / "figures" / "profiles_price_delta_gamma_corner_zoom.png",
-                          "profiles_price_delta_gamma_corner_zoom.png")
+                rel, r"(a) et (b) : les deux parties singulières sur la même échelle. La digitale "
+                     r"$\Delta\,V_{DOD}$ monte de $0$ à la barrière jusqu'à $\Delta=0.4$ et le reste sur tout le "
+                     r"domaine ; le profil de similarité, coupé par $\chi$, est nul au-delà de "
+                     r"$s = B+\delta_1 = 0.9$. (c) : leur différence, qui vaut donc $-\Delta$ dans tout le champ "
+                     r"lointain. (d) : $\mathcal L^{BS}S_{\mathrm{sub}}$, identiquement nul. "
+                     r"(e) : $\mathcal L^{BS}S_{\mathrm{enr}}$ en échelle symlog, concentré dans la bande "
+                     r"$[B, B+\delta_1]$ et d'amplitude d'ordre $1$ : c'est le forçage que le réseau doit "
+                     r"absorber, et la raison pour laquelle la meilleure perte intérieure de l'enrichissement est "
+                     r"un à deux ordres de grandeur au-dessus de celle de la soustraction. (f) : la différence des "
+                     r"extensions complètes $g_2 = S + h$, plus petite d'un facteur $5$ que celle des parties "
+                     r"singulières, les restes réguliers compensant la troncature de $\chi$.",
+                "fig:singular-parts", landscape=True))
+        rel = copy_figure(singular_parts_dir / "figures" / "singular_parts_corner_zoom.png",
+                          "singular_parts_corner_zoom.png")
         if rel:
             sections.append(figure_block(
-                rel, r"Même figure, restreinte à la région du coin $s\in(B, B+0.3)$ et évaluée sur sa propre grille "
-                     r"dense (600 points, pas $5\times10^{-4}$). Tirets gris verticaux : $s=B+B\sigma\sqrt{2(T-t)}$, "
-                     r"la longueur de diffusion de la couche de coin à ce $t$. Les ondulations de $\partial_{ss}\Phi_\theta$ "
-                     r"des runs de lissage (bleu, rouge) sont confinées à la bande de transition du cutoff "
-                     r"$\zeta((s-B)/\varepsilon)$, $s\in[0.6,0.7]$, d'amplitude $\pm10$ à $t=0$ et $\pm30$ à $t=0.9$ "
-                     r"contre un $\Gamma$ exact de $-3$ à $-10$ : c'est la courbure de $\zeta$ ($\zeta''\sim\varepsilon^{-2}$) "
-                     r"que le réseau n'annule pas. La soustraction (vert, orange) est confondue avec la forme fermée "
-                     r"sur les trois lignes ; l'enrichissement (cyan, rose) l'est aussi sauf de petites ondulations de "
-                     r"$\partial_{ss}$ dans la bande de transition de $\chi$, $[0.7,0.9]$, visibles à $t=0.99$.",
-                "fig:profiles-zoom", landscape=True))
-        rel = copy_figure(profiles_dir / "figures" / "absolute_errors_along_s.png", "absolute_errors_along_s.png")
+                rel, r"Les mêmes différences sur un zoom du coin. Les verticales pointillées marquent $s=B$, "
+                     r"$s=B+\delta_0$, $s=B+\delta_1$ et $s=K$.", "fig:singular-parts-zoom", landscape=True))
+        rel = copy_figure(singular_parts_dir / "figures" / "singular_parts_slices.png",
+                          "singular_parts_slices.png")
         if rel:
             sections.append(figure_block(
-                rel, r"Erreurs absolues ponctuelles le long de $s$ : $e_0=|\Phi_\theta-V_{DO}|$, "
-                     r"$e_1=|\partial_s\Phi_\theta-\partial_sV_{DO}|$, $e_2=|\partial_{ss}\Phi_\theta-\partial_{ss}V_{DO}|$ "
-                     r"(échelle log). C'est la figure qui localise la valeur ajoutée des traitements analytiques : "
-                     r"le lissage (bleu, rouge) est à $10^{-3}$--$10^{-2}$ partout et à $10^{-1}$ près du coin "
-                     r"vers $t=T$ ; la soustraction (vert, orange) à $10^{-6}$--$10^{-5}$ ; l'enrichissement "
-                     r"(cyan, rose) est entre les deux \emph{près du coin} ($s\in[0.6,1]$, bande de transition "
-                     r"de $\chi$) et rejoint la soustraction au-delà de $s\approx1.2$. Les erreurs relatives par "
-                     r"bande grandissent avec $s$ pour toutes les configurations parce que $V_{DO}\to0$, pas parce "
-                     r"que l'erreur absolue grandit.", "fig:abs-errors", landscape=True))
-        rel = copy_figure(profiles_dir / "figures" / "greeks_at_strike_vs_time.png", "greeks_at_strike_vs_time.png")
-        if rel:
-            sections.append(figure_block(
-                rel, r"Haut : $\partial_s\Phi_\theta(K,t)$ et $\partial_{ss}\Phi_\theta(K,t)$ en fonction de $t$ "
-                     r"(traits pleins), valeurs exactes en tirets. Bas : $\mathrm{err}_{\mathrm{rel}}\,\Delta(t)$ et "
-                     r"$\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$ (échelle log). La verticale grise marque le zéro de "
-                     r"$\partial_{ss}V_{DO}(K,\cdot)$.", "fig:greeks-vs-t", width=r"0.9\linewidth"))
+                rel, r"Coupes en $s$ à $t$ fixé. Ligne du haut : les deux parties singulières ; la digitale (vert) "
+                     r"croît de façon monotone vers $\Delta$, le profil de similarité (violet) culmine à $\Delta$ "
+                     r"puis est ramené à zéro par le cutoff. Ligne du milieu : la différence des parties "
+                     r"singulières (orange), qui sature à $-\Delta$, et celle des extensions complètes (bleu), qui "
+                     r"reste sous $0.09$. Ligne du bas : $|\mathcal L^{BS}S|$ en échelle logarithmique ; celui de "
+                     r"la soustraction est exactement nul et ne peut pas être tracé sur un axe logarithmique, ce "
+                     r"que le panneau indique.", "fig:singular-parts-slices", landscape=True))
 
     # ---- 5. per-run figures ------------------------------------------------
     sections.append(rf"\section{{Figures par run (graine {args.seed})}}")
