@@ -16,7 +16,7 @@
 \usepackage[colorlinks=true,allcolors=blue!55!black]{hyperref}
 \title{Down-and-out put --- traitements du coin sur le domaine complet : figures}
 \author{}
-\date{2026-09-23}
+\date{2026-09-24}
 \begin{document}
 \maketitle
 \tableofcontents
@@ -185,13 +185,15 @@ Corner enrichment, split-semigroup profile & 4.405e-02 [1.123e-03, 7.510e-02] & 
 \end{table}
 
 \section{Profils en $s$ et grecques en fonction de $t$ (graine 0)}
-Une seule graine, pas de médiane : ces figures montrent \emph{où} l'erreur de chaque traitement se trouve, ce que les métriques intégrées ne disent pas. Évaluation ponctuelle en float64 ; dérivées comme à la section précédente (autograd imbriqué sur $g_1u_\theta$, forme fermée pour $g_2$). Source : \path{data/compare_corner_treatments_profiles/20260923_wholedomain_iters50000}.
+Une seule graine, pas de médiane : ces figures montrent \emph{où} l'erreur de chaque traitement se trouve, ce que les métriques intégrées ne disent pas. Évaluation ponctuelle en float64 ; dérivées comme à la section précédente (autograd imbriqué sur $g_1u_\theta$, forme fermée pour $g_2$). Une sous-section par fonction terminale : à fonction terminale fixée, les trois courbes d'un panneau ne diffèrent que par le traitement du coin. Code couleur commun à toutes ces figures : \textbf{orange} lissage (couche de coin, $\varepsilon=0.1$), \textbf{vert} soustraction exacte (Méthode 1), \textbf{violet} enrichissement de coin (Méthode 2) ; \textbf{tirets noirs} forme fermée.
+\subsection{Fonction terminale : payoff brut $(K-s)^+$}
+Source : \path{data/compare_corner_treatments_profiles/20260924_wholedomain_raw}.
 \begin{landscape}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/profiles_price_delta_gamma.png}
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/profiles_price_delta_gamma_raw.png}
 \caption{Lignes : $\Phi_\theta(s,t)$, $\partial_s\Phi_\theta(s,t)$, $\partial_{ss}\Phi_\theta(s,t)$ ; colonnes : $t\in\{0,0.5,0.9,0.99\}$ ; forme fermée en tirets noirs. Prix en échelle linéaire ; $\Delta$ et $\Gamma$ en échelle symlog (linéaire sous $0.1$, logarithmique au-delà, des deux côtés de zéro).}
-\label{fig:profiles}
+\label{fig:profiles_raw}
 \end{figure}
 
 \end{landscape}
@@ -199,9 +201,9 @@ Une seule graine, pas de médiane : ces figures montrent \emph{où} l'erreur de 
 \begin{landscape}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/profiles_price_delta_gamma_corner_zoom.png}
-\caption{Même figure, restreinte à la région du coin $s\in(B, B+0.3)$ et évaluée sur sa propre grille dense (600 points, pas $5\times10^{-4}$). Tirets gris verticaux : $s=B+B\sigma\sqrt{2(T-t)}$, la longueur de diffusion de la couche de coin à ce $t$. Les ondulations de $\partial_{ss}\Phi_\theta$ des runs de lissage (bleu, rouge) sont confinées à la bande de transition du cutoff $\zeta((s-B)/\varepsilon)$, $s\in[0.6,0.7]$, d'amplitude $\pm10$ à $t=0$ et $\pm30$ à $t=0.9$ contre un $\Gamma$ exact de $-3$ à $-10$ : c'est la courbure de $\zeta$ ($\zeta''\sim\varepsilon^{-2}$) que le réseau n'annule pas. La soustraction (vert, orange) est confondue avec la forme fermée sur les trois lignes ; l'enrichissement (cyan, rose) l'est aussi sauf de petites ondulations de $\partial_{ss}$ dans la bande de transition de $\chi$, $[0.7,0.9]$, visibles à $t=0.99$.}
-\label{fig:profiles-zoom}
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/profiles_price_delta_gamma_corner_zoom_raw.png}
+\caption{Même figure, restreinte à la région du coin $s\in(B, B+0.3)$ et évaluée sur sa propre grille dense (600 points, pas $5\times10^{-4}$). Tirets gris verticaux : $s=B+B\sigma\sqrt{2(T-t)}$, la longueur de diffusion de la couche de coin à ce $t$. Les ondulations de $\partial_{ss}\Phi_\theta$ du run de lissage (orange) sont confinées à la bande de transition du cutoff $\zeta((s-B)/\varepsilon)$, $s\in[0.6,0.7]$ : c'est la courbure de $\zeta$ ($\zeta''\sim\varepsilon^{-2}$) que le réseau n'annule pas. La soustraction (vert) est confondue avec la forme fermée sur les trois lignes ; l'enrichissement (violet) l'est aussi hors de la bande de transition de $\chi$, $[0.7,0.9]$.}
+\label{fig:profiles-zoom_raw}
 \end{figure}
 
 \end{landscape}
@@ -209,19 +211,130 @@ Une seule graine, pas de médiane : ces figures montrent \emph{où} l'erreur de 
 \begin{landscape}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/absolute_errors_along_s.png}
-\caption{Erreurs absolues ponctuelles le long de $s$ : $e_0=|\Phi_\theta-V_{DO}|$, $e_1=|\partial_s\Phi_\theta-\partial_sV_{DO}|$, $e_2=|\partial_{ss}\Phi_\theta-\partial_{ss}V_{DO}|$ (échelle log). C'est la figure qui localise la valeur ajoutée des traitements analytiques : le lissage (bleu, rouge) est à $10^{-3}$--$10^{-2}$ partout et à $10^{-1}$ près du coin vers $t=T$ ; la soustraction (vert, orange) à $10^{-6}$--$10^{-5}$ ; l'enrichissement (cyan, rose) est entre les deux \emph{près du coin} ($s\in[0.6,1]$, bande de transition de $\chi$) et rejoint la soustraction au-delà de $s\approx1.2$. Les erreurs relatives par bande grandissent avec $s$ pour toutes les configurations parce que $V_{DO}\to0$, pas parce que l'erreur absolue grandit.}
-\label{fig:abs-errors}
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/absolute_errors_along_s_raw.png}
+\caption{Erreurs absolues ponctuelles le long de $s$ : $e_0=|\Phi_\theta-V_{DO}|$, $e_1=|\partial_s\Phi_\theta-\partial_sV_{DO}|$, $e_2=|\partial_{ss}\Phi_\theta-\partial_{ss}V_{DO}|$ (échelle log). C'est la figure qui localise la valeur ajoutée des traitements analytiques. Les erreurs relatives par bande grandissent avec $s$ pour toutes les configurations parce que $V_{DO}\to0$, pas parce que l'erreur absolue grandit.}
+\label{fig:abs-errors_raw}
 \end{figure}
 
 \end{landscape}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.9\linewidth]{figures/greeks_at_strike_vs_time.png}
-\caption{Haut : $\partial_s\Phi_\theta(K,t)$ et $\partial_{ss}\Phi_\theta(K,t)$ en fonction de $t$ (traits pleins), valeurs exactes en tirets. Bas : $\mathrm{err}_{\mathrm{rel}}\,\Delta(t)$ et $\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$ (échelle log). La verticale grise marque le zéro de $\partial_{ss}V_{DO}(K,\cdot)$.}
-\label{fig:greeks-vs-t}
+\includegraphics[width=0.95\linewidth]{figures/greeks_at_strike_vs_time_raw.png}
+\caption{Haut : $\partial_s\Phi_\theta(K,t)$ et $\partial_{ss}\Phi_\theta(K,t)$ en fonction de $t$ (traits pleins), valeurs exactes en tirets. Bas : $\mathrm{err}_{\mathrm{rel}}\,\Delta(t)$ et $\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$ (échelle log). La verticale grise marque le zéro de $\partial_{ss}V_{DO}(K,\cdot)$, où l'erreur relative est mal conditionnée.}
+\label{fig:greeks-vs-t_raw}
 \end{figure}
+
+\subsection{Fonction terminale : prix Black-Scholes du put (route autograd ordinaire)}
+Source : \path{data/compare_corner_treatments_profiles/20260924_wholedomain_blackscholes}.
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/profiles_price_delta_gamma_blackscholes.png}
+\caption{Lignes : $\Phi_\theta(s,t)$, $\partial_s\Phi_\theta(s,t)$, $\partial_{ss}\Phi_\theta(s,t)$ ; colonnes : $t\in\{0,0.5,0.9,0.99\}$ ; forme fermée en tirets noirs. Prix en échelle linéaire ; $\Delta$ et $\Gamma$ en échelle symlog (linéaire sous $0.1$, logarithmique au-delà, des deux côtés de zéro).}
+\label{fig:profiles_blackscholes}
+\end{figure}
+
+\end{landscape}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/profiles_price_delta_gamma_corner_zoom_blackscholes.png}
+\caption{Même figure, restreinte à la région du coin $s\in(B, B+0.3)$ et évaluée sur sa propre grille dense (600 points, pas $5\times10^{-4}$). Tirets gris verticaux : $s=B+B\sigma\sqrt{2(T-t)}$, la longueur de diffusion de la couche de coin à ce $t$. Les ondulations de $\partial_{ss}\Phi_\theta$ du run de lissage (orange) sont confinées à la bande de transition du cutoff $\zeta((s-B)/\varepsilon)$, $s\in[0.6,0.7]$ : c'est la courbure de $\zeta$ ($\zeta''\sim\varepsilon^{-2}$) que le réseau n'annule pas. La soustraction (vert) est confondue avec la forme fermée sur les trois lignes ; l'enrichissement (violet) l'est aussi hors de la bande de transition de $\chi$, $[0.7,0.9]$.}
+\label{fig:profiles-zoom_blackscholes}
+\end{figure}
+
+\end{landscape}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/absolute_errors_along_s_blackscholes.png}
+\caption{Erreurs absolues ponctuelles le long de $s$ : $e_0=|\Phi_\theta-V_{DO}|$, $e_1=|\partial_s\Phi_\theta-\partial_sV_{DO}|$, $e_2=|\partial_{ss}\Phi_\theta-\partial_{ss}V_{DO}|$ (échelle log). C'est la figure qui localise la valeur ajoutée des traitements analytiques. Les erreurs relatives par bande grandissent avec $s$ pour toutes les configurations parce que $V_{DO}\to0$, pas parce que l'erreur absolue grandit.}
+\label{fig:abs-errors_blackscholes}
+\end{figure}
+
+\end{landscape}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{figures/greeks_at_strike_vs_time_blackscholes.png}
+\caption{Haut : $\partial_s\Phi_\theta(K,t)$ et $\partial_{ss}\Phi_\theta(K,t)$ en fonction de $t$ (traits pleins), valeurs exactes en tirets. Bas : $\mathrm{err}_{\mathrm{rel}}\,\Delta(t)$ et $\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$ (échelle log). La verticale grise marque le zéro de $\partial_{ss}V_{DO}(K,\cdot)$, où l'erreur relative est mal conditionnée.}
+\label{fig:greeks-vs-t_blackscholes}
+\end{figure}
+
+\subsection{Fonction terminale : profil de semi-groupe scindé}
+Source : \path{data/compare_corner_treatments_profiles/20260924_wholedomain_split}.
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/profiles_price_delta_gamma_split.png}
+\caption{Lignes : $\Phi_\theta(s,t)$, $\partial_s\Phi_\theta(s,t)$, $\partial_{ss}\Phi_\theta(s,t)$ ; colonnes : $t\in\{0,0.5,0.9,0.99\}$ ; forme fermée en tirets noirs. Prix en échelle linéaire ; $\Delta$ et $\Gamma$ en échelle symlog (linéaire sous $0.1$, logarithmique au-delà, des deux côtés de zéro).}
+\label{fig:profiles_split}
+\end{figure}
+
+\end{landscape}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/profiles_price_delta_gamma_corner_zoom_split.png}
+\caption{Même figure, restreinte à la région du coin $s\in(B, B+0.3)$ et évaluée sur sa propre grille dense (600 points, pas $5\times10^{-4}$). Tirets gris verticaux : $s=B+B\sigma\sqrt{2(T-t)}$, la longueur de diffusion de la couche de coin à ce $t$. Les ondulations de $\partial_{ss}\Phi_\theta$ du run de lissage (orange) sont confinées à la bande de transition du cutoff $\zeta((s-B)/\varepsilon)$, $s\in[0.6,0.7]$ : c'est la courbure de $\zeta$ ($\zeta''\sim\varepsilon^{-2}$) que le réseau n'annule pas. La soustraction (vert) est confondue avec la forme fermée sur les trois lignes ; l'enrichissement (violet) l'est aussi hors de la bande de transition de $\chi$, $[0.7,0.9]$.}
+\label{fig:profiles-zoom_split}
+\end{figure}
+
+\end{landscape}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/absolute_errors_along_s_split.png}
+\caption{Erreurs absolues ponctuelles le long de $s$ : $e_0=|\Phi_\theta-V_{DO}|$, $e_1=|\partial_s\Phi_\theta-\partial_sV_{DO}|$, $e_2=|\partial_{ss}\Phi_\theta-\partial_{ss}V_{DO}|$ (échelle log). C'est la figure qui localise la valeur ajoutée des traitements analytiques. Les erreurs relatives par bande grandissent avec $s$ pour toutes les configurations parce que $V_{DO}\to0$, pas parce que l'erreur absolue grandit.}
+\label{fig:abs-errors_split}
+\end{figure}
+
+\end{landscape}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{figures/greeks_at_strike_vs_time_split.png}
+\caption{Haut : $\partial_s\Phi_\theta(K,t)$ et $\partial_{ss}\Phi_\theta(K,t)$ en fonction de $t$ (traits pleins), valeurs exactes en tirets. Bas : $\mathrm{err}_{\mathrm{rel}}\,\Delta(t)$ et $\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$ (échelle log). La verticale grise marque le zéro de $\partial_{ss}V_{DO}(K,\cdot)$, où l'erreur relative est mal conditionnée.}
+\label{fig:greeks-vs-t_split}
+\end{figure}
+
+\section{Ce qui sépare analytiquement l'enrichissement de la soustraction}
+Les deux résolutions analytiques écrivent l'extension comme une partie singulière qui reproduit le saut du coin plus un reste régulier, $g_2 = S + h$ avec $\Delta = K-B$, et ne diffèrent que par le choix de $S$ : $S_{\mathrm{sub}} = \Delta\,V_{DOD}$ (la digitale down-and-out, Définition 7) contre $S_{\mathrm{enr}} = \chi(s)\,\Delta\,\mathrm{erf}(\xi)$ avec $\xi = \ln(s/B)/(\sigma\sqrt{2(T-t)})$ (le profil de similarité de la limite en temps court, Définition 8). Les deux reproduisent exactement les deux traces, donc les prix entraînés ne sont pas séparés par leurs contraintes : ce qui les sépare est le forçage intérieur que le réseau doit absorber. Ces figures sont des évaluations en forme fermée, en float64, sans aucun réseau entraîné. Source : \path{data/compare_singular_parts_subtraction_enrichment/20260924_blackscholes_d00.1_d10.3}.
+\textbf{Mesuré sur la grille du domaine complet.} $\max|\mathcal L^{BS}S_{\mathrm{sub}}| = 0$ (exactement zéro en tout point, Proposition 4) contre $\max|\mathcal L^{BS}S_{\mathrm{enr}}| = 3.21$ et une moyenne quadratique de $0.392$ (Proposition 5 : de carré intégrable, non nul). La différence des deux parties singulières atteint $0.4$, soit $\Delta = K - B$ lui-même, tandis que celle des extensions complètes ne dépasse pas $0.0846$ : les parties régulières compensent l'essentiel de l'écart, et c'est bien le résidu, non la valeur de l'extension, qui sépare les deux méthodes.
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/singular_parts_and_difference.png}
+\caption{(a) et (b) : les deux parties singulières sur la même échelle. La digitale $\Delta\,V_{DOD}$ monte de $0$ à la barrière jusqu'à $\Delta=0.4$ et le reste sur tout le domaine ; le profil de similarité, coupé par $\chi$, est nul au-delà de $s = B+\delta_1 = 0.9$. (c) : leur différence, qui vaut donc $-\Delta$ dans tout le champ lointain. (d) : $\mathcal L^{BS}S_{\mathrm{sub}}$, identiquement nul. (e) : $\mathcal L^{BS}S_{\mathrm{enr}}$ en échelle symlog, concentré dans la bande $[B, B+\delta_1]$ et d'amplitude d'ordre $1$ : c'est le forçage que le réseau doit absorber, et la raison pour laquelle la meilleure perte intérieure de l'enrichissement est un à deux ordres de grandeur au-dessus de celle de la soustraction. (f) : la différence des extensions complètes $g_2 = S + h$, plus petite d'un facteur $5$ que celle des parties singulières, les restes réguliers compensant la troncature de $\chi$.}
+\label{fig:singular-parts}
+\end{figure}
+
+\end{landscape}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/singular_parts_corner_zoom.png}
+\caption{Les mêmes différences sur un zoom du coin. Les verticales pointillées marquent $s=B$, $s=B+\delta_0$, $s=B+\delta_1$ et $s=K$.}
+\label{fig:singular-parts-zoom}
+\end{figure}
+
+\end{landscape}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/singular_parts_slices.png}
+\caption{Coupes en $s$ à $t$ fixé. Ligne du haut : les deux parties singulières ; la digitale (vert) croît de façon monotone vers $\Delta$, le profil de similarité (violet) culmine à $\Delta$ puis est ramené à zéro par le cutoff. Ligne du milieu : la différence des parties singulières (orange), qui sature à $-\Delta$, et celle des extensions complètes (bleu), qui reste sous $0.09$. Ligne du bas : $|\mathcal L^{BS}S|$ en échelle logarithmique ; celui de la soustraction est exactement nul et ne peut pas être tracé sur un axe logarithmique, ce que le panneau indique.}
+\label{fig:singular-parts-slices}
+\end{figure}
+
+\end{landscape}
 
 \section{Figures par run (graine 0)}
 Pour chaque configuration, le run de la graine 0 : surface de prix sur la grille d'évaluation (entraîné, forme fermée, différence signée) ; coupes $V(s,t)$ à $t$ fixé en échelle symlog (linéaire sous $10^{-6}$, logarithmique au-delà) --- le prix va de $0.4$ près de la barrière à $10^{-5}$ dans le champ lointain, invisible en linéaire, et un prix entraîné qui change de signe y apparaît comme un passage sous zéro, pas comme une chute vers un plancher ; et, pour les traitements analytiques, la décomposition de l'estimateur $\Phi_\theta=S+h+g_1u_\theta$ ($S=\Delta V_{DOD}$ ou $S=\chi\Delta\,\mathrm{erf}(\xi)$, $h=\pi-\chi\,\pi(B,\cdot)$). Cette dernière montre ce que la partie en forme fermée reproduit à elle seule, ce que l'extension régulière ajoute et ce qui reste au réseau : pour la soustraction le réseau est presque nul (l'ansatz porte la solution) ; pour l'enrichissement $E$ est localisé par $\chi$ et $h$ présente un creux compensateur dans la bande de transition $[B+\delta_0,B+\delta_1]$, que le réseau doit corriger --- c'est là que se situe son surcroît d'erreur.
