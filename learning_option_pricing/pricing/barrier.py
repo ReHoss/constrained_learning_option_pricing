@@ -1661,6 +1661,18 @@ class _AnalyticallyResolvedCornerExtension:
         r"""The closed-form singular part :math:`S(s,t)` alone."""
         return self._singular_value_and_derivatives(s, t)[0]
 
+    def singular_residual(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        r""":math:`\mathcal L^{BS}S(s,t)` alone, at this extension's own ``r`` and ``sigma``.
+
+        Zero to floating point for the exact subtraction, whose singular part is
+        the down-and-out digital and solves the equation (Proposition 4), and
+        nonzero though square-integrable for the corner enrichment
+        (Proposition 5).  The difference between these two values is what
+        separates the two methods analytically, so the quantity is exposed
+        rather than left to the private route the residual assembly uses.
+        """
+        return self._singular_residual(s, t, self.r, self.sigma)
+
     def regular_part(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         r"""The regular part :math:`h(s,t) = \pi(s,t) - \chi(s)\pi(B,t)` alone."""
         pi_value, _, _, _ = self.terminal_profile.value_and_derivatives(s, t)

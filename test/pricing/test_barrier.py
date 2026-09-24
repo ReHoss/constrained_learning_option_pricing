@@ -1258,6 +1258,48 @@ class TestCornerSimilarityProfile:
         assert gaps[0] > gaps[1] > gaps[2] and gaps[2] < 1e-3
 
 
+class TestSingularResidualAccessor:
+    """The public accessor of the singular part's interior residual, read by the
+    corner-treatment diagnostics: it is the quantity that separates the two
+    analytic resolutions (zero for Method 1, nonzero for Method 2)."""
+    K, B, r, sigma, T = 1.0, 0.6, 0.03, 0.3, 1.0
+
+    def _grid(self):
+        s = torch.linspace(self.B + 1e-3, 3.0, 60, dtype=torch.float64).repeat_interleave(30)
+        t = torch.linspace(0.0, self.T - 1e-3, 30, dtype=torch.float64).repeat(60)
+        return s, t
+
+    def _subtraction(self):
+        return make_subtracted_digital_extension(self.K, self.B, self.r, self.sigma, self.T, "black_scholes")
+
+    def _enrichment(self):
+        return make_corner_enriched_extension(self.K, self.B, self.r, self.sigma, self.T, "black_scholes",
+                                              delta0=0.1, delta1=0.3)
+
+    def test_the_exact_subtraction_has_an_identically_zero_singular_residual(self) -> None:
+        s, t = self._grid()
+        residual = self._subtraction().singular_residual(s, t)
+        assert torch.equal(residual, torch.zeros_like(residual)), (
+            "the down-and-out digital solves the operator (Proposition 4); "
+            f"max |residual| = {residual.abs().max().item():.3e}"
+        )
+
+    def test_the_corner_enrichment_has_a_finite_nonzero_singular_residual(self) -> None:
+        s, t = self._grid()
+        residual = self._enrichment().singular_residual(s, t)
+        assert torch.isfinite(residual).all()
+        assert residual.abs().max() > 0.0, (
+            "Proposition 5: the similarity profile solves the leading-order heat equation, "
+            "not the full Black-Scholes operator"
+        )
+
+    def test_the_accessor_agrees_with_the_route_the_residual_assembly_uses(self) -> None:
+        s, t = self._grid()
+        for extension in (self._subtraction(), self._enrichment()):
+            assert torch.equal(extension.singular_residual(s, t),
+                               extension._singular_residual(s, t, self.r, self.sigma))
+
+
 class TestCornerEnrichedExtension:
     """g2 = chi Delta Lambda(xi) + pi - chi pi(B, .) reproduces both data exactly
     with no small parameter; residual and derivatives agree with autograd."""
