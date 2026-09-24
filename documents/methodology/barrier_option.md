@@ -1172,3 +1172,39 @@ The best interior loss separates the treatments by three to four orders of magni
 ($10^{-4}$ against $10^{-8}$–$10^{-7}$), in the order Table 1 of Doc A predicts: the smoothing
 ansatz must absorb through the network the $O(\varepsilon^{-2})$ residual of the cutoff, the
 enrichment a square-integrable residual, and the subtraction none at all.
+
+### 17.4 What separates the two analytic resolutions (measured, no trained network)
+
+`data/compare_singular_parts_subtraction_enrichment/20260924_blackscholes_d00.1_d10.3`, produced by
+`experiments/python_scripts/exp_barrier_option/diagnostic_scripts/compare_singular_parts_subtraction_enrichment.py`.
+Both resolutions write $g_2 = S + h$ with $\Delta = K - B$ and differ only in the singular part:
+$S_{\mathrm{sub}} = \Delta\,V_{DOD}$ against $S_{\mathrm{enr}} = \chi(s)\,\Delta\,\mathrm{erf}(\xi)$,
+$\xi = \ln(s/B)/(\sigma\sqrt{2(T-t)})$. Evaluated in closed form, float64, on a $600\times400$ grid
+of $\Omega$ and a $400\times400$ corner zoom $[B, B+0.4]\times(0,T)$.
+
+| Quantity | $\max|\cdot|$ on $\Omega$ | root mean square on $\Omega$ | root mean square on the corner zoom |
+|---|---|---|---|
+| $\mathcal L^{BS}S_{\mathrm{sub}}$ | $0$ exactly | $0$ | $0$ |
+| $\mathcal L^{BS}S_{\mathrm{enr}}$ | $3.21$ | $0.392$ | $0.959$ |
+| $S_{\mathrm{enr}} - S_{\mathrm{sub}}$ | $0.400$ | $0.373$ | $0.246$ |
+| $g_2^{\mathrm{enr}} - g_2^{\mathrm{sub}}$ | $8.46\times10^{-2}$ | $1.27\times10^{-2}$ | $2.54\times10^{-2}$ |
+
+$\mathcal L^{BS}S_{\mathrm{sub}}$ is zero at every one of the $2.4\times10^{5}$ grid points, not
+merely small: the down-and-out digital is an exact solution, so Method 1 introduces no interior
+forcing at all (Proposition 4). $\mathcal L^{BS}S_{\mathrm{enr}}$ is of order unity, confined to the
+band $[B, B+\delta_1]$ where the cutoff is not constant, and it is a fixed, parameter-independent
+forcing the network must absorb through $g_1u_\theta$ (Proposition 5). This is the analytic
+statement behind the measured gap in the best interior loss of section 17.3
+($1.1$–$1.7\times10^{-8}$ for the subtraction against $2.8$–$6.2\times10^{-7}$ for the enrichment,
+a factor of $20$ to $40$).
+
+The two singular parts themselves differ by as much as $\Delta$ — beyond $s = B + \delta_1$ the
+cutoff has set $S_{\mathrm{enr}}$ to zero while $\Delta\,V_{DOD}$ has reached its full amplitude —
+but the complete extensions differ by at most $8.46\times10^{-2}$, a factor of $4.7$ less, because
+the regular parts $h = \pi - \chi\,\pi(B,\cdot)$ absorb the truncation. The separation between the
+two methods is therefore in the forcing, not in the extension value, which is consistent with both
+reproducing the two traces exactly (section 17.1) and with their prices differing by a factor of
+about $1.5$ on the comparison metric while their losses differ by a factor of $20$ to $40$.
+
+Figures: `rapports/corner_treatments_wholedomain_20260923`, section "Ce qui sépare analytiquement
+l'enrichissement de la soustraction".
