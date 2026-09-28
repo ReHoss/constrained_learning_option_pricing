@@ -38,7 +38,12 @@ Extension kind                   Decay rate :math:`r_k`         :math:`\mu_{\mat
 ===============================  =============================  ======================
 
 with :math:`\nu_c \ge 0` the comparison diffusivity of the graded Gaussian
-extension.  The analytic derivatives follow by differentiating each spectral
+extension.  The ``graded_chen_mangasarian`` kind is not of this exponential
+form: its per-component factor is the Chen--Mangasarian multiplier
+:math:`m(z) = z K_1(z)` at :math:`z = k\,\varepsilon(t)`, with the linearly graded
+scale :math:`\varepsilon(t) = \varepsilon_0 (T - t)/T` and no phase advection; see
+:class:`learning_option_pricing.pde.terminal_data_extensions.GradedChenMangasarianExtension`
+for the derivation of its time derivative.  The analytic derivatives follow by differentiating each spectral
 component:
 
 .. math::
@@ -98,9 +103,60 @@ EXTENSION_FIELD_KINDS = (
     "split_diffusion_advection",
     "graded_gaussian",
     "exact_solution",
+    "graded_chen_mangasarian",
 )
 
 SUPPORTED_GENERATOR_ORDERS = (0, 1, 2)
+
+
+class _ChenMangasarianMultiplierFunction(torch.autograd.Function):
+    r"""Autograd-aware :math:`m(z) = z K_1(z)`.
+
+    ``torch.special.modified_bessel_k1`` has no derivative formula in torch,
+    so the backward pass supplies :math:`m'(z) = -z K_0(z)` explicitly (the
+    recurrence :math:`(z K_1(z))' = -z K_0(z)`).  Only the first derivative is
+    provided; a second derivative through this function is not supported.
+    """
+
+    @staticmethod
+    def forward(ctx, scaled_wavenumber):
+        ctx.save_for_backward(scaled_wavenumber)
+        positive = scaled_wavenumber > 0.0
+        safe = torch.where(
+            positive, scaled_wavenumber, torch.ones_like(scaled_wavenumber)
+        )
+        return torch.where(
+            positive,
+            safe * torch.special.modified_bessel_k1(safe),
+            torch.ones_like(scaled_wavenumber),
+        )
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (scaled_wavenumber,) = ctx.saved_tensors
+        return grad_output * _chen_mangasarian_multiplier_derivative_torch(
+            scaled_wavenumber
+        )
+
+
+def _chen_mangasarian_multiplier_torch(scaled_wavenumber: torch.Tensor) -> torch.Tensor:
+    r"""Torch ``float64`` evaluation of :math:`z K_1(z)`, equal to ``1`` at
+    :math:`z = 0` (the limit; :math:`K_1(0) = +\infty`), differentiable once."""
+    return _ChenMangasarianMultiplierFunction.apply(scaled_wavenumber)
+
+
+def _chen_mangasarian_multiplier_derivative_torch(
+    scaled_wavenumber: torch.Tensor,
+) -> torch.Tensor:
+    r"""Torch ``float64`` evaluation of :math:`-z K_0(z)`, equal to ``0`` at
+    :math:`z = 0` (the limit)."""
+    positive = scaled_wavenumber > 0.0
+    safe = torch.where(positive, scaled_wavenumber, torch.ones_like(scaled_wavenumber))
+    return torch.where(
+        positive,
+        -safe * torch.special.modified_bessel_k0(safe),
+        torch.zeros_like(scaled_wavenumber),
+    )
 
 
 def bandlimited_bernoulli_cosine_coefficients(
@@ -226,6 +282,7 @@ class PeriodicExtensionField:
         extension_kind: str,
         sine_coefficients=None,
         comparison_diffusivity: float | None = None,
+        initial_smoothing_scale: float | None = None,
         terminal_time: float = 1.0,
     ) -> None:
         if extension_kind not in EXTENSION_FIELD_KINDS:
@@ -279,6 +336,25 @@ class PeriodicExtensionField:
                 f"extension_kind {extension_kind!r}"
             )
 
+        if extension_kind == "graded_chen_mangasarian":
+            if initial_smoothing_scale is None or not initial_smoothing_scale > 0.0:
+                raise ValueError(
+                    "extension_kind 'graded_chen_mangasarian' requires a strictly "
+                    "positive initial_smoothing_scale, received "
+                    f"{initial_smoothing_scale!r}"
+                )
+        elif initial_smoothing_scale is not None:
+            raise ValueError(
+                "initial_smoothing_scale applies to the 'graded_chen_mangasarian' "
+                f"kind only, received {initial_smoothing_scale!r} with "
+                f"extension_kind {extension_kind!r}"
+            )
+        self.initial_smoothing_scale = (
+            float(initial_smoothing_scale)
+            if initial_smoothing_scale is not None
+            else None
+        )
+
         self.extension_kind = extension_kind
         self.terminal_time = float(terminal_time)
         self.generator_coefficients = normalised_coefficients
@@ -300,6 +376,10 @@ class PeriodicExtensionField:
             decay_rates = self.diffusivity * wavenumbers**2
         elif extension_kind == "graded_gaussian":
             decay_rates = self.comparison_diffusivity * wavenumbers**2
+        elif extension_kind == "graded_chen_mangasarian":
+            # Not an exponential factor: the multiplier is evaluated in
+            # _component_terms; the decay-rate array is unused for this kind.
+            decay_rates = np.zeros_like(wavenumbers)
         else:  # exact_solution
             decay_rates = (
                 self.diffusivity * wavenumbers**2 - self.reaction_coefficient
@@ -386,6 +466,31 @@ class PeriodicExtensionField:
         x_expanded = x64[..., None]
         s_expanded = time_to_terminal[..., None]
         theta = x_expanded * wavenumbers + s_expanded * arrays["phase_advection_rates"]
+        if self.extension_kind == "graded_chen_mangasarian":
+            scaled = (
+                wavenumbers * self.initial_smoothing_scale * s_expanded / self.terminal_time
+            )
+            if is_torch:
+                decay_factors = _chen_mangasarian_multiplier_torch(scaled)
+                cos_theta = torch.cos(theta)
+                sin_theta = torch.sin(theta)
+            else:
+                from learning_option_pricing.pde.terminal_data_extensions import (
+                    chen_mangasarian_multiplier,
+                )
+
+                decay_factors = chen_mangasarian_multiplier(scaled)
+                cos_theta = np.cos(theta)
+                sin_theta = np.sin(theta)
+            return (
+                decay_factors,
+                cos_theta,
+                sin_theta,
+                arrays,
+                is_torch,
+                original_dtype,
+                x64.shape,
+            )
         if is_torch:
             decay_factors = torch.exp(-s_expanded * arrays["decay_rates"])
             cos_theta = torch.cos(theta)
@@ -426,6 +531,8 @@ class PeriodicExtensionField:
 
     def time_derivative(self, x, t):
         r"""Analytic time derivative :math:`\partial_t h(x, t)`."""
+        if self.extension_kind == "graded_chen_mangasarian":
+            return self._chen_mangasarian_time_derivative(x, t)
         decay, cos_theta, sin_theta, arrays, is_torch, dtype, _ = (
             self._component_terms(x, t)
         )
@@ -438,6 +545,38 @@ class PeriodicExtensionField:
             * (cosine_amplitudes * sin_theta - sine_amplitudes * cos_theta)
         )
         return self._cast_back(component_values.sum(-1), is_torch, dtype)
+
+    def _chen_mangasarian_time_derivative(self, x, t):
+        r"""Time derivative of the graded Chen--Mangasarian field,
+        :math:`\partial_t h = \sum_k \tfrac{\varepsilon_0 k}{T}\, z K_0(z)\,
+        (a_k \cos kx + b_k \sin kx)` with :math:`z = k\,\varepsilon(t)`.
+        """
+        x64, time_to_terminal, is_torch, original_dtype = self._broadcast_float64(x, t)
+        arrays = self._coefficient_arrays(x64 if is_torch else None)
+        wavenumbers = arrays["wavenumbers"]
+        theta = x64[..., None] * wavenumbers
+        scaled = (
+            wavenumbers
+            * self.initial_smoothing_scale
+            * time_to_terminal[..., None]
+            / self.terminal_time
+        )
+        rate = self.initial_smoothing_scale * wavenumbers / self.terminal_time
+        if is_torch:
+            factor = -rate * _chen_mangasarian_multiplier_derivative_torch(scaled)
+            cos_theta, sin_theta = torch.cos(theta), torch.sin(theta)
+        else:
+            from learning_option_pricing.pde.terminal_data_extensions import (
+                chen_mangasarian_multiplier_derivative,
+            )
+
+            factor = -rate * chen_mangasarian_multiplier_derivative(scaled)
+            cos_theta, sin_theta = np.cos(theta), np.sin(theta)
+        component_values = factor * (
+            arrays["cosine_amplitudes"] * cos_theta
+            + arrays["sine_amplitudes"] * sin_theta
+        )
+        return self._cast_back(component_values.sum(-1), is_torch, original_dtype)
 
     def space_derivative(self, x, t):
         r"""Analytic space derivative :math:`\partial_x h(x, t)`."""
@@ -597,6 +736,34 @@ def build_graded_gaussian_extension_field(
     )
 
 
+def build_graded_chen_mangasarian_extension_field(
+    generator_coefficients: dict[int, float],
+    cosine_coefficients,
+    *,
+    sine_coefficients=None,
+    comparison_diffusivity: float | None = None,
+    initial_smoothing_scale: float | None = None,
+    terminal_time: float = 1.0,
+) -> PeriodicExtensionField:
+    r"""Linearly graded Chen--Mangasarian extension (stage-2 variants V8/V9):
+    the datum convolved with the Chen--Mangasarian kernel at the scale
+    :math:`\varepsilon(t) = \varepsilon_0 (T - t)/T`.
+    """
+    if comparison_diffusivity is not None:
+        raise ValueError(
+            "comparison_diffusivity applies to the graded Gaussian extension "
+            f"only, received {comparison_diffusivity!r}"
+        )
+    return PeriodicExtensionField(
+        generator_coefficients,
+        cosine_coefficients,
+        extension_kind="graded_chen_mangasarian",
+        sine_coefficients=sine_coefficients,
+        initial_smoothing_scale=initial_smoothing_scale,
+        terminal_time=terminal_time,
+    )
+
+
 def exact_solution_field(
     generator_coefficients: dict[int, float],
     cosine_coefficients,
@@ -630,6 +797,7 @@ EXTENSION_FIELD_REGISTRY = {
     "split_diffusion_advection": build_split_diffusion_advection_extension_field,
     "graded_gaussian": build_graded_gaussian_extension_field,
     "exact_solution": exact_solution_field,
+    "graded_chen_mangasarian": build_graded_chen_mangasarian_extension_field,
 }
 
 
