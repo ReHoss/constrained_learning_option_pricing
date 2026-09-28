@@ -852,3 +852,38 @@ $\sim 12$ minutes.
   band — aliasing from network content above $512$ is possible in
   principle and is checked by recomputing one variant's spectra on a
   $2048$-point grid at aggregation time.
+
+## 8. Addendum (2026-09-28) — graded Chen–Mangasarian variants V8/V9
+
+The July campaign lacked the Chen–Mangasarian arm. Two variants are added to the
+generator cells, trained into the **existing** July run directories under the same
+master seeds (hence the same network initialisation and sampler trajectory), so the
+comparison with V1–V7 is paired.
+
+*Construction.* The datum is convolved with the Chen–Mangasarian kernel
+$\varphi_\varepsilon(y)=\varepsilon^2/\bigl(2(y^2+\varepsilon^2)^{3/2}\bigr)$, whose convolution with $y^+$ is
+$\tfrac12\bigl(y+\sqrt{y^2+\varepsilon^2}\bigr)$. Its Fourier multiplier is
+$\hat\varphi_\varepsilon(\xi)=m(\varepsilon|\xi|)$ with $m(z)=zK_1(z)$, identical at each integer
+wavenumber for the periodised kernel. The scale is graded linearly,
+$\varepsilon(t)=\varepsilon_0(T-t)/T$, so the extension
+$\hat h(k,t)=m(|k|\varepsilon(t))\,c_k$ meets the datum exactly at $t=T$. With $(zK_1)'=-zK_0$,
+$\partial_t\hat h(k,t)=(\varepsilon_0|k|/T)\,zK_0(z)\,c_k$, $z=|k|\varepsilon(t)$, which is bounded and
+vanishes at $t=T$. The parabolic grading $\varepsilon\propto\sqrt{T-t}$ is excluded: it makes
+$\partial_t\hat h$ diverge logarithmically at the slice, violating the $C^1$-in-time
+hypothesis of the bias-freeness proposition.
+
+*Scale.* $\varepsilon_0=\rho_\varepsilon\sqrt{2\nu T}$, the heat-kernel standard deviation of the cell's own
+diffusivity at $s=T$, with $\rho_\varepsilon=1$ (V8, `graded_chen_mangasarian`) and
+$\rho_\varepsilon=1/2$ (V9, `graded_chen_mangasarian_narrow`). The choice of scale is a design
+choice, not derived from an optimality criterion; V9 measures the sensitivity to it.
+
+*Property tested before training.* The family $\{\varphi_\varepsilon\}$ is not a semigroup, so the
+extension does not cancel the principal part of the generator: at the slice its forcing
+equals $Ag$, that of `constant_in_time` (unit test
+`test_chen_mangasarian_terminal_forcing_is_generator_applied_to_datum`).
+
+*Implementation.* `PeriodicExtensionField(extension_kind="graded_chen_mangasarian")`
+(training field; torch `modified_bessel_k0/k1`, first derivative supplied explicitly to
+autograd), `GradedChenMangasarianExtension` (spectral counterpart; the strip-forcing time
+integral uses 256-node Gauss–Legendre quadrature, the only quadrature among the
+extensions). Runner: `chen_mangasarian_initial_smoothing_scale`.

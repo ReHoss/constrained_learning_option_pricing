@@ -272,6 +272,7 @@ def build_closed_form_extension(variant: dict, problem: dict):
         ConstantInTimeExtension,
         ConvexRawExtension,
         ExactSolutionExtension,
+        GradedChenMangasarianExtension,
         GradedGaussianExtension,
         PeriodisedBernoulliDatum,
         SplitSemigroupExtension,
@@ -309,10 +310,29 @@ def build_closed_form_extension(variant: dict, problem: dict):
         return GradedGaussianExtension(
             datum, generator, comparison_diffusivity, terminal_time
         )
+    if variant["extension"] == "graded_chen_mangasarian":
+        return GradedChenMangasarianExtension(
+            datum,
+            generator,
+            chen_mangasarian_initial_smoothing_scale(variant, problem),
+            terminal_time,
+        )
     if variant_name in ("exact_solution", "matched_exponential_factor"):
         return ExactSolutionExtension(datum, generator, terminal_time)
     raise KeyError(
         f"No closed-form extension counterpart for variant {variant_name!r}"
+    )
+
+
+def chen_mangasarian_initial_smoothing_scale(variant: dict, problem: dict) -> float:
+    r"""Initial Chen--Mangasarian scale
+    :math:`\varepsilon_0 = \rho_\varepsilon \sqrt{2 \nu T}`, with
+    :math:`\rho_\varepsilon` the variant's ``smoothing_scale_ratio`` and
+    :math:`\sqrt{2 \nu T}` the standard deviation of the heat kernel of the
+    cell's own diffusivity :math:`\nu` at :math:`s = T`.
+    """
+    return float(variant["smoothing_scale_ratio"]) * math.sqrt(
+        2.0 * problem["generator_coefficients"][2] * problem["terminal_time"]
     )
 
 
@@ -458,12 +478,18 @@ def build_ansatz(variant: dict, problem: dict, hparams: dict, *, model_seed: int
                 float(variant["comparison_diffusivity_ratio"])
                 * problem["generator_coefficients"][2]
             )
+        extra_builder_arguments = {}
+        if variant.get("smoothing_scale_ratio") is not None:
+            extra_builder_arguments["initial_smoothing_scale"] = (
+                chen_mangasarian_initial_smoothing_scale(variant, problem)
+            )
         extension_field = builder(
             problem["generator_coefficients"],
             problem["cosine_coefficients"],
             sine_coefficients=problem["sine_coefficients"],
             comparison_diffusivity=comparison_diffusivity,
             terminal_time=terminal_time,
+            **extra_builder_arguments,
         )
         if variant["name"] == "graded_gaussian_matched":
             _assert_graded_matched_agrees_with_split(extension_field, problem)
@@ -573,6 +599,19 @@ def train_variant(
         variant["interpolation"], variant["extension"], n_parameters,
         model_seed, sampler_seed,
     )
+    logger.info(
+        "[%s/%s] variant config: %s",
+        problem["cell_name"], variant["name"],
+        {key: value for key, value in variant.items() if key not in ("color", "label")},
+    )
+    if variant.get("smoothing_scale_ratio") is not None:
+        logger.info(
+            "[%s/%s] Chen--Mangasarian initial smoothing scale eps_0 = %.6e "
+            "(ratio %.3f times sqrt(2 nu T)), linear grading eps(t) = eps_0 (T - t)/T",
+            problem["cell_name"], variant["name"],
+            chen_mangasarian_initial_smoothing_scale(variant, problem),
+            float(variant["smoothing_scale_ratio"]),
+        )
 
     # Periodic checkpointing is deliberately omitted: a single run trains
     # 20000 iterations in about 400 s (well within the array task's 1 h wall

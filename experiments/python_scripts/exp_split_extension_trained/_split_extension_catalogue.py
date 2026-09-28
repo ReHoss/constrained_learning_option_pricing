@@ -34,8 +34,11 @@ the fields ``name``, ``form`` (one of the ``FORMS`` of
 ``extension`` (a **registry key** of
 ``learning_option_pricing.pde.EXTENSION_FIELD_REGISTRY``, resolved to torch
 callables at build time inside the runner), ``comparison_diffusivity_ratio``
-(graded variants only), ``exponential_rate_gamma`` (control cell only),
-``color`` and ``label``.
+(graded Gaussian variants only), ``smoothing_scale_ratio`` (graded
+Chen--Mangasarian variants only; the initial scale is
+``epsilon_0 = smoothing_scale_ratio * sqrt(2 nu T)``, the standard deviation
+of the heat kernel of the cell's own diffusivity at ``s = T``),
+``exponential_rate_gamma`` (control cell only), ``color`` and ``label``.
 
 The runner must assert ``RUNNER_SCRIPT_STEM == Path(__file__).stem`` so the
 output-folder-from-filename invariant cannot silently drift.
@@ -64,6 +67,7 @@ GENERATOR_CELL_VARIANTS: list[dict] = [
         "interpolation": "linear",
         "extension": None,
         "comparison_diffusivity_ratio": None,
+        "smoothing_scale_ratio": None,
         "exponential_rate_gamma": None,
         "color": "#2ca02c",  # green
         "label": r"convex raw: $\Psi=\lambda(t)\,g$, linear $\lambda$",
@@ -77,6 +81,7 @@ GENERATOR_CELL_VARIANTS: list[dict] = [
         "interpolation": "linear",
         "extension": None,
         "comparison_diffusivity_ratio": None,
+        "smoothing_scale_ratio": None,
         "exponential_rate_gamma": None,
         "color": "#1f77b4",  # blue
         "label": r"constant-in-time: $\Psi=g$",
@@ -89,6 +94,7 @@ GENERATOR_CELL_VARIANTS: list[dict] = [
         "interpolation": "linear",
         "extension": "split_diffusion",
         "comparison_diffusivity_ratio": None,
+        "smoothing_scale_ratio": None,
         "exponential_rate_gamma": None,
         "color": "#d62728",  # red
         "label": r"diffusion split $\{\partial_{xx}\}$: $P\Psi=\mu\,\partial_x\Psi+r_0\Psi$",
@@ -101,6 +107,7 @@ GENERATOR_CELL_VARIANTS: list[dict] = [
         "interpolation": "linear",
         "extension": "split_diffusion_advection",
         "comparison_diffusivity_ratio": None,
+        "smoothing_scale_ratio": None,
         "exponential_rate_gamma": None,
         "color": "#ff7f0e",  # orange
         "label": "diffusion–advection split " + r"$\{\partial_{xx},\partial_x\}$: $P\Psi=r_0\Psi$",
@@ -115,6 +122,7 @@ GENERATOR_CELL_VARIANTS: list[dict] = [
         "interpolation": "linear",
         "extension": "graded_gaussian",
         "comparison_diffusivity_ratio": 1.0,
+        "smoothing_scale_ratio": None,
         "exponential_rate_gamma": None,
         "color": "#9467bd",  # purple
         "label": r"graded Gaussian, $\nu_c=\nu$ (control of the split $\{\partial_{xx}\}$)",
@@ -127,6 +135,7 @@ GENERATOR_CELL_VARIANTS: list[dict] = [
         "interpolation": "linear",
         "extension": "graded_gaussian",
         "comparison_diffusivity_ratio": 0.5,
+        "smoothing_scale_ratio": None,
         "exponential_rate_gamma": None,
         "color": "#8c564b",  # brown
         "label": r"graded Gaussian, $\nu_c=\nu/2$ (mis-specified)",
@@ -139,9 +148,41 @@ GENERATOR_CELL_VARIANTS: list[dict] = [
         "interpolation": "linear",
         "extension": "exact_solution",
         "comparison_diffusivity_ratio": None,
+        "smoothing_scale_ratio": None,
         "exponential_rate_gamma": None,
         "color": "#7f7f7f",  # grey
         "label": r"exact solution: $\Psi=u^\star$, $P\Psi=0$",
+    },
+    {
+        # V8 — linearly graded Chen--Mangasarian extension (added 2026-09-28,
+        # the arm missing from the July campaign): the datum convolved with
+        # the Chen--Mangasarian kernel at scale eps(t) = eps_0 (T - t) / T,
+        # eps_0 = sqrt(2 nu T) (the heat-kernel width at s = T).  It meets the
+        # datum exactly at t = T but is not the semigroup of any operator, so
+        # its forcing at the slice is A g (that of constant_in_time).  Linear
+        # grading because the parabolic one makes d_t Psi diverge
+        # logarithmically at the slice.
+        "name": "graded_chen_mangasarian",
+        "form": "hard_constant",
+        "interpolation": "linear",
+        "extension": "graded_chen_mangasarian",
+        "comparison_diffusivity_ratio": None,
+        "smoothing_scale_ratio": 1.0,
+        "exponential_rate_gamma": None,
+        "color": "#e377c2",  # pink
+        "label": r"graded Chen--Mangasarian, $\varepsilon_0=\sqrt{2\nu T}$",
+    },
+    {
+        # V9 — as V8 with half the initial scale (sensitivity to eps_0).
+        "name": "graded_chen_mangasarian_narrow",
+        "form": "hard_constant",
+        "interpolation": "linear",
+        "extension": "graded_chen_mangasarian",
+        "comparison_diffusivity_ratio": None,
+        "smoothing_scale_ratio": 0.5,
+        "exponential_rate_gamma": None,
+        "color": "#bcbd22",  # olive
+        "label": r"graded Chen--Mangasarian, $\varepsilon_0=\tfrac12\sqrt{2\nu T}$",
     },
 ]
 
@@ -163,6 +204,7 @@ MATCHED_EXPONENTIAL_FACTOR_VARIANT: dict = {
     "interpolation": "exponential",
     "extension": None,
     "comparison_diffusivity_ratio": None,
+    "smoothing_scale_ratio": None,
     "exponential_rate_gamma": CONTROL_CELL_MATCHED_EXPONENTIAL_RATE,
     "color": "#17becf",  # cyan
     "label": r"matched exponential factor: $\lambda(t)=e^{-\nu k_0^2(T-t)}$, $\Psi=\lambda g=u^\star$",

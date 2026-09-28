@@ -116,6 +116,7 @@ from learning_option_pricing.pde.terminal_data_extensions import (  # noqa: E402
     ConstantInTimeExtension,
     ConvexRawExtension,
     ExactSolutionExtension,
+    GradedChenMangasarianExtension,
     GradedGaussianExtension,
     SplitSemigroupExtension,
     TerminalDataExtension,
@@ -174,6 +175,8 @@ GENERATOR_CELL_VARIANT_NAMES = (
     "graded_gaussian_matched",
     "graded_gaussian_mismatched",
     "exact_solution",
+    "graded_chen_mangasarian",
+    "graded_chen_mangasarian_narrow",
 )
 CONTROL_CELL_VARIANT_NAMES = ("matched_exponential_factor", "convex_raw")
 
@@ -208,6 +211,14 @@ FALLBACK_VARIANT_DISPLAY = {
         "label": "Graded Gaussian (mismatched)",
     },
     "exact_solution": {"color": "#9467bd", "label": "Exact solution"},
+    "graded_chen_mangasarian": {
+        "color": "#17becf",
+        "label": "Graded Chen--Mangasarian",
+    },
+    "graded_chen_mangasarian_narrow": {
+        "color": "#bcbd22",
+        "label": "Graded Chen--Mangasarian (narrow)",
+    },
     "matched_exponential_factor": {
         "color": "#e377c2",
         "label": "Matched exponential factor",
@@ -233,6 +244,10 @@ REPORT_NOTATION_LABEL = {
         r"Graded Gaussian, $\nu_c=\nu$ (matched split $\{\partial_{xx}\}$)",
     "graded_gaussian_mismatched": r"Graded Gaussian, $\nu_c=\nu/2$ (mismatched)",
     "exact_solution": r"Exact solution ($\mathcal{L}h=0$)",
+    "graded_chen_mangasarian":
+        r"Graded Chen--Mangasarian, $\varepsilon_0=\sqrt{2\nu T}$",
+    "graded_chen_mangasarian_narrow":
+        r"Graded Chen--Mangasarian, $\varepsilon_0=\tfrac12\sqrt{2\nu T}$",
     "matched_exponential_factor": "Matched exponential factor",
 }
 
@@ -758,6 +773,16 @@ def build_terminal_data_extension(
         )
     if variant_name == "exact_solution":
         return ExactSolutionExtension(datum, generator, TERMINAL_TIME)
+    if variant_name in ("graded_chen_mangasarian", "graded_chen_mangasarian_narrow"):
+        # Initial scale eps_0 = ratio * sqrt(2 nu T), the convention of the
+        # runner's chen_mangasarian_initial_smoothing_scale (ratio 1 and 1/2).
+        ratio = 1.0 if variant_name == "graded_chen_mangasarian" else 0.5
+        return GradedChenMangasarianExtension(
+            datum,
+            generator,
+            ratio * math.sqrt(2.0 * diffusivity * TERMINAL_TIME),
+            TERMINAL_TIME,
+        )
     if variant_name == "matched_exponential_factor":
         # The control-cell extension Psi(x, t) = e^{-nu (T - t)} sin x equals
         # the exact solution of the pure-heat cell (specification Section
