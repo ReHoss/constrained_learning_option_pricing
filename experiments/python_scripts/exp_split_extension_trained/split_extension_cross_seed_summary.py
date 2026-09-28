@@ -169,6 +169,14 @@ GENERATOR_CELL_NAMES = (
 )
 
 CELL_NAMES = (*GENERATOR_CELL_NAMES, CONTROL_CELL_NAME)
+# The stage-1 comparison and additive-versus-convex tables compare the
+# order-2 split variants, which the fourth-order cell does not have; they are
+# written for the second-order cells only (the fourth-order cell appears in the
+# YAML summary and the figures).
+SECOND_ORDER_GENERATOR_CELL_NAMES = (
+    "g1_bernoulli_bandlimited",
+    "g2_bernoulli_bandlimited",
+)
 
 # Variant sets per cell (specification Sections 1.2 and 1.3), in display order.
 GENERATOR_CELL_VARIANT_NAMES = (
@@ -181,15 +189,32 @@ GENERATOR_CELL_VARIANT_NAMES = (
     "exact_solution",
     "graded_chen_mangasarian",
     "graded_chen_mangasarian_narrow",
+)
+# The fourth-order cell has its own variant set (no order-2 term to retain).
+FOURTH_ORDER_CELL_NAME = "g3_bernoulli_bandlimited"
+FOURTH_ORDER_CELL_VARIANT_NAMES = (
+    "convex_raw",
+    "constant_in_time",
     "split_principal",
     "split_principal_advection",
     "graded_gaussian_width_matched",
+    "graded_chen_mangasarian",
+    "exact_solution",
 )
 CONTROL_CELL_VARIANT_NAMES = ("matched_exponential_factor", "convex_raw")
 
 # Variants whose extension forcing vanishes identically (specification V7 and
 # C1): the cancellation ratio of Section 3.4 is undefined for them and the
 # cutoff k_star is recorded as absent.
+def specified_variant_names(cell: str) -> tuple:
+    """The specification's variant set of a cell, in display order."""
+    if cell == CONTROL_CELL_NAME:
+        return CONTROL_CELL_VARIANT_NAMES
+    if cell == FOURTH_ORDER_CELL_NAME:
+        return FOURTH_ORDER_CELL_VARIANT_NAMES
+    return GENERATOR_CELL_VARIANT_NAMES
+
+
 ZERO_FORCING_VARIANTS = {
     ("g1_bernoulli_bandlimited", "exact_solution"),
     ("g2_bernoulli_bandlimited", "exact_solution"),
@@ -965,11 +990,7 @@ def compute_closed_forms(
     """
     closed_forms: dict = {}
     for cell in CELL_NAMES:
-        specified_variants = (
-            CONTROL_CELL_VARIANT_NAMES
-            if cell == CONTROL_CELL_NAME
-            else GENERATOR_CELL_VARIANT_NAMES
-        )
+        specified_variants = specified_variant_names(cell)
         discovered_variants = tuple(statistics.get(cell, {}).keys())
         ordered = list(specified_variants) + [
             v for v in discovered_variants if v not in specified_variants
@@ -1307,7 +1328,7 @@ def write_additive_versus_convex_table(
             "measured one.\n"
         ),
     ]
-    for cell in GENERATOR_CELL_NAMES:
+    for cell in SECOND_ORDER_GENERATOR_CELL_NAMES:
         sections.append(f"## Cell `{cell}`\n")
         rows, conclusion = assemble_additive_versus_convex_rows(
             cell, summarised, closed_forms, unreachable_masses
@@ -1331,11 +1352,7 @@ def _cells_present(summarised: dict) -> list[str]:
 
 
 def _variant_order(cell: str, summarised: dict) -> list[str]:
-    specified = (
-        CONTROL_CELL_VARIANT_NAMES
-        if cell == CONTROL_CELL_NAME
-        else GENERATOR_CELL_VARIANT_NAMES
-    )
+    specified = specified_variant_names(cell)
     present = summarised.get(cell, {})
     return [v for v in specified if v in present] + [
         v for v in present if v not in specified

@@ -41,7 +41,8 @@ def test_parts_sum_identity():
     x, t = _collocation_batch()
     u = _smooth_test_field(x, t)
     parts = constant_coefficient_operator_parts(u, x, t, coefficients)
-    assert set(parts) == {"velocity", "diffusion", "advection", "reaction"}
+    assert set(parts) == {"velocity", "diffusion", "advection", "reaction", "higher_order"}
+    assert torch.all(parts["higher_order"] == 0.0)
 
     x2, t2 = _collocation_batch()
     u2 = _smooth_test_field(x2, t2)
