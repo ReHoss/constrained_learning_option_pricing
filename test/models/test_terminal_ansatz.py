@@ -342,3 +342,47 @@ def test_cross_check_requires_derivative_fns():
         cross_check_extension_forcing_analytic_versus_autograd(
             ansatz, x, t, generator_coefficients=GENERATOR_G1
         )
+
+
+
+def test_cross_check_passes_for_fourth_order_split_extension():
+    """The analytic bypass with the optional dxxx/dxxxx callables equals the
+    autograd route on the fourth-order generator (added 2026-09-29)."""
+    from learning_option_pricing.pde import build_split_principal_extension_field
+
+    generator_g3 = {4: -0.05, 1: 1.3, 0: -0.4}
+    torch.manual_seed(0)
+    net = ResNet(d_in=2, d_out=1, n=16, M=2, L=2).double()
+    extension_field = build_split_principal_extension_field(
+        generator_g3,
+        bandlimited_bernoulli_cosine_coefficients(8),
+        terminal_time=CIRCLE_TERMINAL_TIME,
+    )
+    callables = extension_field.derivative_callables()
+    assert set(callables) == {"dt", "dx", "dxx", "dxxx", "dxxxx"}
+    ansatz = TerminalAnsatz(
+        net,
+        None,
+        make_interpolation_coefficient("linear", T=CIRCLE_TERMINAL_TIME),
+        form="hard_constant",
+        extension_fn=extension_field.field,
+        extension_derivative_fns=callables,
+    )
+    x, t = _circle_batch()
+    measured_deviation = cross_check_extension_forcing_analytic_versus_autograd(
+        ansatz, x, t, generator_coefficients=generator_g3
+    )
+    assert measured_deviation <= 1e-10
+    # Missing dxxxx with an order-4 coefficient raises instead of dropping the term.
+    ansatz_missing = TerminalAnsatz(
+        net,
+        None,
+        make_interpolation_coefficient("linear", T=CIRCLE_TERMINAL_TIME),
+        form="hard_constant",
+        extension_fn=extension_field.field,
+        extension_derivative_fns={k: callables[k] for k in ("dt", "dx", "dxx")},
+    )
+    with pytest.raises(ValueError):
+        cross_check_extension_forcing_analytic_versus_autograd(
+            ansatz_missing, x, t, generator_coefficients=generator_g3
+        )

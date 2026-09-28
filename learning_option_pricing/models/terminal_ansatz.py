@@ -56,6 +56,10 @@ INTERPOLATION_KINDS = ("linear", "exponential")
 # Exact key set of the analytic-derivative bypass mapping accepted by
 # TerminalAnsatz(extension_derivative_fns=...).
 EXTENSION_DERIVATIVE_KEYS = ("dt", "dx", "dxx")
+# Optional third and fourth space derivatives of the extension, required only
+# when the generator has an order-3 or order-4 coefficient (added 2026-09-29
+# for the fourth-order cell).
+OPTIONAL_EXTENSION_DERIVATIVE_KEYS = ("dxxx", "dxxxx")
 
 
 # ---------------------------------------------------------------------------
@@ -194,10 +198,16 @@ class TerminalAnsatz(nn.Module):
                     "with the interpolation coefficient is not implemented); "
                     f"received form={form!r}."
                 )
-            if set(extension_derivative_fns) != set(EXTENSION_DERIVATIVE_KEYS):
+            supplied_keys = set(extension_derivative_fns)
+            if not (
+                set(EXTENSION_DERIVATIVE_KEYS)
+                <= supplied_keys
+                <= set(EXTENSION_DERIVATIVE_KEYS) | set(OPTIONAL_EXTENSION_DERIVATIVE_KEYS)
+            ):
                 raise ValueError(
-                    "extension_derivative_fns must have the exact keys "
-                    f"{EXTENSION_DERIVATIVE_KEYS}, received "
+                    "extension_derivative_fns must have the keys "
+                    f"{EXTENSION_DERIVATIVE_KEYS}, optionally "
+                    f"{OPTIONAL_EXTENSION_DERIVATIVE_KEYS}; received "
                     f"{sorted(extension_derivative_fns)}."
                 )
         super().__init__()
@@ -279,6 +289,32 @@ def _resolve_generator_coefficients(
     if generator_coefficients is not None:
         return {int(order): float(value) for order, value in generator_coefficients.items()}
     return {2: 0.5 * sigma**2, 1: 0.0, 0: 0.0}
+
+
+def _analytic_higher_order_forcing(
+    derivative_fns, coefficients, coord_col, t_col, output_shape
+):
+    r"""Analytic :math:`c_3\,\partial_x^3\Psi + c_4\,\partial_x^4\Psi` from the
+    optional closed-form derivatives ``dxxx`` / ``dxxxx``.
+
+    Returns a zero tensor when the generator has no order-3 or order-4
+    coefficient.  Raises :class:`ValueError` when such a coefficient is present
+    but the matching derivative callable was not supplied (never silently
+    dropped).
+    """
+    channel = torch.zeros(output_shape, dtype=coord_col.dtype, device=coord_col.device)
+    for order, key in ((3, "dxxx"), (4, "dxxxx")):
+        if order not in coefficients:
+            continue
+        if key not in derivative_fns:
+            raise ValueError(
+                f"the generator has an order-{order} coefficient but "
+                f"extension_derivative_fns has no {key!r} callable."
+            )
+        channel = channel + coefficients[order] * derivative_fns[key](
+            coord_col, t_col
+        ).reshape(output_shape)
+    return channel
 
 
 def residual_decomposition(
@@ -377,6 +413,7 @@ def residual_decomposition(
         forcing_diffusion = torch.zeros_like(p_phi)
         forcing_advection = torch.zeros_like(p_phi)
         forcing_reaction = torch.zeros_like(p_phi)
+        forcing_higher_order = torch.zeros_like(p_phi)
     else:
         lam = ansatz._interp_coeff(t)
         (lam_prime,) = torch.autograd.grad(
@@ -401,11 +438,15 @@ def residual_decomposition(
                     1, 0.0
                 ) * derivative_fns["dx"](coord_col, t_col).reshape(coord.shape)
                 forcing_reaction = resolved_coefficients.get(0, 0.0) * psi_values
+                forcing_higher_order = _analytic_higher_order_forcing(
+                    derivative_fns, resolved_coefficients, coord_col, t_col, coord.shape
+                )
                 extension_forcing = (
                     forcing_velocity
                     + forcing_diffusion
                     + forcing_advection
                     + forcing_reaction
+                    + forcing_higher_order
                 )
         else:
             psi = ansatz.extension(coord_col, t_col).squeeze(-1)
@@ -416,11 +457,13 @@ def residual_decomposition(
             forcing_diffusion = forcing_parts["diffusion"]
             forcing_advection = forcing_parts["advection"]
             forcing_reaction = forcing_parts["reaction"]
+            forcing_higher_order = forcing_parts["higher_order"]
             extension_forcing = (
                 forcing_velocity
                 + forcing_diffusion
                 + forcing_advection
                 + forcing_reaction
+                + forcing_higher_order
             )
         residual = network_contribution + extension_forcing
 
@@ -436,6 +479,7 @@ def residual_decomposition(
         "forcing_diffusion": (forcing_diffusion**2).mean(),
         "forcing_advection": (forcing_advection**2).mean(),
         "forcing_reaction": (forcing_reaction**2).mean(),
+        "forcing_higher_order": (forcing_higher_order**2).mean(),
     }
 
 
@@ -518,17 +562,22 @@ def cross_check_extension_forcing_analytic_versus_autograd(
             "dx"
         ](coord_col, t_col).reshape(coord.shape)
         reaction_channel = resolved_coefficients.get(0, 0.0) * psi_values
+        higher_order_channel = _analytic_higher_order_forcing(
+            derivative_fns, resolved_coefficients, coord_col, t_col, coord.shape
+        )
         analytic_forcing = (
             velocity_channel
             + diffusion_channel
             + advection_channel
             + reaction_channel
+            + higher_order_channel
         )
         assembly_scale_norm = torch.linalg.vector_norm(
             velocity_channel.abs()
             + diffusion_channel.abs()
             + advection_channel.abs()
             + reaction_channel.abs()
+            + higher_order_channel.abs()
         )
 
     # Autograd side, on fresh leaf tensors.
