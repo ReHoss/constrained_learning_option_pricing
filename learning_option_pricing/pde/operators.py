@@ -25,9 +25,12 @@ from __future__ import annotations
 
 import torch
 
-# Differential orders the constant-coefficient operator supports (the
-# stage-2 generators are advection–diffusion–reaction, order at most 2).
-SUPPORTED_DIFFERENTIAL_ORDERS = (0, 1, 2)
+# Differential orders the constant-coefficient operator supports.  Orders 0-2
+# are the advection-diffusion-reaction generators of stage 2; orders 3 and 4
+# (added 2026-09-29 for the fourth-order cell) are summed into a single
+# ``higher_order`` channel, so the channels of an order <= 2 generator are
+# unchanged bitwise.
+SUPPORTED_DIFFERENTIAL_ORDERS = (0, 1, 2, 3, 4)
 
 
 def _validated_operator_coefficients(
@@ -95,6 +98,8 @@ def constant_coefficient_operator(
         operator_values = operator_values + parts["diffusion"]
     if 1 in normalised_coefficients:
         operator_values = operator_values + parts["advection"]
+    if 3 in normalised_coefficients or 4 in normalised_coefficients:
+        operator_values = operator_values + parts["higher_order"]
     if 0 in normalised_coefficients:
         operator_values = operator_values + parts["reaction"]
     return operator_values
@@ -113,9 +118,10 @@ def constant_coefficient_operator_parts(
     * ``velocity``  — :math:`\partial_t u` (always computed);
     * ``diffusion`` — :math:`c_2\,\partial_{xx} u`;
     * ``advection`` — :math:`c_1\,\partial_x u`;
-    * ``reaction``  — :math:`c_0\, u`.
+    * ``reaction``  — :math:`c_0\, u`;
+    * ``higher_order`` — :math:`c_3\,\partial_x^3 u + c_4\,\partial_x^4 u`.
 
-    All four keys are always present in the returned mapping; a channel whose
+    All five keys are always present in the returned mapping; a channel whose
     order is absent from ``coefficients`` is a zero tensor.  Applied to a
     terminal-data extension :math:`\Psi`, the velocity channel is the
     *interpolation-velocity* forcing and the remaining channels attribute the
@@ -150,8 +156,8 @@ def constant_coefficient_operator_parts(
         grad_field_t if grad_field_t is not None else torch.zeros_like(t)
     )
 
-    needs_first_space_derivative = (
-        1 in normalised_coefficients or 2 in normalised_coefficients
+    needs_first_space_derivative = any(
+        order in normalised_coefficients for order in (1, 2, 3, 4)
     )
     grad_field_x = None
     if needs_first_space_derivative:
@@ -166,7 +172,10 @@ def constant_coefficient_operator_parts(
         grad_field_x if grad_field_x is not None else torch.zeros_like(coord)
     )
 
-    if 2 in normalised_coefficients and grad_field_x is not None:
+    needs_second_space_derivative = any(
+        order in normalised_coefficients for order in (2, 3, 4)
+    )
+    if needs_second_space_derivative and grad_field_x is not None:
         (grad_field_xx,) = torch.autograd.grad(
             grad_field_x,
             (coord,),
@@ -179,6 +188,34 @@ def constant_coefficient_operator_parts(
         )
     else:
         second_space_derivative = torch.zeros_like(coord)
+
+    # Third and fourth space derivatives, only when an order-3 or order-4
+    # coefficient is present (repeated autograd of the previous derivative).
+    higher_space_derivatives = {}
+    previous_derivative = second_space_derivative
+    for order in (3, 4):
+        if not any(o in normalised_coefficients for o in range(order, 5)):
+            break
+        if previous_derivative.requires_grad:
+            (next_derivative,) = torch.autograd.grad(
+                previous_derivative,
+                (coord,),
+                grad_outputs=torch.ones_like(previous_derivative),
+                create_graph=True,
+                allow_unused=True,
+            )
+        else:
+            next_derivative = None
+        previous_derivative = (
+            next_derivative if next_derivative is not None else torch.zeros_like(coord)
+        )
+        higher_space_derivatives[order] = previous_derivative
+    higher_order_channel = torch.zeros_like(coord)
+    for order, derivative in higher_space_derivatives.items():
+        if order in normalised_coefficients:
+            higher_order_channel = (
+                higher_order_channel + normalised_coefficients[order] * derivative
+            )
 
     diffusion_channel = (
         normalised_coefficients[2] * second_space_derivative
@@ -201,6 +238,7 @@ def constant_coefficient_operator_parts(
         "diffusion": diffusion_channel,
         "advection": advection_channel,
         "reaction": reaction_channel,
+        "higher_order": higher_order_channel,
     }
 
 
