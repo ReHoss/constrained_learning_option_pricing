@@ -104,9 +104,27 @@ EXTENSION_FIELD_KINDS = (
     "graded_gaussian",
     "exact_solution",
     "graded_chen_mangasarian",
+    "split_principal",
+    "split_principal_advection",
 )
 
-SUPPORTED_GENERATOR_ORDERS = (0, 1, 2)
+# Orders 0, 1, 2 (stage-2 cells) and 4 (fourth-order cell, added 2026-09-29).
+# Order 3 is excluded: its symbol -i c_3 k^3 is a cubic phase, which the
+# linear phase-advection form of the component sum does not represent.
+SUPPORTED_GENERATOR_ORDERS = (0, 1, 2, 4)
+
+
+def principal_order(generator_coefficients: dict[int, float]) -> int:
+    """Highest even differential order present in the generator mapping."""
+    return max(order for order in generator_coefficients if order % 2 == 0 and order > 0)
+
+
+def even_order_decay_rate(order: int, coefficient: float, wavenumbers):
+    r"""Decay rate :math:`-c_j (-1)^{j/2} k^j` of the even-order term
+    :math:`c_j\,\partial_x^j` (its symbol on :math:`e^{ikx}` is
+    :math:`c_j (ik)^j = c_j (-1)^{j/2} k^j`); for :math:`j = 2` it is
+    :math:`c_2 k^2`, for :math:`j = 4` it is :math:`-c_4 k^4`."""
+    return -coefficient * (-1.0) ** (order // 2) * np.asarray(wavenumbers, dtype=np.float64) ** order
 
 
 class _ChenMangasarianMultiplierFunction(torch.autograd.Function):
@@ -206,10 +224,11 @@ def _validated_generator_coefficients(
 ) -> dict[int, float]:
     """Validate and normalise the generator coefficient mapping.
 
-    The mapping must use the differential orders 0, 1, 2 only, must contain
-    the order 2, and the diffusivity (the order-2 coefficient) must be
-    strictly positive — the standing assumption of the stage-2 specification
-    (Section 0).
+    The mapping must use the orders of :data:`SUPPORTED_GENERATOR_ORDERS`,
+    must contain an even order at least 2, and its principal (highest even)
+    term must be dissipative: :math:`c_2 > 0` for a second-order generator,
+    :math:`c_4 < 0` for a fourth-order one (the standing assumption of the
+    stage-2 specification, Section 0, extended to order 4).
 
     Raises:
         ValueError: On an empty mapping, an unsupported order, a missing
@@ -225,16 +244,16 @@ def _validated_generator_coefficients(
                 f"{SUPPORTED_GENERATOR_ORDERS}, received order {order!r}"
             )
         normalised[int(order)] = float(coefficient)
-    if 2 not in normalised:
+    if not any(order in normalised for order in (2, 4)):
         raise ValueError(
-            "generator_coefficients must contain the differential order 2 "
-            "(the diffusivity), received orders "
-            f"{sorted(generator_coefficients)}"
+            "generator_coefficients must contain an even order 2 or 4 "
+            f"(the principal part), received orders {sorted(generator_coefficients)}"
         )
-    if normalised[2] <= 0.0:
+    top = principal_order(normalised)
+    if even_order_decay_rate(top, normalised[top], 1.0) <= 0.0:
         raise ValueError(
-            "the diffusivity (order-2 coefficient) must be strictly "
-            f"positive, received {normalised[2]!r}"
+            f"the principal order-{top} coefficient {normalised[top]!r} is not "
+            "dissipative (need c_2 > 0 or c_4 < 0)"
         )
     return normalised
 
@@ -358,7 +377,9 @@ class PeriodicExtensionField:
         self.extension_kind = extension_kind
         self.terminal_time = float(terminal_time)
         self.generator_coefficients = normalised_coefficients
-        self.diffusivity = normalised_coefficients[2]
+        self.diffusivity = normalised_coefficients.get(2, 0.0)
+        self.principal_order = principal_order(normalised_coefficients)
+        self.fourth_order_coefficient = normalised_coefficients.get(4, 0.0)
         self.advection_coefficient = normalised_coefficients.get(1, 0.0)
         self.reaction_coefficient = normalised_coefficients.get(0, 0.0)
         self.comparison_diffusivity = (
@@ -373,7 +394,18 @@ class PeriodicExtensionField:
             1, self.truncation_wavenumber + 1, dtype=np.float64
         )
         if extension_kind in ("split_diffusion", "split_diffusion_advection"):
+            if 2 not in normalised_coefficients:
+                raise ValueError(
+                    f"extension_kind {extension_kind!r} retains the order-2 term, "
+                    "which this generator does not have; use 'split_principal'"
+                )
             decay_rates = self.diffusivity * wavenumbers**2
+        elif extension_kind in ("split_principal", "split_principal_advection"):
+            decay_rates = even_order_decay_rate(
+                self.principal_order,
+                normalised_coefficients[self.principal_order],
+                wavenumbers,
+            )
         elif extension_kind == "graded_gaussian":
             decay_rates = self.comparison_diffusivity * wavenumbers**2
         elif extension_kind == "graded_chen_mangasarian":
@@ -382,7 +414,9 @@ class PeriodicExtensionField:
             decay_rates = np.zeros_like(wavenumbers)
         else:  # exact_solution
             decay_rates = (
-                self.diffusivity * wavenumbers**2 - self.reaction_coefficient
+                self.diffusivity * wavenumbers**2
+                + even_order_decay_rate(4, self.fourth_order_coefficient, wavenumbers)
+                - self.reaction_coefficient
             )
             worst_index = int(np.argmin(decay_rates))
             if decay_rates[worst_index] < -DISSIPATIVITY_TOLERANCE:
@@ -392,7 +426,9 @@ class PeriodicExtensionField:
                     f"-{DISSIPATIVITY_TOLERANCE:.0e} at wavenumber "
                     f"k = {worst_index + 1}"
                 )
-        if extension_kind in ("split_diffusion_advection", "exact_solution"):
+        if extension_kind in (
+            "split_diffusion_advection", "split_principal_advection", "exact_solution"
+        ):
             phase_advection_velocity = self.advection_coefficient
         else:
             phase_advection_velocity = 0.0
@@ -606,16 +642,51 @@ class PeriodicExtensionField:
         )
         return self._cast_back(component_values.sum(-1), is_torch, dtype)
 
+    def third_space_derivative(self, x, t):
+        r"""Analytic :math:`\partial_x^3 h(x, t)`; for a component
+        :math:`a\cos\theta + b\sin\theta` it is :math:`k^3 (a\sin\theta - b\cos\theta)`."""
+        decay, cos_theta, sin_theta, arrays, is_torch, dtype, _ = (
+            self._component_terms(x, t)
+        )
+        component_values = decay * (
+            arrays["wavenumbers"] ** 3
+            * (
+                arrays["cosine_amplitudes"] * sin_theta
+                - arrays["sine_amplitudes"] * cos_theta
+            )
+        )
+        return self._cast_back(component_values.sum(-1), is_torch, dtype)
+
+    def fourth_space_derivative(self, x, t):
+        r"""Analytic :math:`\partial_x^4 h(x, t)`; for a component
+        :math:`a\cos\theta + b\sin\theta` it is :math:`k^4 (a\cos\theta + b\sin\theta)`."""
+        decay, cos_theta, sin_theta, arrays, is_torch, dtype, _ = (
+            self._component_terms(x, t)
+        )
+        component_values = decay * (
+            arrays["wavenumbers"] ** 4
+            * (
+                arrays["cosine_amplitudes"] * cos_theta
+                + arrays["sine_amplitudes"] * sin_theta
+            )
+        )
+        return self._cast_back(component_values.sum(-1), is_torch, dtype)
+
     def forcing_values(self, x, t):
-        r"""Forcing :math:`(P h)(x, t) = \partial_t h + \nu\,\partial_{xx} h
-        + \mu\,\partial_x h + r_0 h`, assembled from the analytic derivatives.
+        r"""Forcing :math:`(P h)(x, t) = \partial_t h + c_4\,\partial_x^4 h
+        + \nu\,\partial_{xx} h + \mu\,\partial_x h + r_0 h`, assembled from the
+        analytic derivatives (the order-4 term only for a fourth-order generator,
+        so the order-2 assembly is unchanged).
         """
-        return (
+        forcing = (
             self.time_derivative(x, t)
             + self.diffusivity * self.second_space_derivative(x, t)
             + self.advection_coefficient * self.space_derivative(x, t)
             + self.reaction_coefficient * self.field(x, t)
         )
+        if 4 in self.generator_coefficients:
+            forcing = forcing + self.fourth_order_coefficient * self.fourth_space_derivative(x, t)
+        return forcing
 
     def terminal_datum_values(self, x):
         r"""Terminal datum :math:`g(x)`, with the same fixed summation order
@@ -650,11 +721,15 @@ class PeriodicExtensionField:
             "dxx": second_space_derivative}`` — the exact key set expected by
             ``TerminalAnsatz(extension_derivative_fns=...)``.
         """
-        return {
+        callables = {
             "dt": self.time_derivative,
             "dx": self.space_derivative,
             "dxx": self.second_space_derivative,
         }
+        if 4 in self.generator_coefficients:
+            callables["dxxx"] = self.third_space_derivative
+            callables["dxxxx"] = self.fourth_space_derivative
+        return callables
 
 
 # ---------------------------------------------------------------------------
@@ -736,6 +811,55 @@ def build_graded_gaussian_extension_field(
     )
 
 
+def build_split_principal_extension_field(
+    generator_coefficients: dict[int, float],
+    cosine_coefficients,
+    *,
+    sine_coefficients=None,
+    comparison_diffusivity: float | None = None,
+    terminal_time: float = 1.0,
+) -> PeriodicExtensionField:
+    r"""Split semigroup extension retaining the principal (highest even) term
+    only; for a second-order generator it equals ``split_diffusion``."""
+    if comparison_diffusivity is not None:
+        raise ValueError(
+            "comparison_diffusivity applies to the graded Gaussian extension "
+            f"only, received {comparison_diffusivity!r}"
+        )
+    return PeriodicExtensionField(
+        generator_coefficients,
+        cosine_coefficients,
+        extension_kind="split_principal",
+        sine_coefficients=sine_coefficients,
+        terminal_time=terminal_time,
+    )
+
+
+def build_split_principal_advection_extension_field(
+    generator_coefficients: dict[int, float],
+    cosine_coefficients,
+    *,
+    sine_coefficients=None,
+    comparison_diffusivity: float | None = None,
+    terminal_time: float = 1.0,
+) -> PeriodicExtensionField:
+    r"""Split semigroup extension retaining the principal term and the
+    advection term; for a second-order generator it equals
+    ``split_diffusion_advection``."""
+    if comparison_diffusivity is not None:
+        raise ValueError(
+            "comparison_diffusivity applies to the graded Gaussian extension "
+            f"only, received {comparison_diffusivity!r}"
+        )
+    return PeriodicExtensionField(
+        generator_coefficients,
+        cosine_coefficients,
+        extension_kind="split_principal_advection",
+        sine_coefficients=sine_coefficients,
+        terminal_time=terminal_time,
+    )
+
+
 def build_graded_chen_mangasarian_extension_field(
     generator_coefficients: dict[int, float],
     cosine_coefficients,
@@ -798,6 +922,8 @@ EXTENSION_FIELD_REGISTRY = {
     "graded_gaussian": build_graded_gaussian_extension_field,
     "exact_solution": exact_solution_field,
     "graded_chen_mangasarian": build_graded_chen_mangasarian_extension_field,
+    "split_principal": build_split_principal_extension_field,
+    "split_principal_advection": build_split_principal_advection_extension_field,
 }
 
 

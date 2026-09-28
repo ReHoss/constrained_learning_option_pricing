@@ -56,6 +56,7 @@ TEST_INITIAL_SMOOTHING_SCALE = 0.8
 # Stage-2 generator coefficient mappings (specification Section 1.1).
 GENERATOR_G1 = {2: 0.7, 1: 1.3, 0: -0.4}
 GENERATOR_G2 = {2: 0.125, 1: -0.095, 0: -0.03}
+GENERATOR_G3 = {4: -0.05, 1: 1.3, 0: -0.4}
 
 # numpy >= 2 renames ``np.trapz`` to ``np.trapezoid``; resolve whichever is
 # available at import time so numpy 1.x environments also pass.
@@ -517,3 +518,104 @@ def test_chen_mangasarian_constructor_validation():
             0.0,
             TERMINAL_TIME,
         )
+
+
+# ---------------------------------------------------------------------------
+# Fourth-order generator G3 (added 2026-09-29)
+# ---------------------------------------------------------------------------
+
+
+def _build_g3_field(extension_kind, truncation_wavenumber=12):
+    extra = {}
+    if extension_kind == "graded_gaussian":
+        extra["comparison_diffusivity"] = math.sqrt(0.05)
+    if extension_kind == "graded_chen_mangasarian":
+        extra["initial_smoothing_scale"] = TEST_INITIAL_SMOOTHING_SCALE
+    return PeriodicExtensionField(
+        GENERATOR_G3,
+        bandlimited_bernoulli_cosine_coefficients(truncation_wavenumber),
+        extension_kind=extension_kind,
+        terminal_time=TERMINAL_TIME,
+        **extra,
+    )
+
+
+@pytest.mark.parametrize(
+    "extension_kind",
+    ["split_principal", "split_principal_advection", "graded_gaussian",
+     "graded_chen_mangasarian", "exact_solution"],
+)
+def test_g3_higher_derivatives_match_autograd(extension_kind):
+    field = _build_g3_field(extension_kind)
+    generator = torch.Generator().manual_seed(1)
+    x = (TWO_PI * torch.rand(128, generator=generator, dtype=torch.float64)).requires_grad_(True)
+    t = (TERMINAL_TIME * torch.rand(128, generator=generator, dtype=torch.float64))
+    derivative = field.field(x, t)
+    autograd_derivatives = []
+    for _ in range(4):
+        (derivative,) = torch.autograd.grad(derivative.sum(), (x,), create_graph=True)
+        autograd_derivatives.append(derivative)
+    for analytic, reference in (
+        (field.third_space_derivative(x, t), autograd_derivatives[2]),
+        (field.fourth_space_derivative(x, t), autograd_derivatives[3]),
+    ):
+        deviation = (
+            torch.linalg.vector_norm(analytic.detach() - reference.detach())
+            / torch.linalg.vector_norm(reference.detach())
+        ).item()
+        assert deviation <= 1.0e-10, (extension_kind, deviation)
+
+
+def test_g3_split_principal_forcing_is_remainder_applied():
+    """P h = mu d_x h + r0 h for the split retaining d_x^4, and r0 h when the
+    advection is retained too."""
+    x = np.linspace(0.0, TWO_PI, 97)
+    for time in (0.0, 0.5, 0.95):
+        t = np.full_like(x, time)
+        split = _build_g3_field("split_principal")
+        remainder = 1.3 * split.space_derivative(x, t) - 0.4 * split.field(x, t)
+        np.testing.assert_allclose(split.forcing_values(x, t), remainder, rtol=1e-11, atol=1e-13)
+        split_advection = _build_g3_field("split_principal_advection")
+        np.testing.assert_allclose(
+            split_advection.forcing_values(x, t),
+            -0.4 * split_advection.field(x, t),
+            rtol=1e-11,
+            atol=1e-13,
+        )
+
+
+def test_g3_exact_solution_forcing_vanishes():
+    field = _build_g3_field("exact_solution")
+    x = np.linspace(0.0, TWO_PI, 97)
+    t = np.full_like(x, 0.3)
+    scale = float(np.max(np.abs(field.field(x, t))))
+    assert float(np.max(np.abs(field.forcing_values(x, t)))) <= 1.0e-12 * max(scale, 1.0)
+
+
+@pytest.mark.parametrize("extension_kind", ["split_principal", "graded_gaussian"])
+def test_g3_field_matches_spectral_forcing(extension_kind):
+    from learning_option_pricing.pde import biharmonic_advection_reaction
+
+    truncation_wavenumber = 12
+    field = _build_g3_field(extension_kind, truncation_wavenumber)
+    generator = biharmonic_advection_reaction()
+    datum = PeriodisedBernoulliDatum(1)
+    if extension_kind == "split_principal":
+        spectral = SplitSemigroupExtension(datum, generator, [4], TERMINAL_TIME)
+    else:
+        spectral = GradedGaussianExtension(datum, generator, math.sqrt(0.05), TERMINAL_TIME)
+    x = np.linspace(0.0, TWO_PI, 64, endpoint=False)
+    band = symmetric_wavenumber_band(truncation_wavenumber)
+    for time in (0.0, 0.4, 0.9):
+        coefficients = spectral.forcing_coefficient(band, time)
+        synthesised = np.real(
+            np.sum(coefficients[None, :] * np.exp(1j * x[:, None] * band[None, :]), axis=1)
+        )
+        np.testing.assert_allclose(
+            field.forcing_values(x, np.full_like(x, time)), synthesised, rtol=1e-10, atol=1e-10
+        )
+
+
+def test_split_diffusion_kinds_refuse_a_fourth_order_generator():
+    with pytest.raises(ValueError):
+        _build_g3_field("split_diffusion")
