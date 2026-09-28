@@ -29,6 +29,7 @@ import torch
 from learning_option_pricing.pde import (
     EXTENSION_FIELD_KINDS,
     EXTENSION_FIELD_REGISTRY,
+    GradedChenMangasarianExtension,
     GradedGaussianExtension,
     PeriodicExtensionField,
     PeriodisedBernoulliDatum,
@@ -36,6 +37,7 @@ from learning_option_pricing.pde import (
     advection_diffusion_reaction,
     bandlimited_bernoulli_cosine_coefficients,
     black_scholes_log_price,
+    build_graded_chen_mangasarian_extension_field,
     build_graded_gaussian_extension_field,
     build_split_diffusion_advection_extension_field,
     build_split_diffusion_extension_field,
@@ -48,6 +50,8 @@ from learning_option_pricing.pde import (
 
 TWO_PI = 2.0 * math.pi
 TERMINAL_TIME = 1.0
+# Initial Chen--Mangasarian scale used by the tests (any positive value works).
+TEST_INITIAL_SMOOTHING_SCALE = 0.8
 
 # Stage-2 generator coefficient mappings (specification Section 1.1).
 GENERATOR_G1 = {2: 0.7, 1: 1.3, 0: -0.4}
@@ -68,11 +72,17 @@ def _build_field(extension_kind, generator_coefficients, truncation_wavenumber):
         if extension_kind == "graded_gaussian"
         else None
     )
+    initial_smoothing_scale = (
+        TEST_INITIAL_SMOOTHING_SCALE
+        if extension_kind == "graded_chen_mangasarian"
+        else None
+    )
     return PeriodicExtensionField(
         generator_coefficients,
         cosine_coefficients,
         extension_kind=extension_kind,
         comparison_diffusivity=comparison_diffusivity,
+        initial_smoothing_scale=initial_smoothing_scale,
         terminal_time=TERMINAL_TIME,
     )
 
@@ -249,6 +259,10 @@ def _spectral_reference_extension(extension_kind, generator):
         return SplitSemigroupExtension(datum, generator, [2], TERMINAL_TIME)
     if extension_kind == "split_diffusion_advection":
         return SplitSemigroupExtension(datum, generator, [2, 1], TERMINAL_TIME)
+    if extension_kind == "graded_chen_mangasarian":
+        return GradedChenMangasarianExtension(
+            datum, generator, TEST_INITIAL_SMOOTHING_SCALE, TERMINAL_TIME
+        )
     # graded_gaussian, mismatched comparison diffusivity nu_c = nu / 2.
     return GradedGaussianExtension(
         datum, generator, 0.5 * generator.coefficients[2], TERMINAL_TIME
@@ -257,7 +271,12 @@ def _spectral_reference_extension(extension_kind, generator):
 
 @pytest.mark.parametrize(
     "extension_kind",
-    ["split_diffusion", "split_diffusion_advection", "graded_gaussian"],
+    [
+        "split_diffusion",
+        "split_diffusion_advection",
+        "graded_gaussian",
+        "graded_chen_mangasarian",
+    ],
 )
 def test_t5_trapezoidal_strip_integral_matches_closed_form(extension_kind):
     truncation_wavenumber = 8
@@ -294,6 +313,11 @@ def test_registry_keys_and_builders():
     assert set(EXTENSION_FIELD_REGISTRY) == set(EXTENSION_FIELD_KINDS)
     cosine_coefficients = bandlimited_bernoulli_cosine_coefficients(4)
     for schema_key, builder in EXTENSION_FIELD_REGISTRY.items():
+        extra_arguments = (
+            {"initial_smoothing_scale": TEST_INITIAL_SMOOTHING_SCALE}
+            if schema_key == "graded_chen_mangasarian"
+            else {}
+        )
         built = builder(
             GENERATOR_G2,
             cosine_coefficients,
@@ -301,6 +325,7 @@ def test_registry_keys_and_builders():
                 0.0625 if schema_key == "graded_gaussian" else None
             ),
             terminal_time=TERMINAL_TIME,
+            **extra_arguments,
         )
         assert built.extension_kind == schema_key
 
@@ -395,4 +420,99 @@ def test_constructor_validation_raises():
     with pytest.raises(ValueError):
         build_graded_gaussian_extension_field(
             GENERATOR_G1, cosine_coefficients, comparison_diffusivity=-0.1
+        )
+
+
+# ---------------------------------------------------------------------------
+# Graded Chen--Mangasarian kind (stage-2 variants V8/V9)
+# ---------------------------------------------------------------------------
+
+
+def test_chen_mangasarian_multiplier_limits_and_recurrence():
+    from learning_option_pricing.pde import (
+        chen_mangasarian_multiplier,
+        chen_mangasarian_multiplier_derivative,
+    )
+
+    assert chen_mangasarian_multiplier(0.0) == 1.0
+    assert chen_mangasarian_multiplier_derivative(0.0) == 0.0
+    # Continuity at z = 0 and central difference of m against m'.
+    z = np.array([1.0e-8, 0.1, 1.0, 5.0])
+    assert abs(chen_mangasarian_multiplier(1.0e-8) - 1.0) <= 1.0e-12
+    step = 1.0e-6
+    central_difference = (
+        chen_mangasarian_multiplier(z + step) - chen_mangasarian_multiplier(z - step)
+    ) / (2.0 * step)
+    np.testing.assert_allclose(
+        central_difference, chen_mangasarian_multiplier_derivative(z), rtol=1e-6, atol=1e-9
+    )
+
+
+@pytest.mark.parametrize("generator_coefficients", [GENERATOR_G1, GENERATOR_G2])
+def test_chen_mangasarian_field_matches_spectral_forcing(generator_coefficients):
+    """Real-space forcing of the field equals the spectral forcing coefficient
+    of GradedChenMangasarianExtension, synthesised on a grid, at interior times."""
+    from learning_option_pricing.pde import ConstantCoefficientGenerator
+
+    truncation_wavenumber = 12
+    field = _build_field(
+        "graded_chen_mangasarian", generator_coefficients, truncation_wavenumber
+    )
+    spectral = GradedChenMangasarianExtension(
+        PeriodisedBernoulliDatum(1),
+        ConstantCoefficientGenerator(coefficients=generator_coefficients, name="test"),
+        TEST_INITIAL_SMOOTHING_SCALE,
+        TERMINAL_TIME,
+    )
+    x = np.linspace(0.0, TWO_PI, 64, endpoint=False)
+    band = symmetric_wavenumber_band(truncation_wavenumber)
+    for time in (0.0, 0.3, 0.9, TERMINAL_TIME):
+        coefficients = spectral.forcing_coefficient(band, time)
+        synthesised = np.real(
+            np.sum(coefficients[None, :] * np.exp(1j * x[:, None] * band[None, :]), axis=1)
+        )
+        real_space = field.forcing_values(x, np.full_like(x, time))
+        np.testing.assert_allclose(real_space, synthesised, rtol=1e-10, atol=1e-12)
+
+
+def test_chen_mangasarian_terminal_forcing_is_generator_applied_to_datum():
+    """At the slice the scale vanishes and the time derivative is zero, so the
+    forcing equals A g: the extension does not cancel the principal part."""
+    field = _build_field("graded_chen_mangasarian", GENERATOR_G2, 16)
+    reference = _build_field("split_diffusion", GENERATOR_G2, 16)
+    x = np.linspace(0.0, TWO_PI, 97)
+    t_terminal = np.full_like(x, TERMINAL_TIME)
+    assert np.array_equal(field.time_derivative(x, t_terminal), np.zeros_like(x))
+    nu, mu, r0 = GENERATOR_G2[2], GENERATOR_G2[1], GENERATOR_G2[0]
+    generator_applied = (
+        nu * reference.second_space_derivative(x, t_terminal)
+        + mu * reference.space_derivative(x, t_terminal)
+        + r0 * reference.field(x, t_terminal)
+    )
+    np.testing.assert_allclose(
+        field.terminal_forcing_profile(x), generator_applied, rtol=1e-12, atol=1e-14
+    )
+
+
+def test_chen_mangasarian_constructor_validation():
+    cosine_coefficients = bandlimited_bernoulli_cosine_coefficients(4)
+    with pytest.raises(ValueError):
+        build_graded_chen_mangasarian_extension_field(GENERATOR_G1, cosine_coefficients)
+    with pytest.raises(ValueError):
+        build_graded_chen_mangasarian_extension_field(
+            GENERATOR_G1, cosine_coefficients, initial_smoothing_scale=0.0
+        )
+    with pytest.raises(ValueError):
+        PeriodicExtensionField(
+            GENERATOR_G1,
+            cosine_coefficients,
+            extension_kind="split_diffusion",
+            initial_smoothing_scale=0.5,  # forbidden outside the CM kind
+        )
+    with pytest.raises(ValueError):
+        GradedChenMangasarianExtension(
+            PeriodisedBernoulliDatum(1),
+            advection_diffusion_reaction(),
+            0.0,
+            TERMINAL_TIME,
         )
