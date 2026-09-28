@@ -437,7 +437,8 @@ def test_chen_mangasarian_multiplier_limits_and_recurrence():
     assert chen_mangasarian_multiplier(0.0) == 1.0
     assert chen_mangasarian_multiplier_derivative(0.0) == 0.0
     # Continuity at z = 0 and central difference of m against m'.
-    z = np.array([1.0e-8, 0.1, 1.0, 5.0])
+    # Points with z > step, so the central difference stays in z > 0 (m is even in z).
+    z = np.array([1.0e-3, 0.1, 1.0, 5.0])
     assert abs(chen_mangasarian_multiplier(1.0e-8) - 1.0) <= 1.0e-12
     step = 1.0e-6
     central_difference = (
