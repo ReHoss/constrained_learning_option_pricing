@@ -377,6 +377,159 @@ class GradedGaussianExtension(TerminalDataExtension):
         )
 
 
+def chen_mangasarian_multiplier(scaled_wavenumber) -> np.ndarray:
+    r"""Fourier multiplier :math:`m(z) = z K_1(z)` of the Chen--Mangasarian kernel.
+
+    The Chen--Mangasarian smoothing of the ramp,
+    :math:`\tfrac12\bigl(y + \sqrt{y^2 + \varepsilon^2}\bigr)`, is the convolution of
+    :math:`y^+` with the kernel
+    :math:`\varphi_\varepsilon(y) = \varepsilon^2 / \bigl(2 (y^2 + \varepsilon^2)^{3/2}\bigr)`,
+    of unit mass, whose Fourier transform is
+    :math:`\hat\varphi_\varepsilon(\xi) = \varepsilon|\xi|\, K_1(\varepsilon|\xi|)`,
+    with :math:`K_1` the modified Bessel function of the second kind.  On the
+    circle the periodised kernel has the same multiplier at each integer
+    wavenumber (Poisson summation).  The value at :math:`z = 0` is the limit
+    :math:`\lim_{z \to 0} z K_1(z) = 1`, set explicitly because
+    :math:`K_1(0) = +\infty`.
+
+    Args:
+        scaled_wavenumber: The argument :math:`z = \varepsilon |k| \ge 0`.
+
+    Returns:
+        ``float64`` array of :math:`z K_1(z)`, equal to ``1`` where ``z == 0``.
+    """
+    from scipy.special import k1
+
+    z = np.abs(np.asarray(scaled_wavenumber, dtype=np.float64))
+    positive = z > 0.0
+    return np.where(positive, z * k1(np.where(positive, z, 1.0)), 1.0)
+
+
+def chen_mangasarian_multiplier_derivative(scaled_wavenumber) -> np.ndarray:
+    r"""Derivative :math:`m'(z) = -z K_0(z)` of the Chen--Mangasarian multiplier.
+
+    Follows from the recurrence :math:`(z K_1(z))' = -z K_0(z)`.  The value at
+    :math:`z = 0` is the limit :math:`\lim_{z \to 0} z K_0(z) = 0`
+    (since :math:`K_0(z) = -\ln(z/2) - \gamma + o(1)` as :math:`z \to 0`).
+
+    Args:
+        scaled_wavenumber: The argument :math:`z = \varepsilon |k| \ge 0`.
+
+    Returns:
+        ``float64`` array of :math:`-z K_0(z)`, equal to ``0`` where ``z == 0``.
+    """
+    from scipy.special import k0
+
+    z = np.abs(np.asarray(scaled_wavenumber, dtype=np.float64))
+    positive = z > 0.0
+    return np.where(positive, -z * k0(np.where(positive, z, 1.0)), 0.0)
+
+
+class GradedChenMangasarianExtension(TerminalDataExtension):
+    r"""Linearly graded Chen--Mangasarian extension.
+
+    The datum is convolved with the Chen--Mangasarian kernel at the graded
+    scale :math:`\varepsilon(t) = \varepsilon_0 (T - t)/T`, which vanishes at the
+    terminal slice:
+
+    .. math::
+
+        \hat h(k, t) = m\bigl(|k|\, \varepsilon(t)\bigr)\, c_k,
+        \qquad m(z) = z K_1(z),
+
+    so :math:`\hat h(k, T) = c_k` and the datum is met exactly.  With
+    :math:`\partial_t \varepsilon = -\varepsilon_0/T`,
+
+    .. math::
+
+        \partial_t \hat h(k, t) = -\frac{\varepsilon_0 |k|}{T}\,
+        m'\bigl(|k|\, \varepsilon(t)\bigr)\, c_k
+        = \frac{\varepsilon_0 |k|}{T}\, z K_0(z)\, c_k ,
+        \qquad z = |k|\, \varepsilon(t),
+
+    which is bounded on :math:`[0, T]` and vanishes at :math:`t = T`.  The
+    family :math:`\{\varphi_\varepsilon\}` is not a semigroup, so no schedule makes
+    this extension cancel the principal part of the generator; at the slice
+    its forcing coefficient reduces to :math:`a(k)\, c_k`, that of the
+    constant-in-time extension.  The linear grading is used because the
+    parabolic grading :math:`\varepsilon \propto \sqrt{T - t}` makes
+    :math:`\partial_t \hat h` diverge logarithmically at the slice.
+
+    The squared-forcing time integral has no closed form; it is evaluated by
+    Gauss--Legendre quadrature in time (the only quadrature among the
+    extensions of this module), with the node count stated in the docstring
+    of :meth:`squared_forcing_time_integral`.
+
+    Args:
+        datum: Terminal datum exposing ``fourier_coefficients``.
+        generator: The constant-coefficient generator.
+        initial_smoothing_scale: The scale :math:`\varepsilon_0 > 0` at
+            :math:`t = 0`.
+        terminal_time: The horizon ``T > 0``.
+
+    Raises:
+        ValueError: If ``initial_smoothing_scale`` is not strictly positive.
+    """
+
+    GAUSS_LEGENDRE_TIME_NODES = 256
+
+    def __init__(
+        self,
+        datum,
+        generator: ConstantCoefficientGenerator,
+        initial_smoothing_scale: float,
+        terminal_time: float = 1.0,
+    ) -> None:
+        super().__init__(datum, generator, terminal_time)
+        if not initial_smoothing_scale > 0.0:
+            raise ValueError(
+                "initial_smoothing_scale must be strictly positive (a zero scale "
+                "is the constant-in-time extension), received "
+                f"{initial_smoothing_scale!r}"
+            )
+        self.initial_smoothing_scale = float(initial_smoothing_scale)
+
+    def smoothing_scale_at(self, time) -> np.ndarray:
+        r"""Graded scale :math:`\varepsilon(t) = \varepsilon_0 (T - t) / T`."""
+        time_array = np.asarray(time, dtype=np.float64)
+        return (
+            self.initial_smoothing_scale
+            * (self.terminal_time - time_array)
+            / self.terminal_time
+        )
+
+    def extension_coefficient(self, wavenumbers, time) -> np.ndarray:
+        wavenumber_array = np.abs(np.asarray(wavenumbers, dtype=np.float64))
+        scaled = wavenumber_array * self.smoothing_scale_at(time)
+        return chen_mangasarian_multiplier(scaled) * self.datum.fourier_coefficients(
+            wavenumbers
+        )
+
+    def extension_coefficient_time_derivative(self, wavenumbers, time) -> np.ndarray:
+        wavenumber_array = np.abs(np.asarray(wavenumbers, dtype=np.float64))
+        scaled = wavenumber_array * self.smoothing_scale_at(time)
+        rate = self.initial_smoothing_scale * wavenumber_array / self.terminal_time
+        return (
+            -rate
+            * chen_mangasarian_multiplier_derivative(scaled)
+            * self.datum.fourier_coefficients(wavenumbers)
+        )
+
+    def squared_forcing_time_integral(self, wavenumbers) -> np.ndarray:
+        r"""Per-wavenumber :math:`\int_0^T |\widehat{Lh}(k, t)|^2\, dt` by
+        Gauss--Legendre quadrature with ``GAUSS_LEGENDRE_TIME_NODES`` nodes on
+        :math:`[0, T]`.  The integrand is continuous on :math:`[0, T]`; its
+        only non-analytic point is :math:`t = T`, where
+        :math:`z K_0(z) = -z \ln z + O(z)`.
+        """
+        nodes, weights = np.polynomial.legendre.leggauss(self.GAUSS_LEGENDRE_TIME_NODES)
+        times = 0.5 * self.terminal_time * (nodes + 1.0)
+        half_length_weights = 0.5 * self.terminal_time * weights
+        wavenumber_array = np.asarray(wavenumbers, dtype=np.float64)
+        forcing = self.forcing_coefficient(wavenumber_array[None, :], times[:, None])
+        return np.sum(half_length_weights[:, None] * np.abs(forcing) ** 2, axis=0)
+
+
 class ExactSolutionExtension(TerminalDataExtension):
     r"""Exact solution :math:`\hat h(k, t) = e^{(T-t)\, a(k)}\, c_k` of the evolution.
 
