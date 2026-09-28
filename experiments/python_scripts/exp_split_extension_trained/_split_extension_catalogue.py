@@ -182,7 +182,7 @@ GENERATOR_CELL_VARIANTS: list[dict] = [
         "smoothing_scale_ratio": 0.5,
         "exponential_rate_gamma": None,
         "color": "#bcbd22",  # olive
-        "label": r"graded Chen--Mangasarian, $\varepsilon_0=\tfrac12\sqrt{2\nu T}$",
+        "label": r"graded Chen--Mangasarian, $\varepsilon_0=\frac{1}{2}\sqrt{2\nu T}$",
     },
 ]
 

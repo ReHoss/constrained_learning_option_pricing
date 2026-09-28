@@ -247,7 +247,7 @@ REPORT_NOTATION_LABEL = {
     "graded_chen_mangasarian":
         r"Graded Chen--Mangasarian, $\varepsilon_0=\sqrt{2\nu T}$",
     "graded_chen_mangasarian_narrow":
-        r"Graded Chen--Mangasarian, $\varepsilon_0=\tfrac12\sqrt{2\nu T}$",
+        r"Graded Chen--Mangasarian, $\varepsilon_0=\frac{1}{2}\sqrt{2\nu T}$",
     "matched_exponential_factor": "Matched exponential factor",
 }
 
