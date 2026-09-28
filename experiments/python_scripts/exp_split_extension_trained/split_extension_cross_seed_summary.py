@@ -162,7 +162,11 @@ CONTROL_CELL_BAND_EDGE = 1
 
 CONTROL_CELL_NAME = "heat_sine_single_component"
 
-GENERATOR_CELL_NAMES = ("g1_bernoulli_bandlimited", "g2_bernoulli_bandlimited")
+GENERATOR_CELL_NAMES = (
+    "g1_bernoulli_bandlimited",
+    "g2_bernoulli_bandlimited",
+    "g3_bernoulli_bandlimited",
+)
 
 CELL_NAMES = (*GENERATOR_CELL_NAMES, CONTROL_CELL_NAME)
 
@@ -177,6 +181,9 @@ GENERATOR_CELL_VARIANT_NAMES = (
     "exact_solution",
     "graded_chen_mangasarian",
     "graded_chen_mangasarian_narrow",
+    "split_principal",
+    "split_principal_advection",
+    "graded_gaussian_width_matched",
 )
 CONTROL_CELL_VARIANT_NAMES = ("matched_exponential_factor", "convex_raw")
 
@@ -186,6 +193,7 @@ CONTROL_CELL_VARIANT_NAMES = ("matched_exponential_factor", "convex_raw")
 ZERO_FORCING_VARIANTS = {
     ("g1_bernoulli_bandlimited", "exact_solution"),
     ("g2_bernoulli_bandlimited", "exact_solution"),
+    ("g3_bernoulli_bandlimited", "exact_solution"),
     (CONTROL_CELL_NAME, "matched_exponential_factor"),
 }
 
@@ -211,6 +219,15 @@ FALLBACK_VARIANT_DISPLAY = {
         "label": "Graded Gaussian (mismatched)",
     },
     "exact_solution": {"color": "#9467bd", "label": "Exact solution"},
+    "split_principal": {"color": "#1f77b4", "label": r"Split $\{\partial_x^4\}$"},
+    "split_principal_advection": {
+        "color": "#2ca02c",
+        "label": r"Split $\{\partial_x^4,\partial_x\}$",
+    },
+    "graded_gaussian_width_matched": {
+        "color": "#ff7f0e",
+        "label": "Graded Gaussian (width-matched)",
+    },
     "graded_chen_mangasarian": {
         "color": "#17becf",
         "label": "Graded Chen--Mangasarian",
@@ -244,6 +261,10 @@ REPORT_NOTATION_LABEL = {
         r"Graded Gaussian, $\nu_c=\nu$ (matched split $\{\partial_{xx}\}$)",
     "graded_gaussian_mismatched": r"Graded Gaussian, $\nu_c=\nu/2$ (mismatched)",
     "exact_solution": r"Exact solution ($\mathcal{L}h=0$)",
+    "split_principal": r"Split $\{\partial_x^4\}$",
+    "split_principal_advection": r"Split $\{\partial_x^4,\partial_x\}$",
+    "graded_gaussian_width_matched":
+        r"Graded Gaussian, $\nu_c=\nu_{\mathrm{ref}}$ (heat kernel)",
     "graded_chen_mangasarian":
         r"Graded Chen--Mangasarian, $\varepsilon_0=\sqrt{2\nu T}$",
     "graded_chen_mangasarian_narrow":
@@ -259,6 +280,7 @@ ZERO_TARGET_VARIANT_NAMES = ("exact_solution", "matched_exponential_factor")
 CELL_MARKERS = {
     "g1_bernoulli_bandlimited": "o",
     "g2_bernoulli_bandlimited": "s",
+    "g3_bernoulli_bandlimited": "D",
     CONTROL_CELL_NAME: "^",
 }
 
@@ -717,6 +739,12 @@ def build_cell_generator(cell_name: str) -> ConstantCoefficientGenerator:
         return advection_diffusion_reaction()
     if cell_name == "g2_bernoulli_bandlimited":
         return black_scholes_log_price()
+    if cell_name == "g3_bernoulli_bandlimited":
+        # Fourth-order generator A = -0.05 d_x^4 + 1.3 d_x - 0.4 (added
+        # 2026-09-29); the coefficients mirror the catalogue cell.
+        return ConstantCoefficientGenerator(
+            coefficients={4: -0.05, 1: 1.3, 0: -0.4}, name="fourth_order_g3"
+        )
     if cell_name == CONTROL_CELL_NAME:
         # Pure heat at the G2 diffusivity (specification Section 1.1).
         return ConstantCoefficientGenerator(
@@ -756,7 +784,19 @@ def build_terminal_data_extension(
     """
     generator = build_cell_generator(cell_name)
     datum = build_cell_datum(cell_name)
-    diffusivity = generator.coefficients[2]
+    # Reference diffusivity nu_ref = (|c_{2p}| T)^{1/p} / T: the diffusivity for
+    # an order-2 generator (unchanged conventions), the biharmonic length scale
+    # for the fourth-order cell -- the runner's reference_diffusivity.
+    top_order = max(o for o in generator.coefficients if o % 2 == 0 and o > 0)
+    diffusivity = (
+        abs(generator.coefficients[top_order]) * TERMINAL_TIME
+    ) ** (1.0 / (top_order // 2)) / TERMINAL_TIME
+    if variant_name == "split_principal":
+        return SplitSemigroupExtension(datum, generator, (top_order,), TERMINAL_TIME)
+    if variant_name == "split_principal_advection":
+        return SplitSemigroupExtension(datum, generator, (top_order, 1), TERMINAL_TIME)
+    if variant_name == "graded_gaussian_width_matched":
+        return GradedGaussianExtension(datum, generator, diffusivity, TERMINAL_TIME)
     if variant_name == "convex_raw":
         return ConvexRawExtension(datum, generator, TERMINAL_TIME)
     if variant_name == "constant_in_time":

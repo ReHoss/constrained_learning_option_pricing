@@ -302,10 +302,17 @@ def build_closed_form_extension(variant: dict, problem: dict):
         return SplitSemigroupExtension(datum, generator, (2,), terminal_time)
     if variant_name == "split_diffusion_advection":
         return SplitSemigroupExtension(datum, generator, (1, 2), terminal_time)
-    if variant_name in ("graded_gaussian_matched", "graded_gaussian_mismatched"):
+    top_order = max(
+        order for order in problem["generator_coefficients"] if order % 2 == 0 and order > 0
+    )
+    if variant["extension"] == "split_principal":
+        return SplitSemigroupExtension(datum, generator, (top_order,), terminal_time)
+    if variant["extension"] == "split_principal_advection":
+        return SplitSemigroupExtension(datum, generator, (1, top_order), terminal_time)
+    if variant["extension"] == "graded_gaussian":
         comparison_diffusivity = (
             float(variant["comparison_diffusivity_ratio"])
-            * problem["generator_coefficients"][2]
+            * reference_diffusivity(problem)
         )
         return GradedGaussianExtension(
             datum, generator, comparison_diffusivity, terminal_time
@@ -324,15 +331,31 @@ def build_closed_form_extension(variant: dict, problem: dict):
     )
 
 
+def reference_diffusivity(problem: dict) -> float:
+    r"""Reference diffusivity :math:`\nu_{\mathrm{ref}} = (|c_{2p}|\,T)^{1/p}/T`
+    of the cell, with :math:`c_{2p}` the principal (highest even-order)
+    coefficient.  For a second-order generator it is the diffusivity
+    :math:`\nu = c_2`, so the V5/V6/V8/V9 conventions are unchanged; for the
+    fourth-order cell :math:`\sqrt{\nu_{\mathrm{ref}} T} = (|c_4| T)^{1/4}`,
+    the time-:math:`T` length scale of the biharmonic kernel.
+    """
+    coefficients = problem["generator_coefficients"]
+    top_order = max(order for order in coefficients if order % 2 == 0 and order > 0)
+    half_order = top_order // 2
+    terminal_time = problem["terminal_time"]
+    return (abs(coefficients[top_order]) * terminal_time) ** (1.0 / half_order) / terminal_time
+
+
 def chen_mangasarian_initial_smoothing_scale(variant: dict, problem: dict) -> float:
     r"""Initial Chen--Mangasarian scale
-    :math:`\varepsilon_0 = \rho_\varepsilon \sqrt{2 \nu T}`, with
+    :math:`\varepsilon_0 = \rho_\varepsilon \sqrt{2 \nu_{\mathrm{ref}} T}`, with
     :math:`\rho_\varepsilon` the variant's ``smoothing_scale_ratio`` and
-    :math:`\sqrt{2 \nu T}` the standard deviation of the heat kernel of the
-    cell's own diffusivity :math:`\nu` at :math:`s = T`.
+    :math:`\nu_{\mathrm{ref}}` the reference diffusivity (the diffusivity
+    :math:`\nu` for a second-order generator, so that :math:`\sqrt{2\nu T}`
+    is the heat-kernel standard deviation at :math:`s = T`).
     """
     return float(variant["smoothing_scale_ratio"]) * math.sqrt(
-        2.0 * problem["generator_coefficients"][2] * problem["terminal_time"]
+        2.0 * reference_diffusivity(problem) * problem["terminal_time"]
     )
 
 
@@ -476,7 +499,7 @@ def build_ansatz(variant: dict, problem: dict, hparams: dict, *, model_seed: int
         if variant["comparison_diffusivity_ratio"] is not None:
             comparison_diffusivity = (
                 float(variant["comparison_diffusivity_ratio"])
-                * problem["generator_coefficients"][2]
+                * reference_diffusivity(problem)
             )
         extra_builder_arguments = {}
         if variant.get("smoothing_scale_ratio") is not None:
@@ -584,7 +607,7 @@ def train_variant(
         "iter", "loss", "loss_pde", "loss_tc",
         "network_energy", "cross_term", "forcing_floor",
         "forcing_velocity", "forcing_diffusion", "forcing_advection",
-        "forcing_reaction", "grad_norm", "lr",
+        "forcing_reaction", "forcing_higher_order", "grad_norm", "lr",
     )}
     best_loss = float("inf")
     best_state = None
@@ -607,7 +630,7 @@ def train_variant(
     if variant.get("smoothing_scale_ratio") is not None:
         logger.info(
             "[%s/%s] Chen--Mangasarian initial smoothing scale eps_0 = %.6e "
-            "(ratio %.3f times sqrt(2 nu T)), linear grading eps(t) = eps_0 (T - t)/T",
+            "(ratio %.3f times sqrt(2 nu_ref T)), linear grading eps(t) = eps_0 (T - t)/T",
             problem["cell_name"], variant["name"],
             chen_mangasarian_initial_smoothing_scale(variant, problem),
             float(variant["smoothing_scale_ratio"]),
@@ -702,11 +725,14 @@ def train_variant(
             history["forcing_reaction"].append(
                 decomposition["forcing_reaction"].item()
             )
+            history["forcing_higher_order"].append(
+                decomposition["forcing_higher_order"].item()
+            )
             history["grad_norm"].append(float(grad_norm))
             history["lr"].append(scheduler.get_last_lr()[0])
             logger.info(
                 "[%s] it=%d loss=%.3e (tc_diag=%.3e | netE=%.3e cross=%.3e "
-                "floor=%.3e [vel=%.3e diff=%.3e adv=%.3e reac=%.3e])",
+                "floor=%.3e [vel=%.3e diff=%.3e adv=%.3e reac=%.3e high=%.3e])",
                 variant["name"], it, loss_value, terminal_mismatch,
                 decomposition["network_energy"].item(),
                 decomposition["cross_term"].item(),
@@ -715,6 +741,7 @@ def train_variant(
                 decomposition["forcing_diffusion"].item(),
                 decomposition["forcing_advection"].item(),
                 decomposition["forcing_reaction"].item(),
+                decomposition["forcing_higher_order"].item(),
             )
 
     if best_state is not None:
@@ -857,7 +884,8 @@ def compute_error_metrics(model, problem) -> dict:
 
 
 def _generator_applied_to_datum(problem, x64):
-    r"""Closed-form :math:`(A g)(x) = \nu g'' + \mu g' + r_0 g` on the grid.
+    r"""Closed-form :math:`(A g)(x) = c_4 g^{(4)} + \nu g^{(2)} + \mu g^{(1)} + r_0 g`
+    on the grid (the order-4 term only for a fourth-order generator).
 
     Assembled from the analytic spatial derivatives of the exact-solution
     field at :math:`t = T` (where every extension field coincides with the
@@ -868,11 +896,16 @@ def _generator_applied_to_datum(problem, x64):
     exact_field = problem["exact_field"]
     coefficients = problem["generator_coefficients"]
     tT = np.full_like(x64, problem["terminal_time"])
-    return (
-        coefficients[2] * exact_field.second_space_derivative(x64, tT)
+    generator_applied = (
+        coefficients.get(2, 0.0) * exact_field.second_space_derivative(x64, tT)
         + coefficients.get(1, 0.0) * exact_field.space_derivative(x64, tT)
         + coefficients.get(0, 0.0) * exact_field.field(x64, tT)
     )
+    if 4 in coefficients:
+        generator_applied = generator_applied + coefficients[4] * (
+            exact_field.fourth_space_derivative(x64, tT)
+        )
+    return generator_applied
 
 
 def compute_terminal_target(model, problem, variant, extension_field) -> dict:

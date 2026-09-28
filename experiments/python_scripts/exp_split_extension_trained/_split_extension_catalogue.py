@@ -186,6 +186,74 @@ GENERATOR_CELL_VARIANTS: list[dict] = [
     },
 ]
 
+
+# ---------------------------------------------------------------------------
+# Variants of the fourth-order cell (added 2026-09-29)
+# ---------------------------------------------------------------------------
+# The generator G3 = -0.05 d_x^4 + 1.3 d_x - 0.4 has no order-2 term, so the
+# split variants retain the principal (order-4) part.  The scale-dependent
+# extensions use the reference diffusivity nu_ref = (|c_4| T)^{1/2} / T
+# (runner: reference_diffusivity), which equals nu for an order-2 generator,
+# so the convention of V5/V8 is unchanged there.  None of the graded
+# (Gaussian or Chen--Mangasarian) extensions is the semigroup of the
+# biharmonic principal part, whose kernel changes sign.
+
+SPLIT_PRINCIPAL_VARIANT: dict = {
+    # Split semigroup extension, subset {d_x^4}; forcing P Psi = mu d_x Psi + r_0 Psi.
+    "name": "split_principal",
+    "form": "hard_constant",
+    "interpolation": "linear",
+    "extension": "split_principal",
+    "comparison_diffusivity_ratio": None,
+    "smoothing_scale_ratio": None,
+    "exponential_rate_gamma": None,
+    "color": "#d62728",  # red
+    "label": r"principal split $\{\partial_x^4\}$: $P\Psi=\mu\,\partial_x\Psi+r_0\Psi$",
+}
+SPLIT_PRINCIPAL_ADVECTION_VARIANT: dict = {
+    # Split semigroup extension, subset {d_x^4, d_x}; forcing P Psi = r_0 Psi.
+    "name": "split_principal_advection",
+    "form": "hard_constant",
+    "interpolation": "linear",
+    "extension": "split_principal_advection",
+    "comparison_diffusivity_ratio": None,
+    "smoothing_scale_ratio": None,
+    "exponential_rate_gamma": None,
+    "color": "#ff7f0e",  # orange
+    "label": r"principal--advection split $\{\partial_x^4,\partial_x\}$: $P\Psi=r_0\Psi$",
+}
+GRADED_GAUSSIAN_WIDTH_MATCHED_VARIANT: dict = {
+    # Heat-kernel (Gaussian) grading at nu_c = nu_ref: width-matched to the
+    # biharmonic kernel at s = T, but the semigroup of d_xx, not of d_x^4.
+    "name": "graded_gaussian_width_matched",
+    "form": "hard_constant",
+    "interpolation": "linear",
+    "extension": "graded_gaussian",
+    "comparison_diffusivity_ratio": 1.0,
+    "smoothing_scale_ratio": None,
+    "exponential_rate_gamma": None,
+    "color": "#8c564b",  # brown
+    "label": r"graded Gaussian, $\nu_c=\nu_{\mathrm{ref}}$ (heat kernel)",
+}
+
+
+def _generator_variant(name: str) -> dict:
+    for variant in GENERATOR_CELL_VARIANTS:
+        if variant["name"] == name:
+            return variant
+    raise KeyError(name)
+
+
+FOURTH_ORDER_CELL_VARIANTS: list[dict] = [
+    _generator_variant("convex_raw"),
+    _generator_variant("constant_in_time"),
+    SPLIT_PRINCIPAL_VARIANT,
+    SPLIT_PRINCIPAL_ADVECTION_VARIANT,
+    GRADED_GAUSSIAN_WIDTH_MATCHED_VARIANT,
+    _generator_variant("graded_chen_mangasarian"),
+    _generator_variant("exact_solution"),
+]
+
 # Rate gamma = nu k_0^2 = 0.125 * 1^2 of the control cell, passed EXPLICITLY
 # (specification decision D10): the library default of
 # make_interpolation_coefficient is the eigenvalue-matched value of the
@@ -221,6 +289,9 @@ CONTROL_CELL_VARIANTS: list[dict] = [
 # item 1 refers to this list as METHOD_VARIANTS).  The per-cell variant sets
 # are selected through variants_for_cell().
 METHOD_VARIANTS: list[dict] = GENERATOR_CELL_VARIANTS + [
+    SPLIT_PRINCIPAL_VARIANT,
+    SPLIT_PRINCIPAL_ADVECTION_VARIANT,
+    GRADED_GAUSSIAN_WIDTH_MATCHED_VARIANT,
     MATCHED_EXPONENTIAL_FACTOR_VARIANT
 ]
 
@@ -269,6 +340,23 @@ CELL_CONFIGS: dict[str, dict] = {
             r"$g(x)=\sum_{k=1}^{128}\frac{\cos(kx)}{\pi^2k^2}$,  "
             r"$A=0.125\,\partial_{xx}-0.095\,\partial_x-0.03$ "
             r"(G2, Black–Scholes log-price, $\sigma=0.5$, $r=0.03$),  $T=1$"
+        ),
+    },
+    "g3_bernoulli_bandlimited": {
+        # Fourth-order generator (added 2026-09-29, the report's analytical
+        # G3): A = -0.05 d_x^4 + 1.3 d_x - 0.4, symbol
+        # a(k) = -0.05 k^4 + 1.3 i k - 0.4.  Same datum as G1/G2.
+        "generator_coefficients": {4: -0.05, 1: 1.3, 0: -0.4},
+        "datum": "bernoulli_bandlimited",
+        "truncation_wavenumber": 128,
+        "terminal_time": 1.0,
+        "corner_point": 0.0,
+        "variant_set": "fourth_order",
+        "short_label": r"$G_3$, fourth order",
+        "label": (
+            r"$g(x)=\sum_{k=1}^{128}\frac{\cos(kx)}{\pi^2k^2}$,  "
+            r"$A=-0.05\,\partial_x^4+1.3\,\partial_x-0.4$ (G3, fourth order),  "
+            r"$Pu=\partial_t u+Au$,  $T=1$"
         ),
     },
     "heat_sine_single_component": {
@@ -351,6 +439,8 @@ def variants_for_cell(cell_name: str) -> list[dict]:
     cell_conf = cell_by_name(cell_name)
     if cell_conf["variant_set"] == "generator":
         return list(GENERATOR_CELL_VARIANTS)
+    if cell_conf["variant_set"] == "fourth_order":
+        return list(FOURTH_ORDER_CELL_VARIANTS)
     return list(CONTROL_CELL_VARIANTS)
 
 

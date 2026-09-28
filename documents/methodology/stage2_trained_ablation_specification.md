@@ -887,3 +887,36 @@ equals $Ag$, that of `constant_in_time` (unit test
 autograd), `GradedChenMangasarianExtension` (spectral counterpart; the strip-forcing time
 integral uses 256-node Gauss–Legendre quadrature, the only quadrature among the
 extensions). Runner: `chen_mangasarian_initial_smoothing_scale`.
+
+## 9. Addendum (2026-09-29) — fourth-order cell G3
+
+At the author's request (higher-order PDEs; the paper is no longer bound to the report's
+experiments), the trained pipeline is extended to the fourth-order generator
+$G_3 = -0.05\,\partial_x^4 + 1.3\,\partial_x - 0.4$, symbol $a(k) = -0.05k^4 + 1.3ik - 0.4$,
+with the same band-limited Bernoulli datum ($K_g = 128$), network, budget and seeds as
+$G_1$/$G_2$ (cell `g3_bernoulli_bandlimited`).
+
+*Why this cell.* It is the case in which the split extension is not a mollification: the
+biharmonic semigroup kernel changes sign, and no Gaussian or Chen–Mangasarian grading is
+the semigroup of the principal part. It therefore separates the "cancels the principal
+part" discriminant from the "smooths the datum" reading.
+
+*Variants.* `convex_raw`, `constant_in_time`, `split_principal` (retains $\partial_x^4$;
+forcing $1.3\,\partial_x h - 0.4 h$), `split_principal_advection` (retains
+$\partial_x^4, \partial_x$; forcing $-0.4 h$), `graded_gaussian_width_matched` (heat kernel at
+$\nu_c = \nu_{\mathrm{ref}}$), `graded_chen_mangasarian` ($\varepsilon_0 = \sqrt{2\nu_{\mathrm{ref}} T}$),
+`exact_solution`.
+
+*Reference diffusivity.* $\nu_{\mathrm{ref}} = (|c_{2p}|\,T)^{1/p}/T$, with $c_{2p}$ the principal
+coefficient. It equals $\nu$ for a second-order generator, so every scale convention of
+§1.2 and §8 is unchanged; for $G_3$, $\sqrt{\nu_{\mathrm{ref}} T} = (|c_4| T)^{1/4}$, the
+time-$T$ length scale of the biharmonic kernel. This is a convention, not an optimality
+criterion.
+
+*Implementation.* Orders 3 and 4 enter the autograd operator as one additional channel
+`higher_order` (the order $\le 2$ channels are unchanged bitwise); the analytic bypass
+accepts optional `dxxx`/`dxxxx` callables and raises if an order-3/4 coefficient is present
+without them; `PeriodicExtensionField` supports orders 0, 1, 2, 4 (order 3 excluded: its
+cubic phase is not of the linear phase-advection form), with the new kinds
+`split_principal`/`split_principal_advection`. Expected cost: the network residual needs
+four nested autograd derivatives per step.
