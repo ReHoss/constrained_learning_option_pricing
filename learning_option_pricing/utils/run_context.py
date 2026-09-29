@@ -136,11 +136,18 @@ def get_git_metadata(repo_root: Path) -> dict[str, Any]:
     commit = _try_run_git(["rev-parse", "HEAD"], cwd=repo_root)
     branch = _try_run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root)
     status = _try_run_git(["status", "--porcelain"], cwd=repo_root) or ""
+    status_lines = status.splitlines()
     return {
         "commit": commit,
         "branch": branch,
+        # ``dirty`` counts untracked files too; ``tracked_modifications`` counts
+        # only the tracked files that differ from the commit, which is what
+        # decides whether the executed code equals the recorded commit.
         "dirty": bool(status.strip()),
-        "status_porcelain": status.splitlines()[:50],  # keep bounded
+        "tracked_modifications": sum(
+            1 for line in status_lines if not line.startswith("??")
+        ),
+        "status_porcelain": status_lines[:50],  # keep bounded
     }
 
 
