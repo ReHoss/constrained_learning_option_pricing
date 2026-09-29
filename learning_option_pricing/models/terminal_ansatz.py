@@ -491,6 +491,53 @@ def residual_decomposition(
     }
 
 
+def residual_loss_in_chunks(
+    ansatz: "TerminalAnsatz",
+    coord: torch.Tensor,
+    t: torch.Tensor,
+    *,
+    generator_coefficients: dict,
+    chunk_size: int = 4096,
+    device=None,
+) -> float:
+    r"""Mean squared residual :math:`\frac{1}{n}\sum_i (\mathcal P\hat u(x_i, t_i))^2`
+    over a fixed point set, evaluated in chunks.
+
+    The validation criterion of the stage-2 runner (pre-registration
+    ``documents/methodology/2026-09-29_preregistration_validation_selected_series.md``):
+    the points are a fixed set, so that successive evaluations compare the
+    parameters on the same points.  Chunking bounds the autograd memory of the
+    input derivatives; the result is the chunk losses weighted by chunk size,
+    which equals the unchunked mean up to the order of the floating-point sums.
+    No backward pass is taken, so the parameter gradients are untouched.
+
+    Args:
+        ansatz: The trial solution.
+        coord, t: One-dimensional tensors of equal length (any device).
+        generator_coefficients: As in :func:`residual_decomposition`.
+        chunk_size: Number of points per autograd evaluation.
+        device: Device of the evaluation (default: the device of ``coord``).
+
+    Returns:
+        The mean squared residual as a Python float.
+    """
+    if coord.shape != t.shape or coord.dim() != 1:
+        raise ValueError("coord and t must be one-dimensional tensors of equal length")
+    if chunk_size < 1:
+        raise ValueError(f"chunk_size must be positive, received {chunk_size!r}")
+    target_device = coord.device if device is None else device
+    total = 0.0
+    count = coord.shape[0]
+    for start in range(0, count, chunk_size):
+        coord_chunk = coord[start:start + chunk_size].detach().to(target_device).requires_grad_(True)
+        t_chunk = t[start:start + chunk_size].detach().to(target_device).requires_grad_(True)
+        decomposition = residual_decomposition(
+            ansatz, coord_chunk, t_chunk, generator_coefficients=generator_coefficients
+        )
+        total += float(decomposition["loss"].item()) * coord_chunk.shape[0]
+    return total / count
+
+
 # ---------------------------------------------------------------------------
 # Startup cross-check of the analytic-derivative bypass
 # ---------------------------------------------------------------------------

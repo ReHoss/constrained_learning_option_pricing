@@ -386,3 +386,22 @@ def test_cross_check_passes_for_fourth_order_split_extension():
         cross_check_extension_forcing_analytic_versus_autograd(
             ansatz_missing, x, t, generator_coefficients=generator_g3
         )
+
+
+def test_residual_loss_in_chunks_equals_the_unchunked_mean():
+    """The chunked validation criterion is the plain mean squared residual."""
+    from learning_option_pricing.models.terminal_ansatz import residual_loss_in_chunks
+
+    ansatz, _ = _build_periodic_hard_constant_ansatz(with_derivative_bypass=True)
+    x, t = _circle_batch(size=250)
+    full = residual_decomposition(
+        ansatz, x.detach().clone().requires_grad_(True), t.detach().clone().requires_grad_(True),
+        generator_coefficients=GENERATOR_G1,
+    )["loss"].item()
+    for chunk_size in (1, 7, 64, 250, 1000):
+        chunked = residual_loss_in_chunks(
+            ansatz, x, t, generator_coefficients=GENERATOR_G1, chunk_size=chunk_size
+        )
+        assert chunked == pytest.approx(full, rel=1e-12), chunk_size
+    # No gradient is accumulated on the parameters.
+    assert all(p.grad is None for p in ansatz.parameters())
