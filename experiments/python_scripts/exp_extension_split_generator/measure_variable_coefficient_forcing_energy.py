@@ -305,8 +305,24 @@ def render_main_figure(run_directory: Path) -> Path:
     orders = summary["parameters"]["orders"]
     shown_ratios = [r for r in summary["parameters"]["amplitude_ratios"] if r in AMPLITUDE_MARKERS]
 
-    fig, axes = plt.subplots(1, len(orders), figsize=(12.0, 5.2), squeeze=False)
-    axes = axes[0]
+    fig, axes_grid = plt.subplots(2, len(orders), figsize=(12.0, 9.0), squeeze=False)
+    axes = axes_grid[0]
+    for ax, order in zip(axes_grid[1], orders):
+        # Second row: the two splits alone, normalised by their value at the
+        # smallest band edge, so that saturation and growth read on a linear
+        # scale (the first row spans many decades).
+        for variant in ("split_frozen_singular", "split_frozen_mean"):
+            colour, label = VARIANT_DISPLAY[variant]
+            for ratio in shown_ratios:
+                energies = saved[f"energy__lv{order}__eps{ratio:g}__{variant}"]
+                ax.semilogx(
+                    band_edges, energies / energies[0], "-", color=colour,
+                    marker=AMPLITUDE_MARKERS[ratio], markersize=4, linewidth=1.2,
+                )
+        ax.set_title(rf"LV{order}: splits only, normalised by $K={int(band_edges[0])}$", fontsize=10)
+        ax.set_xlabel(r"Datum band edge $K$")
+        ax.set_ylabel(r"$E(K)\,/\,E(K_{\min})$")
+        ax.grid(True, which="both", alpha=0.3)
     for ax, order in zip(axes, orders):
         for variant in VARIANT_NAMES:
             colour, label = VARIANT_DISPLAY[variant]
@@ -338,13 +354,13 @@ def render_main_figure(run_directory: Path) -> Path:
         ax.grid(True, which="both", alpha=0.3)
     handles, labels = axes[0].get_legend_handles_labels()
     legend = fig.legend(
-        handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.13),
+        handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.095),
         ncol=4, fontsize=6.5, frameon=True,
     )
-    fig.tight_layout(rect=[0.0, 0.33, 1.0, 0.98])
+    fig.tight_layout(rect=[0.0, 0.24, 1.0, 0.98])
     figure_path = run_directory / MAIN_FIGURE_FILENAME
     finalize_figure(
-        fig, figure_path, legends=[legend], axes=list(axes),
+        fig, figure_path, legends=[legend], axes=list(axes_grid.ravel()),
         formula=(
             r"$\|\partial_t h+\mathcal{L}h\|^2_{L^2(Q)}=2\pi\sum_{|k|\leq K+1}\int_0^T|\hat F_k(t)|^2\,dt$"
             r" in closed form;  split: $h=e^{(T-t)A}g_K$, $A=c_{2p}(x_0)\,\partial_x^{2p}$ with "
