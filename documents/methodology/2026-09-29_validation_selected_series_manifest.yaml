@@ -1,0 +1,40 @@
+# Validation-selected model series (pre-registration
+# documents/methodology/2026-09-29_preregistration_validation_selected_series.md).
+# The series the paper reports. Every cell runs on one hardware; all runs retain the state of
+# lowest residual on a fixed validation set (16384 uniform points, own derived seed, every 100
+# iterations and at the last one, the evaluated parameters saved). Output subfolder:
+# data/ablation_split_extension_trained/series_validation_selected/ (aggregate with --data-root).
+code_revision: 381f73b
+selection_rule: validation_residual (n_validation 16384, validation_every 100)
+parts_distribution: uniform on the cylinder for training, validation and evaluation
+categories:
+  constant_coefficient_cells:
+    cells: [g1_bernoulli_bandlimited, g2_bernoulli_bandlimited, heat_sine_single_component, g3_bernoulli_bandlimited]
+    variants_per_cell: {g1_bernoulli_bandlimited: 9, g2_bernoulli_bandlimited: 9, heat_sine_single_component: 2, g3_bernoulli_bandlimited: 7}
+    seeds: [0, 1, 2]
+    tasks: 81
+    cluster: Jean Zay (IDRIS)
+    hardware: NVIDIA V100 (gpu_p13), one GPU per task
+    account: akz@v100 (qos_gpu-t3)
+    slurm_jobs: [314179]
+    task_list: Jean Zay, $WORK/oym_migration/work/logs/constrained_learning_option_pricing/series_validation_selected_2026-09-29/tasks_jeanzay.txt
+    status: running
+  variable_coefficient_cells:
+    cells: [lv2_bernoulli_bandlimited_eps0p25, lv2_bernoulli_bandlimited_eps0p75, lv4_bernoulli_bandlimited_eps0p25, lv4_bernoulli_bandlimited_eps0p75]
+    variants_per_cell: 4
+    seeds: [0, 1, 2]
+    tasks: 48
+    cluster: Adastra (CINES)
+    hardware: AMD Instinct MI250X, one GCD per task (shared mode), ROCm torch 2.9.1+rocm6.4
+    account: c2117856 (--constraint=MI250)
+    galerkin_reference_band: {order_2: 512, order_4: 256}
+    slurm_jobs: [5481160, 5481161, 5481162, 5481163, 5481165, 5481166]   # six arrays of 8 (array cap 11)
+    task_list: Adastra, pycharm_remote_project/constrained_learning_option_pricing/logs/series_validation_selected_2026-09-29/tasks_adastra.txt
+    status: running
+smoke_tests:
+  jean_zay: job 313771 (232 tests passed; G2 split, 300 iterations, validation at 100/200/300, retained 300)
+  adastra: job 5481087 (LV4 epsilon 0.75 split_frozen_mean, 300 iterations, retained 300)
+earlier_series:
+  location: data/ablation_split_extension_trained/ (top level)
+  retention_rule: minimum training mini-batch loss (deficient, section 5bis)
+  use: measurement note only (comparison of the two retention rules); not reported in the paper
