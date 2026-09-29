@@ -53,7 +53,7 @@ categories:
     cluster: Adastra (CINES)
     hardware: AMD Instinct MI250X, one GCD per task (shared mode), ROCm torch 2.9.1+rocm6.4
     account: c2117856 (--constraint=MI250)
-    code_revision: 870a0e8          # identical library and runner code to 4d4eb9f (only documents differ)
+    code_revision: 870a0e8          # runner and library identical to 4d4eb9f; the diff is the manifest and the energy-study figure script (git diff --stat 4d4eb9f 870a0e8)
     galerkin_reference_band: 256
     slurm_jobs: [5480597, 5480598]  # two arrays of 6 (Adastra array cap 11)
     status: running
