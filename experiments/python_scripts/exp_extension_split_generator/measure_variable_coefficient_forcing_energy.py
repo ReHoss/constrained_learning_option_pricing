@@ -80,6 +80,7 @@ from learning_option_pricing.pde import (  # noqa: E402
 )
 from learning_option_pricing.pde.variable_coefficient_periodic import (  # noqa: E402
     BandLimitedDatum,
+    GalerkinReferenceSolution,
     build_variable_coefficient_extension,
     galerkin_convergence_deviation,
     generator_from_specification,
@@ -230,6 +231,62 @@ def check_reference_solutions(orders, galerkin_band, refined_band) -> dict:
     return results
 
 
+def study_reference_bands(orders, bands) -> dict:
+    r"""Per-time relative deviations of the Galerkin reference across truncations.
+
+    For each trained cell, the reference is computed at every truncation of
+    ``bands`` on the evaluation grid and times, and the relative :math:`\ell^2`
+    deviation of each truncation from every other is recorded per time.  A
+    deviation that shrinks as both truncations decrease, and grows with the
+    larger truncation, points to round-off in the matrix exponential of the
+    larger (higher-norm) matrix; a deviation that shrinks as the truncation
+    grows points to truncation error.  This separates the two causes before a
+    truncation is retained for the trained cells.
+    """
+    x = np.linspace(0.0, 2.0 * math.pi, EVALUATION_GRID_SIZE, endpoint=False)
+    times = np.linspace(0.0, TERMINAL_TIME, EVALUATION_TIME_SLICE_COUNT)
+    study: dict = {}
+    for order in orders:
+        for ratio in TRAINED_AMPLITUDE_RATIOS:
+            cell_conf = cell_configuration(order, ratio)
+            generator = generator_from_specification(
+                cell_conf["generator_coefficients"], f"LV{order}_eps{ratio}"
+            )
+            datum = BandLimitedDatum(
+                PeriodisedBernoulliDatum(1), int(cell_conf["truncation_wavenumber"])
+            )
+            fields = {}
+            for band in bands:
+                start = time.perf_counter()
+                reference = GalerkinReferenceSolution(generator, datum, int(band), TERMINAL_TIME)
+                fields[int(band)] = np.stack([
+                    reference.field(x, np.full_like(x, float(t))) for t in times
+                ])
+                LOGGER.info("band study LV%d eps=%.2f: N=%d computed in %.1f s",
+                            order, ratio, band, time.perf_counter() - start)
+            pairs = {}
+            for i, first in enumerate(sorted(fields)):
+                for second in sorted(fields)[i + 1:]:
+                    per_time = [
+                        float(np.linalg.norm(fields[first][j] - fields[second][j])
+                              / np.linalg.norm(fields[second][j]))
+                        for j in range(len(times))
+                    ]
+                    pairs[f"N{first}_vs_N{second}"] = {
+                        "per_time": per_time,
+                        "maximum": max(per_time),
+                        "time_of_maximum": float(times[int(np.argmax(per_time))]),
+                    }
+                    LOGGER.info("band study LV%d eps=%.2f: N=%d vs N=%d max deviation %.3e at t=%.1f",
+                                order, ratio, first, second, max(per_time),
+                                float(times[int(np.argmax(per_time))]))
+            study[f"lv{order}_eps{ratio:g}"] = {
+                "times": [float(t) for t in times],
+                "pairs": pairs,
+            }
+    return study
+
+
 VARIANT_DISPLAY = {
     "constant_in_time": ("#1f77b4", "Constant in time"),
     "convex_raw": ("#2ca02c", "Convex raw"),
@@ -317,6 +374,10 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     parser.add_argument("--galerkin-refined-band", type=int, default=1024)
     parser.add_argument("--skip-reference-check", action="store_true",
                         help="Skip the N versus 2N check of the reference solution.")
+    parser.add_argument("--reference-bands", type=int, nargs="+", default=None,
+                        help="Also compare the reference across these truncations, "
+                             "per evaluation time (diagnostic of truncation versus "
+                             "round-off error).")
     parser.add_argument("--seed", type=int, default=0,
                         help="Master seed (recorded; the computation is deterministic).")
     parser.add_argument("--debug", action="store_true",
@@ -377,6 +438,9 @@ def main(argv=None) -> int:
         reference_checks = check_reference_solutions(
             arguments.orders, arguments.galerkin_band, arguments.galerkin_refined_band
         )
+    reference_band_study = {}
+    if arguments.reference_bands is not None:
+        reference_band_study = study_reference_bands(arguments.orders, arguments.reference_bands)
 
     payload = {"band_edges": band_edges}
     summary_cells: dict = {}
@@ -404,6 +468,7 @@ def main(argv=None) -> int:
                               "constant-coefficient closed form within tolerance)",
         "cells": summary_cells,
         "reference_solution_convergence": reference_checks,
+        "reference_band_study": reference_band_study,
     }
     np.savez(run_directory / ENERGIES_FILENAME, **payload)
     with open(run_directory / SUMMARY_FILENAME, "w", encoding="utf-8") as handle:
