@@ -3,8 +3,10 @@
 **Written 2026-09-29, before any implementation or run.** This document fixes the question, the
 cells, the compared extensions, the amplitude sweep, the analytical predictions and the falsification conditions ahead
 of the campaign, so that the outcome cannot steer the design. The outcome is to be reported
-whatever it is. Status: **DRAFT for the author's confirmation**; decisions reserved to the author
-are flagged **[AUTHOR]**.
+whatever it is. Status: **decided, revision 2 (2026-09-29), before any implementation or run.** The
+open decisions of revision 1 were delegated by the author ("prends la meilleure décision selon les
+coefficients ... la cohérence, la facilité de lecture, pas trop d'artifices") and are recorded in §8;
+the changes of revision 2 are listed in §9.
 
 ## 1. Question
 
@@ -72,10 +74,15 @@ by the sweep of §3.1; dependence on the base values is not studied and is state
 | `convex_raw` | $\lambda(t)\,g$ | yes |
 | `constant_in_time` | $g$ | yes |
 | `split_frozen_singular` | $e^{(T-t)A_\star}g$, $A_\star=c_{2p}(x^\star)\,\partial_x^{2p}$ | yes (Fourier multiplier) |
-| `split_frozen_singular_advection` | as above, plus the advection coefficient frozen at $x^\star$ (LV2 only) | yes |
-| `split_frozen_mean` | $e^{(T-t)\bar A}g$, $\bar A=\bar c_{2p}\,\partial_x^{2p}$ | yes |
-| `graded_chen_mangasarian` | CM kernel, $\varepsilon_0=\sqrt{2\nu_{\mathrm{ref}}T}$ | yes |
-| `exact_solution` (control) | numerical reference $u^\star$ | **no closed form**: Fourier–Galerkin reference (§5) |
+| `split_frozen_mean` | $e^{(T-t)\bar A}g$, $\bar A=\bar c_{2p}\,\partial_x^{2p}$ | yes (Fourier multiplier) |
+
+The two splits retain the principal term only, so their remainders have the same lower-order
+structure and the comparison isolates the point at which the principal coefficient is frozen.
+`split_frozen_mean` is the extension of the constant-coefficient split already trained on the
+reference cell ($\{\partial_{xx}\}$ on $G_2$, $\{\partial_x^4\}$ on $G_3$), now applied to the
+variable-coefficient problem. No exact-solution control is trained: the exact solution has no closed
+form in these cells, which is the situation C4 describes; the network's own error level on this datum
+is read from the zero-forcing controls of $G_2$ and $G_3$ (same network, datum and budget).
 
 ### 3.1 Amplitude sweep (dose–response)
 
@@ -96,8 +103,9 @@ eq0$ (otherwise $x^\star$ is a critical
 point of the coefficient, $
 u=2$), and $arphi=\pi/4$ maximises $\min(|\cosarphi|,|\sinarphi|)$.
 
-For LV2, `split_frozen_mean` coincides with a graded Gaussian at $\nu_c=\bar a$; no separate graded
-Gaussian arm is run. For each split the forcing is
+For LV2, `split_frozen_mean` coincides with a graded Gaussian at $\nu_c=\bar a$, so no graded
+Gaussian arm is run; no Chen–Mangasarian arm is run either, its role (the mollification objection)
+being settled on $G_1$–$G_3$. For each split the forcing is
 $\partial_t h + L h = \bigl(c_{2p}(x)-c_{2p}^{A}\bigr)\partial_x^{2p}h + (\text{lower-order terms})\,h$,
 with $c^{A}_{2p}$ the frozen value: the principal part is cancelled only where
 $c_{2p}(x)=c_{2p}^{A}$.
@@ -135,21 +143,24 @@ the singular-point freezing.
 
 ## 5. Measurements
 
-- **Forcing energy** $\lVert\partial_t h+Lh\rVert^2_{L^2(Q)}$ by quadrature on a tensor grid (the spectral
-  closed forms of the constant-coefficient cells do not apply), at $K\in\{32,64,128,256,512\}$ and at
-  each $\varepsilon$ of §3.1, to test P1–P3 by the growth in $K$ (a CPU computation on `prepost`, no
-  training).
+- **Forcing energy** $\lVert\partial_t h+Lh\rVert^2_{L^2(Q)}$ in closed form. With coefficients
+  $c_j(x)=c_{j,0}+c_{j,1}\cos(x-\varphi)$, the Fourier coefficient of the forcing at wavenumber $k$
+  is a combination of the three terms $e^{s\lambda_m}\hat g_m$, $m\in\{k-1,k,k+1\}$, where
+  $\lambda_m$ is the symbol of the retained operator; the time integral of its squared modulus is
+  then a finite sum of $\int_0^Te^{zs}\,ds$, exact. Evaluated at $K\in\{32,64,128,256,512,1024\}$,
+  at $\varepsilon\in\{0,0.1,0.25,0.5,0.75\}$ ($\varepsilon=0$ reproducing the constant-coefficient
+  closed forms), to test P1–P3 by the growth in $K$ (CPU, `prepost`, no training).
 - **Trained relative $L^2$ error** $\delta_\Gamma$ on the evaluation grid (1024 points, 11 time slices),
   median and quartiles over 3 seeds; also at $t=0$ and near $(x^\star,T)$.
 - **Reference solution.** Fourier–Galerkin discretisation of $L^X$ on $|k|\le N$ (multiplication by
   $\cos(x-\varphi)$ couples $k$ to $k\pm1$), $u^\star(\cdot,t)=\exp\bigl((T-t)L^X_N\bigr)g$ by matrix
   exponential, with $N=512$ and a convergence check against $N=1024$ (tolerance stated in the
-  report of the run). The exact-solution control uses the same reference as its extension.
+  report of the run).
 
 ## 6. Falsification conditions
 
-- P1 is falsified if the quadrature energy of `split_frozen_mean` on LV4 stays bounded as $K$ grows
-  from 32 to 512; P2 if that of `split_frozen_singular` grows without bound on LV4.
+- P1 is falsified if the energy of `split_frozen_mean` on LV4 stays bounded as $K$ grows from 32 to
+  1024; P2 if that of `split_frozen_singular` grows without bound on LV4 over the same range.
 - If `split_frozen_mean` and `split_frozen_singular` reach the same trained error on LV4 (overlapping
   quartiles), the conjectured trained consequence is not supported, whatever the energies do.
 - A reference solution failing its $N=512$ versus $N=1024$ check invalidates the error measurements
@@ -164,20 +175,38 @@ the singular-point freezing.
 Implementation: $x$-dependent coefficients in the autograd operator and in the analytic bypass;
 a Fourier–Galerkin variable-coefficient module (matrix, reference solution, derivatives on demand);
 split fields as constant-coefficient semigroups of the frozen operator; new cells and variants;
-tests (Galerkin convergence, forcing identity, bypass against autograd). Training: 2 cells × 2 amplitudes × 7
-variants × 3 seeds = 84 tasks, about 7 min each (LV2) and 30 min each (LV4), about 26 GPU-hours on
-V100 (`akz`). Energy study on `prepost` (non-billed).
+tests (Galerkin convergence, forcing identity, bypass against autograd, reduction to the
+constant-coefficient closed forms at $\varepsilon=0$). Training: 2 orders × 2 amplitudes × 4 variants ×
+3 seeds = 48 tasks, about 7 min each (LV2) and 30 min each (LV4), about 15 GPU-hours on V100
+(`akz`), on the same hardware as every earlier trained cell, so that the comparison with $G_2$/$G_3$
+and between variants of one seed is made on identical arithmetic. Energy study on `prepost`
+(non-billed).
 
-## 8. Open decisions
+## 8. Decisions
 
-- Decided 2026-09-29 (author): the amplitude is swept (§3.1) rather than fixed.
-- **[AUTHOR]** Whether to add a case $\varphi=0$, where $x^\star$ is a critical point of the coefficient
-  ($\nu=2$), which the analysis predicts to be more favourable still.
-- **[AUTHOR]** Whether the undocumented base values of $G_1$/$G_3$ (§2.1) should be replaced by values
-  fixed by a stated protocol (for instance prescribed dimensionless ratios between the principal,
-  advection and reaction terms) before this study, at the cost of losing the reduction to the
-  measured cells at $\varepsilon=0$.
-- **[AUTHOR]** Whether an order-6 cell is added to test the predicted failure of the singular-point
-  freezing at $p=3$.
-- **[AUTHOR]** Whether to keep the periodic idealisation or move to a bounded interval with boundary
-  conditions for the local-volatility cell.
+- **Amplitude.** Swept (§3.1), by the author's decision of 2026-09-29.
+- **Base values: inherited** (§2.1). Each variable-coefficient cell then reduces to a measured cell
+  at $\varepsilon=0$, which anchors the dose–response, and no new selection protocol is introduced — a
+  protocol fixing dimensionless ratios would itself be one choice among many, and would break the
+  pairing with the measured cells. The absence of a documented protocol for $G_1$/$G_3$ is stated as
+  a limitation (§2.1).
+- **Phase $\varphi=0$ (critical point, $\nu=2$): not run.** At orders 2 and 4 the analysis predicts the
+  same qualitative outcome for $\nu=1$ and $\nu=2$ (square-integrable forcing in both cases); the
+  refinement concerns the scaling law itself and belongs to the later mathematical paper.
+- **Order 6: not run.** It has no motivation in the setting of this paper, and the boundary
+  $p<3/2+\nu$ that it would test belongs to the mathematical programme, which the author has placed
+  after this framework paper.
+- **Domain: the circle is kept.** It keeps the reference solution exact up to a controlled
+  truncation and keeps the construction identical to $G_1$–$G_3$; a bounded interval would add
+  boundary conditions and a second distance factor.
+
+## 9. Revision log
+
+- **Revision 1** (commit `000261b`, 2026-09-29): design with seven variants per cell.
+- **Revision 1b** (commit `c609ce8`): provenance of the base values (§2.1) and amplitude sweep (§3.1).
+- **Revision 2** (this version, before any implementation or run): decisions of §8 taken under the
+  author's delegation; variant set reduced to four (removed: the singular-point split with frozen
+  advection, which changes the lower-order remainder and so no longer isolates the freezing point;
+  Chen–Mangasarian, whose role is settled on $G_1$–$G_3$; the exact-solution control, which has no
+  closed form here); forcing energies computed in closed form rather than by quadrature, with
+  $\varepsilon=0$ added as the constant-coefficient anchor and $K$ extended to 1024.
