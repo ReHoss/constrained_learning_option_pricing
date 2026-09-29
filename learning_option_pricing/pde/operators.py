@@ -46,15 +46,23 @@ def _validated_operator_coefficients(
         ValueError: If an order is not an integer in
             :data:`SUPPORTED_DIFFERENTIAL_ORDERS`.
     """
-    normalised: dict[int, float] = {}
+    normalised: dict = {}
     for order, coefficient in coefficients.items():
         if int(order) != order or int(order) not in SUPPORTED_DIFFERENTIAL_ORDERS:
             raise ValueError(
                 "constant-coefficient operator orders must belong to "
                 f"{SUPPORTED_DIFFERENTIAL_ORDERS}, received order {order!r}"
             )
-        normalised[int(order)] = float(coefficient)
+        # A callable coefficient c(x) (variable-coefficient cells, added
+        # 2026-09-29) is kept as is and evaluated at the spatial coordinate;
+        # a constant is converted to float, so its channels are unchanged.
+        normalised[int(order)] = coefficient if callable(coefficient) else float(coefficient)
     return normalised
+
+
+def coefficient_values(coefficient, coord: torch.Tensor):
+    """A float coefficient as is, or a callable coefficient evaluated at ``coord``."""
+    return coefficient(coord) if callable(coefficient) else coefficient
 
 
 def constant_coefficient_operator(
@@ -214,21 +222,22 @@ def constant_coefficient_operator_parts(
     for order, derivative in higher_space_derivatives.items():
         if order in normalised_coefficients:
             higher_order_channel = (
-                higher_order_channel + normalised_coefficients[order] * derivative
+                higher_order_channel
+                + coefficient_values(normalised_coefficients[order], coord) * derivative
             )
 
     diffusion_channel = (
-        normalised_coefficients[2] * second_space_derivative
+        coefficient_values(normalised_coefficients[2], coord) * second_space_derivative
         if 2 in normalised_coefficients
         else torch.zeros_like(coord)
     )
     advection_channel = (
-        normalised_coefficients[1] * first_space_derivative
+        coefficient_values(normalised_coefficients[1], coord) * first_space_derivative
         if 1 in normalised_coefficients
         else torch.zeros_like(coord)
     )
     reaction_channel = (
-        normalised_coefficients[0] * field
+        coefficient_values(normalised_coefficients[0], coord) * field
         if 0 in normalised_coefficients
         else torch.zeros_like(field)
     )

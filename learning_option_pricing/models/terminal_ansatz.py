@@ -43,6 +43,7 @@ import torch
 import torch.nn as nn
 
 from learning_option_pricing.pde.operators import (
+    coefficient_values,
     constant_coefficient_operator,
     constant_coefficient_operator_parts,
 )
@@ -287,7 +288,12 @@ def _resolve_generator_coefficients(
             f"generator_coefficients={generator_coefficients!r}."
         )
     if generator_coefficients is not None:
-        return {int(order): float(value) for order, value in generator_coefficients.items()}
+        # A callable coefficient c(x) (variable-coefficient cells) is kept and
+        # evaluated at the spatial coordinate; constants are floats as before.
+        return {
+            int(order): (value if callable(value) else float(value))
+            for order, value in generator_coefficients.items()
+        }
     return {2: 0.5 * sigma**2, 1: 0.0, 0: 0.0}
 
 
@@ -311,9 +317,9 @@ def _analytic_higher_order_forcing(
                 f"the generator has an order-{order} coefficient but "
                 f"extension_derivative_fns has no {key!r} callable."
             )
-        channel = channel + coefficients[order] * derivative_fns[key](
-            coord_col, t_col
-        ).reshape(output_shape)
+        channel = channel + coefficient_values(
+            coefficients[order], coord_col.reshape(output_shape)
+        ) * derivative_fns[key](coord_col, t_col).reshape(output_shape)
     return channel
 
 
@@ -431,13 +437,15 @@ def residual_decomposition(
                 forcing_velocity = derivative_fns["dt"](coord_col, t_col).reshape(
                     coord.shape
                 )
-                forcing_diffusion = resolved_coefficients.get(
-                    2, 0.0
+                forcing_diffusion = coefficient_values(
+                    resolved_coefficients.get(2, 0.0), coord
                 ) * derivative_fns["dxx"](coord_col, t_col).reshape(coord.shape)
-                forcing_advection = resolved_coefficients.get(
-                    1, 0.0
+                forcing_advection = coefficient_values(
+                    resolved_coefficients.get(1, 0.0), coord
                 ) * derivative_fns["dx"](coord_col, t_col).reshape(coord.shape)
-                forcing_reaction = resolved_coefficients.get(0, 0.0) * psi_values
+                forcing_reaction = coefficient_values(
+                    resolved_coefficients.get(0, 0.0), coord
+                ) * psi_values
                 forcing_higher_order = _analytic_higher_order_forcing(
                     derivative_fns, resolved_coefficients, coord_col, t_col, coord.shape
                 )
@@ -555,13 +563,16 @@ def cross_check_extension_forcing_analytic_versus_autograd(
         t_col = t.detach().unsqueeze(-1)
         psi_values = ansatz.extension(coord_col, t_col).reshape(coord.shape)
         velocity_channel = derivative_fns["dt"](coord_col, t_col).reshape(coord.shape)
-        diffusion_channel = resolved_coefficients.get(2, 0.0) * derivative_fns[
-            "dxx"
-        ](coord_col, t_col).reshape(coord.shape)
-        advection_channel = resolved_coefficients.get(1, 0.0) * derivative_fns[
-            "dx"
-        ](coord_col, t_col).reshape(coord.shape)
-        reaction_channel = resolved_coefficients.get(0, 0.0) * psi_values
+        coord_values = coord.detach()
+        diffusion_channel = coefficient_values(
+            resolved_coefficients.get(2, 0.0), coord_values
+        ) * derivative_fns["dxx"](coord_col, t_col).reshape(coord.shape)
+        advection_channel = coefficient_values(
+            resolved_coefficients.get(1, 0.0), coord_values
+        ) * derivative_fns["dx"](coord_col, t_col).reshape(coord.shape)
+        reaction_channel = coefficient_values(
+            resolved_coefficients.get(0, 0.0), coord_values
+        ) * psi_values
         higher_order_channel = _analytic_higher_order_forcing(
             derivative_fns, resolved_coefficients, coord_col, t_col, coord.shape
         )
