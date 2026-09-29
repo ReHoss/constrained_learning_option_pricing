@@ -4,3 +4,7 @@
 *.fdb_latexmk
 *.out
 *.synctex.gz
+
+# Reports are personal: keep them on disk, out of the repository (2026-09-29).
+# The two 2026-09-14 directories predate this rule and stay tracked unless asked.
+corner_treatments_*/
