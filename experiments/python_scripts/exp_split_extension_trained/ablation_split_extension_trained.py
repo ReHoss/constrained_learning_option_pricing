@@ -81,6 +81,11 @@ SPECTRA_CANCELLATION_THRESHOLD = 0.5
 # Build-time agreement bound between the matched graded extension field and
 # its split {d_xx} twin (specification decision D3).
 GRADED_MATCHED_AGREEMENT_TOLERANCE = 1.0e-6
+# Threshold of the global gradient-norm safeguard (clip_grad_norm_).  Its size
+# does not prove that it never binds, so every activation is reported and the
+# pre-clip norm of every update is saved (GradientNormSafeguardMonitor; the
+# runs before this instrumentation stored the norm at the logged iterations only).
+GRADIENT_NORM_SAFEGUARD_THRESHOLD = 1.0e12
 
 # Fourier-Galerkin truncation of the reference solution of the variable-
 # coefficient cells, per principal order (pre-registration 2026-09-29, section
@@ -710,6 +715,9 @@ def train_variant(
         residual_decomposition,
         residual_loss_in_chunks,
     )
+    from learning_option_pricing.utils.gradient_norm_safeguard import (
+        GradientNormSafeguardMonitor,
+    )
 
     generator_coefficients = problem["generator_coefficients"]
     model_seed = derive_seed(seed, "model_init")
@@ -760,6 +768,11 @@ def train_variant(
     best_training_batch_loss = float("inf")
     best_training_batch_iter = -1
     cross_check_deviation = None
+    gradient_norm_monitor = GradientNormSafeguardMonitor(
+        GRADIENT_NORM_SAFEGUARD_THRESHOLD,
+        logger=logger,
+        label=f"{problem['cell_name']}/{variant['name']}",
+    )
 
     n_parameters = sum(p.numel() for p in model.parameters())
     logger.info(
@@ -829,10 +842,9 @@ def train_variant(
         )
         loss = decomposition["loss"]
         loss.backward()
-        # Gradient-norm probe (max_norm = 1e12: a probe, not a clip).
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            model.parameters(), max_norm=1e12
-        )
+        # Gradient-norm safeguard: clips at GRADIENT_NORM_SAFEGUARD_THRESHOLD,
+        # records the pre-clip norm of this update, reports any activation.
+        grad_norm = gradient_norm_monitor.clip_and_record(model.parameters(), it)
         optimizer.step()
         scheduler.step()
 
@@ -914,6 +926,7 @@ def train_variant(
                 decomposition["forcing_higher_order"].item(),
             )
 
+    gradient_norm_monitor.log_summary()
     if best_state is None:
         raise RuntimeError(
             f"[{variant['name']}] no finite validation residual was recorded; "
@@ -933,6 +946,10 @@ def train_variant(
     history["best_training_batch_loss"] = best_training_batch_loss
     history["best_training_batch_iter"] = best_training_batch_iter
     history["n_parameters"] = n_parameters
+    # The pre-clip norm of every update (saved in hist.npz, next to the
+    # log-point channel ``grad_norm``), and the scalar record of the safeguard.
+    history["grad_norm_per_update"] = gradient_norm_monitor.pre_clip_norm_per_update
+    history["gradient_norm_safeguard"] = gradient_norm_monitor.summary()
     return model, history, cross_check_deviation
 
 
@@ -1497,7 +1514,11 @@ def main(argv=None) -> int:
         force=True,
     )
 
-    from learning_option_pricing.utils.run_context import script_data_dir
+    from learning_option_pricing.utils.run_context import (
+        find_repo_root,
+        get_git_metadata,
+        script_data_dir,
+    )
 
     if args.replot is not None:
         from _split_extension_plots import replot
@@ -1565,12 +1586,22 @@ def main(argv=None) -> int:
     cell_conf = catalogue.cell_by_name(args.cell)
     cell_variants = catalogue.variants_for_cell(args.cell)
 
+    # Code revision of the executed tree (recorded by every task, since an
+    # array task runs the code present on its node at run time).
+    git_metadata = get_git_metadata(find_repo_root(Path(__file__)))
+    git_record = {
+        "commit": git_metadata.get("commit"),
+        "branch": git_metadata.get("branch"),
+        "tracked_modifications": git_metadata.get("tracked_modifications"),
+    }
+
     # Metadata (written once, at init / local run; workers must not race on
     # it).  This path is torch-free, so it is safe on a cluster login node.
     if not is_worker:
         write_summary(ablation_dir / "metadata.yaml", {
             "command": " ".join(sys.argv),
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "git": git_record,
             "cell": args.cell,
             "generator_coefficients": {
                 int(order): (value if isinstance(value, dict) else float(value))
@@ -1627,6 +1658,9 @@ def main(argv=None) -> int:
     logger.info("STAGE-2 SPLIT-EXTENSION ABLATION (trained, circle)")
     logger.info("=" * 72)
     logger.info("  command:   %s", " ".join(sys.argv))
+    logger.info("  git:       commit %s (branch %s, tracked modifications %s)",
+                git_record["commit"], git_record["branch"],
+                git_record["tracked_modifications"])
     logger.info("  python:    %s", sys.version.split()[0])
     logger.info("  numpy:     %s", np.__version__)
     logger.info("  torch:     %s", torch.__version__)
@@ -1694,6 +1728,7 @@ def main(argv=None) -> int:
         seconds_per_iteration = elapsed / max(1, hparams["num_iterations"])
         k_star_value = int(spectra["k_star"][0])
         k_star_defined = bool(spectra["k_star_defined"][0])
+        gradient_norm_record = history["gradient_norm_safeguard"]
 
         metrics = {
             **error_metrics,
@@ -1720,6 +1755,12 @@ def main(argv=None) -> int:
             "k_star_defined": float(k_star_defined),
             "n_parameters": float(history["n_parameters"]),
             "wall_time_s": elapsed,
+            # Safeguard record; NaN marks an empty entry (no activation, or no
+            # finite norm) in this numeric archive, None in the YAML summary.
+            **{
+                key: (float("nan") if value is None else float(value))
+                for key, value in gradient_norm_record.items()
+            },
         }
 
         variant_dir = ablation_dir / f"variant_{variant['name']}"
@@ -1758,6 +1799,9 @@ def main(argv=None) -> int:
             "n_parameters": history["n_parameters"],
             "seconds_per_iteration": seconds_per_iteration,
             "wall_time_s": elapsed,
+            **gradient_norm_record,
+            "git_commit": git_record["commit"],
+            "git_tracked_modifications": git_record["tracked_modifications"],
         }
 
     # In single-variant (array) runs write a per-variant summary to avoid
