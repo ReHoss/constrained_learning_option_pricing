@@ -43,6 +43,26 @@ aggregate:
   cluster: Jean Zay prepost, job 317568, code revision 381f73b (read from the job output)
   command: split_extension_cross_seed_summary.py --data-root data/ablation_split_extension_trained/series_validation_selected
   run_directories_aggregated: 24   # 3 seeds x 8 cells; the 12 LV directories copied from Adastra (rsync, no checkpoints)
+reference_solution_checks:
+  # Fourier-Galerkin reference of the variable-coefficient cells (N = 512 at order 2, N = 256 at
+  # order 4), compared across truncations on the evaluation grid (1024 points, 11 times). Two
+  # measures per pair: the maximum over the times of the per-time relative l2 deviation, and the
+  # space-time ratio over the whole grid (bounded above by the maximum). Tolerance 1e-8
+  # (pre-registration of the variable-coefficient study, section 6; revision 3 for order 4).
+  run_directory: data/measure_variable_coefficient_forcing_energy/2026-09-29-19-51-50-548627Z_reference_study_N192-1024
+  cluster: Jean Zay prepost (CPU), job 329088 (22 min 14 s), code revision 589e97e, no tracked modification
+  code_note: the Galerkin reference code is identical at 381f73b and 589e97e (the diff of variable_coefficient_periodic.py adds functions only)
+  command: measure_variable_coefficient_forcing_energy.py --reference-study-only --orders 2 4 --reference-bands 192 256 384 512 768 1024 --skip-reference-check
+  pre_registered_pairs:
+    lv2_eps0.25: {pair: N512_vs_N1024, maximum_over_times: 9.2334e-13, space_time: 5.1905e-13, within_tolerance: true}
+    lv2_eps0.75: {pair: N512_vs_N1024, maximum_over_times: 4.5795e-12, space_time: 2.0390e-12, within_tolerance: true}
+    lv4_eps0.25: {pair: N192_vs_N256, maximum_over_times: 3.7267e-09, space_time: 1.1957e-09, within_tolerance: true}
+    lv4_eps0.75: {pair: N192_vs_N256, maximum_over_times: 3.7059e-09, space_time: 1.0981e-09, within_tolerance: true}
+  order_4_against_twice_the_truncation:
+    lv4_eps0.25: {pair: N512_vs_N1024, maximum_over_times: 7.1526e-07, space_time: 3.7985e-07, within_tolerance: false}
+    lv4_eps0.75: {pair: N512_vs_N1024, maximum_over_times: 7.1529e-07, space_time: 3.8262e-07, within_tolerance: false}
+  interpretation: at order 4 the deviation grows with the larger truncation (N = 192 against 256, 512, 1024), the pattern expected from round-off in the matrix exponential, whose norm grows like N^4; this is an interpretation of the pattern, not a proof
+  supersedes: the order-4 values quoted from the exploratory run _debug_2026-09-29-11-50-51-594763Z_Kmax128_N512 (Jean Zay only), which this canonical run reproduces to the digits shown
 observed_on_selection:
   - for the extensions whose forcing has a heavy tail (convex_raw and constant_in_time on G3 and LV4, split_frozen_mean on LV4), the validation residual reaches its minimum early (retained iterations 100 to 14800), at states whose solution error is large; the residual criterion then does not follow the solution error. The failure of these extensions is robust across the two retention rules; its magnitude is not.
 
