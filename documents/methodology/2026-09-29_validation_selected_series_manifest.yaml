@@ -40,7 +40,7 @@ earlier_series:
   use: measurement note only (comparison of the two retention rules); not reported in the paper
 aggregate:
   run_directory: data/split_extension_cross_seed_summary/2026-09-29-14-47-30Z_series_validation_selected_8cell_3seed
-  cluster: Jean Zay prepost, job 317568, code revision d2e1739 (aggregator identical to 381f73b)
+  cluster: Jean Zay prepost, job 317568, code revision 381f73b (read from the job output)
   command: split_extension_cross_seed_summary.py --data-root data/ablation_split_extension_trained/series_validation_selected
   run_directories_aggregated: 24   # 3 seeds x 8 cells; the 12 LV directories copied from Adastra (rsync, no checkpoints)
 observed_on_selection:
