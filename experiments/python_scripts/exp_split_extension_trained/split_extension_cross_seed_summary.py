@@ -27,7 +27,8 @@ Outputs (written to a timestamped folder under
   value is written anywhere);
 * ``rel_l2_by_cell.png`` — relative :math:`L^2` error per cell and variant,
   median with interquartile range over seeds;
-* ``floor_vs_accuracy.png`` — hypothesis H1: best training loss against the
+* ``floor_vs_accuracy.png`` — hypothesis H1: the residual at the retained state
+  (independent evaluation batch) against the
   closed-form floor :math:`\mathbb{E}[(P\Psi)^2] = \frac{1}{T}
   \sum_{0<|k|\le K_g} I_k` and against the unreachable forcing mass
   :math:`\mathcal{F}(k_\star) = \frac{1}{T} \sum_{|k| > k_\star,\,|k| \le
@@ -50,7 +51,8 @@ holds:
 * ``metadata.yaml`` with at least the keys ``cell`` and ``seed``;
 * per-task ``summary_<variant>.yaml`` (and/or a combined ``summary.yaml``)
   mapping the variant name to a dictionary of scalar metrics; the metric
-  keys consumed here are ``best_loss``, ``best_iter``, ``rel_l2``,
+  keys consumed here are ``loss_best_state_eval`` (the trained residual displayed),
+  ``retained_iter``, ``best_loss``/``best_iter`` (earlier series only, never displayed), ``rel_l2``,
   ``rel_l2_t0``, ``rel_l2_corner_t0``, ``rel_l2_corner_max``, ``tc_l2``,
   ``forcing_floor_median`` (alias ``forcing_floor_median_train``),
   ``forcing_floor_closed_form``, ``wall_time_s``, ``k_star`` (a ``null`` or
@@ -336,7 +338,19 @@ CELL_MARKERS = {
 
 # Metric keys consumed by the figures below (every additional scalar key
 # found in a summary is aggregated into the YAML as well).
+# The trained residual displayed in every table and figure: the residual at the
+# retained state on an independent evaluation batch, which never selected
+# anything.  (The earlier "best_loss", the minimum training mini-batch loss, is
+# biased by the selection and is never displayed; pre-registration
+# 2026-09-29, validation-selected series, section 3.)
+TRAINED_RESIDUAL_METRIC = "loss_best_state_eval"
+
 SUMMARY_METRIC_KEYS = (
+    "loss_best_state_eval",
+    "retained_iter",
+    "validation_residual_at_retained_state",
+    "best_training_batch_loss",
+    "best_training_batch_iter",
     "best_loss",
     "best_iter",
     "network_energy_best_state",
@@ -1188,7 +1202,7 @@ STAGE1_TABLE_HEADERS = [
     "Squared strip forcing at the band edge (closed form)",
     "Floor expectation $\\mathbb{E}[(P\\Psi)^2]$ (closed form)",
     "Forcing-floor channel, training median (measured)",
-    "Best training loss (measured, median over seeds)",
+    "Residual at the retained state, evaluation batch (measured, median over seeds)",
     "Relative $L^2$ error (measured, median over seeds)",
 ]
 
@@ -1224,7 +1238,7 @@ def assemble_stage1_comparison_rows(
                     metric_median(summarised, cell, variant, "forcing_floor_median")
                 ),
                 format_quantity(
-                    metric_median(summarised, cell, variant, "best_loss")
+                    metric_median(summarised, cell, variant, TRAINED_RESIDUAL_METRIC)
                 ),
                 format_quantity(metric_median(summarised, cell, variant, "rel_l2")),
             ]
@@ -1280,8 +1294,8 @@ def assemble_additive_versus_convex_rows(
             closed_floor,
         ),
         (
-            "Best training loss (median over seeds)",
-            lambda v: measured(v, "best_loss"),
+            "Residual at the retained state, evaluation batch (median over seeds)",
+            lambda v: measured(v, TRAINED_RESIDUAL_METRIC),
         ),
         (
             "Relative $L^2$ error (median over seeds)",
@@ -1303,7 +1317,7 @@ def assemble_additive_versus_convex_rows(
     ]
 
     # Ratio lines: closed-form ratio is always computable; the measured
-    # best-loss ratio only once both losses are measured.
+    # evaluation-batch residual ratio only once both residuals are measured.
     convex_floor = closed_floor("convex_raw")
     split_floor = closed_floor("split_diffusion")
     if (
@@ -1314,13 +1328,13 @@ def assemble_additive_versus_convex_rows(
         closed_ratio_text = format_quantity(convex_floor / split_floor)
     else:
         closed_ratio_text = NOT_MEASURED
-    convex_loss = measured("convex_raw", "best_loss")
-    split_loss = measured("split_diffusion", "best_loss")
+    convex_loss = measured("convex_raw", TRAINED_RESIDUAL_METRIC)
+    split_loss = measured("split_diffusion", TRAINED_RESIDUAL_METRIC)
     if convex_loss is not None and split_loss is not None and split_loss > 0.0:
         measured_ratio = convex_loss / split_loss
         measured_ratio_text = format_quantity(measured_ratio)
         conclusion = (
-            f"Measured best-loss ratio convex-raw / split-diffusion = "
+            f"Measured evaluation-batch residual ratio convex-raw / split-diffusion = "
             f"{measured_ratio:.3e}; closed-form floor ratio at the band edge "
             f"= {closed_ratio_text}. The hypothesis H1 comparison at the "
             f"measured cutoff is given in the unreachable-mass row."
@@ -1339,7 +1353,7 @@ def assemble_additive_versus_convex_rows(
     )
     rows.append(
         [
-            "Best-loss ratio convex raw / split $\\{\\partial_{xx}\\}$ (measured)",
+            "Evaluation-batch residual ratio convex raw / split $\\{\\partial_{xx}\\}$ (measured)",
             measured_ratio_text,
             "",
             "",
@@ -1530,12 +1544,12 @@ def plot_floor_vs_accuracy(
     is dropped and the closed-form floor -- which needs no cutoff -- is the
     predictor shown.
     """
-    points_floor = []  # (floor, best_loss, cell, variant)
+    points_floor = []  # (floor, trained residual, cell, variant)
     points_unreachable = []
     for cell in _cells_present(summarised):
         for variant in _variant_order(cell, summarised):
-            best_loss = metric_median(summarised, cell, variant, "best_loss")
-            if best_loss is None:
+            trained_residual = metric_median(summarised, cell, variant, TRAINED_RESIDUAL_METRIC)
+            if trained_residual is None:
                 continue
             quantities = closed_forms.get(cell, {}).get(variant)
             if quantities is not None and quantities[
@@ -1544,7 +1558,7 @@ def plot_floor_vs_accuracy(
                 points_floor.append(
                     (
                         quantities["monte_carlo_floor_expectation"],
-                        best_loss,
+                        trained_residual,
                         cell,
                         variant,
                     )
@@ -1556,12 +1570,12 @@ def plot_floor_vs_accuracy(
                 and mass_entry["median"] > 0.0
             ):
                 points_unreachable.append(
-                    (mass_entry["median"], best_loss, cell, variant)
+                    (mass_entry["median"], trained_residual, cell, variant)
                 )
     if not points_floor and not points_unreachable:
         print(
             "NOTICE: floor_vs_accuracy.png not generated — no saved run "
-            "records a best_loss value yet (explicitly empty)."
+            f"records a {TRAINED_RESIDUAL_METRIC} value yet (explicitly empty)."
         )
         return False
 
@@ -1590,9 +1604,9 @@ def plot_floor_vs_accuracy(
         r"Closed-form floor $\mathbb{E}[(\mathcal{L}h)^2]$ at the band edge"
     )
     ax_floor.set_ylabel(
-        r"Best training loss $\mathbb{E}[(\mathcal{L}\Phi_\theta)^2]$ (median)"
+        r"Residual at the retained state, evaluation batch (median)"
     )
-    ax_floor.set_title("Best loss against the closed-form floor", fontsize=10)
+    ax_floor.set_title("Trained residual against the closed-form floor", fontsize=10)
     ax_floor.grid(True, which="both", alpha=0.3)
 
     from matplotlib.lines import Line2D

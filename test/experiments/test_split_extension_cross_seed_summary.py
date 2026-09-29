@@ -167,12 +167,16 @@ def synthetic_tree(tmp_path):
         variant_summaries={
             "convex_raw": {
                 "best_loss": 4.0,
+
+                "loss_best_state_eval": 4.0,
                 "rel_l2": 0.20,
                 "tc_l2": 0.0,
                 "k_star": 16.0,
             },
             "split_diffusion": {
                 "best_loss": 1.0e-4,
+
+                "loss_best_state_eval": 1.0e-4,
                 "rel_l2": 0.002,
                 "tc_l2": 0.0,
                 # Sentinel: a non-positive stored k_star encodes "absent"
@@ -196,12 +200,16 @@ def synthetic_tree(tmp_path):
         variant_summaries={
             "convex_raw": {
                 "best_loss": 6.0,
+
+                "loss_best_state_eval": 6.0,
                 "rel_l2": 0.30,
                 "tc_l2": 0.0,
                 "k_star": 32.0,
             },
             "split_diffusion": {
                 "best_loss": 3.0e-4,
+
+                "loss_best_state_eval": 3.0e-4,
                 "rel_l2": 0.004,
                 "tc_l2": 0.0,
             },
@@ -329,6 +337,8 @@ def test_collect_statistics_runner_native_schema(tmp_path):
         variant_summaries={
             "split_diffusion": {
                 "best_loss": 2.0e-4,
+
+                "loss_best_state_eval": 2.0e-4,
                 "forcing_floor_median_train": 5.5e-5,
                 "terminal_target_distance": 0.04,
                 "terminal_target_is_zero_target": False,
@@ -337,6 +347,8 @@ def test_collect_statistics_runner_native_schema(tmp_path):
             },
             "exact_solution": {
                 "best_loss": 3.0e-9,
+
+                "loss_best_state_eval": 3.0e-9,
                 "forcing_floor_median_train": 0.0,
                 "terminal_target_distance": 1.5e-4,
                 "terminal_target_is_zero_target": True,
@@ -551,7 +563,7 @@ def test_additive_versus_convex_conclusion_with_measurements(synthetic_tree):
     rows, conclusion = aggregator.assemble_additive_versus_convex_rows(
         "g2_bernoulli_bandlimited", summarised, closed_forms, unreachable
     )
-    # Measured best-loss ratio = median(4, 6) / median(1e-4, 3e-4) = 25000.
+    # Measured evaluation-batch residual ratio = median(4, 6) / median(1e-4, 3e-4) = 25000.
     assert rows[6][1] == "{:.6e}".format(5.0 / 2.0e-4)
     assert conclusion != aggregator.NOT_MEASURED
     # The unreachable-mass slot of split_diffusion is filled (spectra k_star
