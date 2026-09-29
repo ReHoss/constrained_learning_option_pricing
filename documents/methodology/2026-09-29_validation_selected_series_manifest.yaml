@@ -18,7 +18,7 @@ categories:
     account: akz@v100 (qos_gpu-t3)
     slurm_jobs: [314179]
     task_list: Jean Zay, $WORK/oym_migration/work/logs/constrained_learning_option_pricing/series_validation_selected_2026-09-29/tasks_jeanzay.txt
-    status: running
+    status: completed
   variable_coefficient_cells:
     cells: [lv2_bernoulli_bandlimited_eps0p25, lv2_bernoulli_bandlimited_eps0p75, lv4_bernoulli_bandlimited_eps0p25, lv4_bernoulli_bandlimited_eps0p75]
     variants_per_cell: 4
@@ -30,7 +30,7 @@ categories:
     galerkin_reference_band: {order_2: 512, order_4: 256}
     slurm_jobs: [5481160, 5481161, 5481162, 5481163, 5481165, 5481166]   # six arrays of 8 (array cap 11)
     task_list: Adastra, pycharm_remote_project/constrained_learning_option_pricing/logs/series_validation_selected_2026-09-29/tasks_adastra.txt
-    status: running
+    status: completed
 smoke_tests:
   jean_zay: job 313771 (232 tests passed; G2 split, 300 iterations, validation at 100/200/300, retained 300)
   adastra: job 5481087 (LV4 epsilon 0.75 split_frozen_mean, 300 iterations, retained 300)
@@ -38,3 +38,11 @@ earlier_series:
   location: data/ablation_split_extension_trained/ (top level)
   retention_rule: minimum training mini-batch loss (deficient, section 5bis)
   use: measurement note only (comparison of the two retention rules); not reported in the paper
+aggregate:
+  run_directory: data/split_extension_cross_seed_summary/2026-09-29-14-47-30Z_series_validation_selected_8cell_3seed
+  cluster: Jean Zay prepost, job 317568, code revision d2e1739 (aggregator identical to 381f73b)
+  command: split_extension_cross_seed_summary.py --data-root data/ablation_split_extension_trained/series_validation_selected
+  run_directories_aggregated: 24   # 3 seeds x 8 cells; the 12 LV directories copied from Adastra (rsync, no checkpoints)
+observed_on_selection:
+  - for the extensions whose forcing has a heavy tail (convex_raw and constant_in_time on G3 and LV4, split_frozen_mean on LV4), the validation residual reaches its minimum early (retained iterations 100 to 14800), at states whose solution error is large; the residual criterion then does not follow the solution error. The failure of these extensions is robust across the two retention rules; its magnitude is not.
+
