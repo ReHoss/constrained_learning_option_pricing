@@ -83,9 +83,14 @@ SPECTRA_CANCELLATION_THRESHOLD = 0.5
 GRADED_MATCHED_AGREEMENT_TOLERANCE = 1.0e-6
 
 # Fourier-Galerkin truncation of the reference solution of the variable-
-# coefficient cells (pre-registration 2026-09-29, section 5): N = 512, checked
-# against N = 1024 by the energy study on prepost.
-VARIABLE_COEFFICIENT_GALERKIN_BAND = 512
+# coefficient cells, per principal order (pre-registration 2026-09-29, section
+# 5 and revision 3).  Order 2: N = 512 (deviation from N = 1024 below 5e-12).
+# Order 4: N = 256.  The round-off of the matrix exponential grows with the
+# matrix norm, proportional to N^4 at order 4: the deviation between two
+# truncations grows with the larger one (N = 192 vs 256: 3.7e-9; vs 512:
+# 5.4e-8; vs 1024: 7.6e-7), so the smallest truncation at which truncation
+# error is negligible is the most accurate one.
+VARIABLE_COEFFICIENT_GALERKIN_BAND_BY_ORDER = {2: 512, 4: 256}
 
 
 # ===========================================================================
@@ -272,7 +277,10 @@ def _build_variable_coefficient_problem(cell_name: str, cell_conf: dict) -> dict
     cosine_coefficients = bandlimited_bernoulli_cosine_coefficients(band_edge)
     datum = BandLimitedDatum(PeriodisedBernoulliDatum(1), band_edge)
     reference = GalerkinReferenceSolution(
-        generator, datum, VARIABLE_COEFFICIENT_GALERKIN_BAND, terminal_time
+        generator,
+        datum,
+        VARIABLE_COEFFICIENT_GALERKIN_BAND_BY_ORDER[generator.principal_order],
+        terminal_time,
     )
     datum_field = exact_solution_field(
         generator.frozen_principal_coefficients("mean"),

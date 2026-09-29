@@ -204,9 +204,22 @@ and between variants of one seed is made on identical arithmetic. Energy study o
 
 - **Revision 1** (commit `000261b`, 2026-09-29): design with seven variants per cell.
 - **Revision 1b** (commit `c609ce8`): provenance of the base values (§2.1) and amplitude sweep (§3.1).
-- **Revision 2** (this version, before any implementation or run): decisions of §8 taken under the
+- **Revision 2** (commit `eb8f497`, before any implementation or run): decisions of §8 taken under the
   author's delegation; variant set reduced to four (removed: the singular-point split with frozen
   advection, which changes the lower-order remainder and so no longer isolates the freezing point;
   Chen–Mangasarian, whose role is settled on $G_1$–$G_3$; the exact-solution control, which has no
   closed form here); forcing energies computed in closed form rather than by quadrature, with
   $\varepsilon=0$ added as the constant-coefficient anchor and $K$ extended to 1024.
+- **Revision 3** (2026-09-29, after the energy study and the smoke tests, **before any training run of
+  LV4**; the LV2 training runs had started with the pre-registered $N=512$, which passed its check).
+  The pre-registered check of the reference at $N=512$ against $N=1024$ failed its tolerance
+  $10^{-8}$ on LV4 (deviation $7.153\times10^{-7}$ at both amplitudes), and passed on LV2
+  ($9.2\times10^{-13}$ and $4.6\times10^{-12}$). A per-time comparison across
+  $N\in\{192,256,384,512,768,1024\}$ (script option `--reference-bands`) showed the deviation
+  *growing* with the larger truncation ($N=192$ against 256, 512, 1024: $3.7\times10^{-9}$,
+  $5.4\times10^{-8}$, $7.6\times10^{-7}$), which identifies round-off in the matrix exponential,
+  whose backward error scales with the matrix norm ($\propto N^4$ at order 4), and not truncation
+  error. The LV4 reference therefore uses $N=256$ (deviation from $N=192$ at most
+  $3.7\times10^{-9}$); LV2 keeps $N=512$. The check against $2N$ is replaced, for order 4, by this
+  comparison with a smaller truncation, since a larger one is dominated by round-off.
+
