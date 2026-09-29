@@ -45,9 +45,18 @@ Checks performed before any value is saved (a failure raises):
   relative deviation is recorded (it is reported, and a value above the
   stated tolerance invalidates the error measurements of that cell).
 
+Every comparison of two references records the relative :math:`\ell^2` deviation at
+each evaluation time, its maximum over the times (the quantity the tolerance applies
+to) and the ratio of the norms over the whole space-time evaluation grid, which the
+maximum bounds from above.  ``--reference-bands`` compares every pair of the listed
+truncations (diagnostic of truncation versus round-off error);
+``--reference-study-only`` runs that comparison alone, without energies or figure,
+and is the mode that produces the citable reference check of the trained cells.
+
 Artefacts (saved before plotting; ``--replot RUN_DIR`` rebuilds the figure
 from them alone): ``energies.npz``, ``summary.yaml``, ``run_metadata.json``,
-``command.txt``, ``run.log``, ``variable_coefficient_forcing_energy.png``.
+``command.txt``, ``run.log``, ``variable_coefficient_forcing_energy.png``
+(the reference-study mode writes ``summary.yaml`` and the run records only).
 """
 from __future__ import annotations
 
@@ -82,8 +91,9 @@ from learning_option_pricing.pde.variable_coefficient_periodic import (  # noqa:
     BandLimitedDatum,
     GalerkinReferenceSolution,
     build_variable_coefficient_extension,
-    galerkin_convergence_deviation,
+    galerkin_reference_deviations,
     generator_from_specification,
+    relative_deviations_from_fields,
     strip_forcing_energy,
 )
 from learning_option_pricing.utils.run_context import (  # noqa: E402
@@ -210,12 +220,18 @@ def check_reference_solutions(orders, galerkin_band, refined_band) -> dict:
                 PeriodisedBernoulliDatum(1), int(cell_conf["truncation_wavenumber"])
             )
             start = time.perf_counter()
-            deviation = galerkin_convergence_deviation(
+            deviations = galerkin_reference_deviations(
                 generator, datum, galerkin_band, refined_band, TERMINAL_TIME, times, x
             )
+            deviation = deviations["maximum_over_times"]
             key = f"lv{order}_eps{ratio:g}"
             results[key] = {
+                # Maximum over the evaluation times of the per-time relative
+                # deviation (the quantity the tolerance applies to), then the
+                # ratio over the whole space-time grid, which it bounds from above.
                 "relative_deviation_N_versus_2N": deviation,
+                "space_time_relative_deviation": deviations["space_time"],
+                "per_time": deviations["per_time"],
                 "galerkin_band": galerkin_band,
                 "refined_band": refined_band,
                 "within_tolerance": bool(deviation <= REFERENCE_CONVERGENCE_TOLERANCE),
@@ -223,8 +239,9 @@ def check_reference_solutions(orders, galerkin_band, refined_band) -> dict:
                 "wall_time_s": time.perf_counter() - start,
             }
             LOGGER.info(
-                "reference LV%d eps=%.2f: N=%d vs N=%d relative deviation %.3e (%s) in %.1f s",
-                order, ratio, galerkin_band, refined_band, deviation,
+                "reference LV%d eps=%.2f: N=%d vs N=%d relative deviation %.3e (maximum over "
+                "times; space-time %.3e) (%s) in %.1f s",
+                order, ratio, galerkin_band, refined_band, deviation, deviations["space_time"],
                 "within tolerance" if deviation <= REFERENCE_CONVERGENCE_TOLERANCE else "ABOVE TOLERANCE",
                 results[key]["wall_time_s"],
             )
@@ -267,19 +284,19 @@ def study_reference_bands(orders, bands) -> dict:
             pairs = {}
             for i, first in enumerate(sorted(fields)):
                 for second in sorted(fields)[i + 1:]:
-                    per_time = [
-                        float(np.linalg.norm(fields[first][j] - fields[second][j])
-                              / np.linalg.norm(fields[second][j]))
-                        for j in range(len(times))
-                    ]
+                    deviations = relative_deviations_from_fields(
+                        fields[first], fields[second], times
+                    )
                     pairs[f"N{first}_vs_N{second}"] = {
-                        "per_time": per_time,
-                        "maximum": max(per_time),
-                        "time_of_maximum": float(times[int(np.argmax(per_time))]),
+                        "per_time": deviations["per_time"],
+                        "maximum": deviations["maximum_over_times"],
+                        "time_of_maximum": deviations["time_of_maximum"],
+                        "space_time": deviations["space_time"],
                     }
-                    LOGGER.info("band study LV%d eps=%.2f: N=%d vs N=%d max deviation %.3e at t=%.1f",
-                                order, ratio, first, second, max(per_time),
-                                float(times[int(np.argmax(per_time))]))
+                    LOGGER.info("band study LV%d eps=%.2f: N=%d vs N=%d max deviation %.3e at t=%.1f "
+                                "(space-time %.3e)",
+                                order, ratio, first, second, deviations["maximum_over_times"],
+                                deviations["time_of_maximum"], deviations["space_time"])
             study[f"lv{order}_eps{ratio:g}"] = {
                 "times": [float(t) for t in times],
                 "pairs": pairs,
@@ -394,6 +411,10 @@ def parse_arguments(argv=None) -> argparse.Namespace:
                         help="Also compare the reference across these truncations, "
                              "per evaluation time (diagnostic of truncation versus "
                              "round-off error).")
+    parser.add_argument("--reference-study-only", action="store_true",
+                        help="Only compare the reference solution across the truncations of "
+                             "--reference-bands (and, unless --skip-reference-check, N versus "
+                             "2N); no forcing energy and no figure.")
     parser.add_argument("--seed", type=int, default=0,
                         help="Master seed (recorded; the computation is deterministic).")
     parser.add_argument("--debug", action="store_true",
@@ -401,7 +422,20 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     parser.add_argument("--replot", type=Path, default=None,
                         help="Rebuild the figure from an existing run directory.")
     arguments = parser.parse_args(argv)
-    if arguments.replot is None and not arguments.debug and (
+    if arguments.reference_study_only:
+        if arguments.reference_bands is None or len(set(arguments.reference_bands)) < 2:
+            parser.error("--reference-study-only requires at least two --reference-bands")
+        # Smoke-test guard of this mode: the retained order-4 truncation (256) must
+        # be among the compared ones, otherwise the run is exploratory.
+        if arguments.replot is None and not arguments.debug and (
+            max(arguments.reference_bands) < SMOKE_TEST_MAXIMUM_BAND_EDGE_THRESHOLD
+        ):
+            parser.error(
+                f"largest reference band {max(arguments.reference_bands)} is below the "
+                f"smoke-test threshold {SMOKE_TEST_MAXIMUM_BAND_EDGE_THRESHOLD}; pass --debug "
+                "for a smoke run"
+            )
+    elif arguments.replot is None and not arguments.debug and (
         max(arguments.band_edges) < SMOKE_TEST_MAXIMUM_BAND_EDGE_THRESHOLD
     ):
         parser.error(
@@ -413,17 +447,72 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     return arguments
 
 
+def run_reference_study_only(arguments, run_directory: Path, start_time: float) -> int:
+    """Reference-solution comparison across truncations, without energies or figure.
+
+    Writes ``summary.yaml`` with the band study (every pair of ``--reference-bands``:
+    per-time relative deviation, its maximum and the space-time ratio) and, unless
+    ``--skip-reference-check``, the N versus 2N check.
+    """
+    reference_checks = {}
+    if not arguments.skip_reference_check:
+        reference_checks = check_reference_solutions(
+            arguments.orders, arguments.galerkin_band, arguments.galerkin_refined_band
+        )
+    reference_band_study = study_reference_bands(arguments.orders, arguments.reference_bands)
+    summary = {
+        "generated_by": Path(__file__).name,
+        "mode": "reference study only (no forcing energy, no figure)",
+        "parameters": {
+            "orders": [int(o) for o in arguments.orders],
+            "trained_amplitude_ratios": [float(r) for r in TRAINED_AMPLITUDE_RATIOS],
+            "reference_bands": sorted(int(n) for n in set(arguments.reference_bands)),
+            "evaluation_grid_size": EVALUATION_GRID_SIZE,
+            "evaluation_time_slice_count": EVALUATION_TIME_SLICE_COUNT,
+            "phase": catalogue.VARIABLE_COEFFICIENT_PHASE,
+            "terminal_time": TERMINAL_TIME,
+            "reference_convergence_tolerance": REFERENCE_CONVERGENCE_TOLERANCE,
+        },
+        "deviation_definitions": {
+            "per_time": "relative l2 deviation on the evaluation grid at each evaluation "
+                        "time, normalised by the second (larger) truncation",
+            "maximum": "maximum of per_time over the evaluation times",
+            "space_time": "relative l2 deviation over the whole space-time evaluation grid; "
+                          "bounded above by maximum",
+        },
+        "epsilon_zero_check": "not run (reference study only)",
+        "reference_solution_convergence": reference_checks,
+        "reference_band_study": reference_band_study,
+    }
+    with open(run_directory / SUMMARY_FILENAME, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(summary, handle, sort_keys=False)
+    LOGGER.info("Saved artefact: %s (reference study only; no energies, no figure)",
+                SUMMARY_FILENAME)
+    LOGGER.info("Total wall-clock time: %.2f s; run directory: %s",
+                time.perf_counter() - start_time, run_directory)
+    return 0
+
+
 def main(argv=None) -> int:
     arguments = parse_arguments(argv)
     if arguments.replot is not None:
         configure_cli_script_logging(verbose=False)
+        if not (arguments.replot.resolve() / ENERGIES_FILENAME).exists():
+            LOGGER.info("%s holds a reference study only (no %s): there is no figure to rebuild",
+                        arguments.replot, ENERGIES_FILENAME)
+            return 0
         figure_path = render_main_figure(arguments.replot.resolve())
         LOGGER.info("Replotted figure from saved artefacts: %s", figure_path)
         return 0
 
     start_time = time.perf_counter()
     debug_prefix = "_debug_" if arguments.debug else ""
-    config_tag = f"Kmax{max(arguments.band_edges)}_N{arguments.galerkin_band}"
+    if arguments.reference_study_only:
+        config_tag = (
+            f"reference_study_N{min(arguments.reference_bands)}-{max(arguments.reference_bands)}"
+        )
+    else:
+        config_tag = f"Kmax{max(arguments.band_edges)}_N{arguments.galerkin_band}"
     run_directory = script_data_dir(__file__) / f"{debug_prefix}{utc_timestamp()}_{config_tag}"
     run_directory.mkdir(parents=True, exist_ok=False)
     init_logging(run_dir=run_directory)
@@ -445,6 +534,9 @@ def main(argv=None) -> int:
     write_command_txt(run_directory / "command.txt", list(sys.argv))
     LOGGER.info("Git commit %s (dirty: %s)", run_metadata["git"].get("commit"),
                 run_metadata["git"].get("dirty"))
+
+    if arguments.reference_study_only:
+        return run_reference_study_only(arguments, run_directory, start_time)
 
     band_edges = np.asarray(sorted(arguments.band_edges), dtype=np.int64)
     table = measure_energies(arguments.orders, arguments.amplitude_ratios, band_edges)
