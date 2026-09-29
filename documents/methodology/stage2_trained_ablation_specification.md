@@ -920,3 +920,40 @@ without them; `PeriodicExtensionField` supports orders 0, 1, 2, 4 (order 3 exclu
 cubic phase is not of the linear phase-advection form), with the new kinds
 `split_principal`/`split_principal_advection`. Expected cost: the network residual needs
 four nested autograd derivatives per step.
+
+## 10. Addendum (2026-09-29) — recorded code revision and gradient-norm safeguard
+
+The scientific review of the first manuscript (validation-selected series, code revision
+`381f73b`) found two gaps in the run records. Both are closed for the runs that follow; neither
+changes the training, the selection or any evaluated quantity.
+
+*Code revision.* The runner did not record the revision it executed; the attribution of the
+series to `381f73b` rests on the campaign manifest and on the state of the cluster clones. Every
+task now records, at run time, the commit, the branch and the number of tracked files that differ
+from the commit (`run_context.get_git_metadata`, new key `tracked_modifications`, which, unlike
+`dirty`, ignores untracked files): in the log header (`git:` line), in `metadata.yaml` (`git`) and
+in each per-variant summary (`git_commit`, `git_tracked_modifications`).
+
+*Gradient-norm safeguard.* Each update calls `clip_grad_norm_` with threshold $10^{12}$
+(`GRADIENT_NORM_SAFEGUARD_THRESHOLD`). The size of the threshold does not prove that it never binds,
+and the runner stored the pre-clip norm at the logged iterations only (150 of 20000 per run: the
+first 100, then every 400). In the validation-selected series the largest recorded value is
+$3.97\times10^{5}$ ($G_3$, `convex_raw`, seed 1, iteration 17600) and no recorded value is
+non-finite; the activation at the other updates was not recorded. The runner now wraps the call in
+`learning_option_pricing.utils.gradient_norm_safeguard.GradientNormSafeguardMonitor`, which
+
+- saves the pre-clip norm of every update (`grad_norm_per_update` in `hist.npz`);
+- counts an activation exactly when PyTorch rescales the gradients, that is when
+  $c/(\lVert g\rVert+10^{-6})<1$ with $c$ the threshold, and reports the first activation at WARNING
+  level and the later ones at DEBUG level, with the pre-clip norm and the factor applied;
+- records non-finite norms separately (first one at WARNING level);
+- writes the scalar record to the per-variant summary: `gradient_norm_threshold`,
+  `gradient_norm_updates_recorded`, `gradient_norm_largest_pre_clip` and its update,
+  `gradient_norm_safeguard_activation_count`, `gradient_norm_safeguard_first_activation_update`,
+  `gradient_norm_safeguard_smallest_scaling_factor`, `gradient_norm_non_finite_count`,
+  `gradient_norm_first_non_finite_update` (`None` in the YAML summary, NaN in `metrics.npz`, marks
+  an empty entry).
+
+The unit tests are in `test/utils/test_gradient_norm_safeguard.py` (no activation, activation with
+one WARNING followed by DEBUG reports, non-finite norm, invalid threshold) and
+`test/utils/test_run_context.py` (tracked modifications ignore untracked files).

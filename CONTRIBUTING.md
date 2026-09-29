@@ -82,7 +82,14 @@ ruff format .
 2. Use `learning_option_pricing.utils.run_context.create_run_dir` to create the output
    directory under `data/<exp_name>/<timestamp>_<key_params>/`.
 3. Store all generated plots and CSVs in that directory.
-4. Update this file if new dependencies are required.
+4. Record the executed code revision in the run log and summary
+   (`learning_option_pricing.utils.run_context.get_git_metadata`; its
+   `tracked_modifications` entry counts the tracked files that differ from the commit).
+5. Never clip or clamp silently. For a gradient-norm clip, use
+   `learning_option_pricing.utils.gradient_norm_safeguard.GradientNormSafeguardMonitor`,
+   which saves the pre-clip norm of every update and reports each activation
+   (WARNING first, DEBUG afterwards).
+6. Update this file if new dependencies are required.
 
 ## Running on an HPC cluster
 
