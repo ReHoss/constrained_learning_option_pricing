@@ -200,6 +200,10 @@ def main() -> None:
                              "(optional). One directory per terminal function gives one subsection each, "
                              "so the three corner treatments are compared at fixed terminal function in "
                              "every figure; the terminal function is read from each directory's curves.pt.")
+    parser.add_argument("--localisation-dir", type=str, default=None,
+                        help="Output directory of diagnose_error_localisation.py (optional): the relative "
+                             "error per excluded region (corner lozenge, cutoff strip, strike band, far "
+                             "field), the error-energy density along s, and the error/residual maps.")
     parser.add_argument("--gamma-dir", type=str, default=None,
                         help="Output directory of "
                              "diagnostic_scripts/compare_gamma_subtraction_enrichment.py (optional): "
@@ -225,6 +229,7 @@ def main() -> None:
     profiles_dirs = [Path(d).resolve() for d in (args.profiles_dir or [])]
     singular_parts_dir = Path(args.singular_parts_dir).resolve() if args.singular_parts_dir else None
     gamma_dir = Path(args.gamma_dir).resolve() if args.gamma_dir else None
+    localisation_dir = Path(args.localisation_dir).resolve() if args.localisation_dir else None
     out_dir = Path(args.out_dir).resolve() if args.out_dir else (
         repo_root / "rapports" / f"corner_treatments_{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}"
     )
@@ -239,6 +244,7 @@ def main() -> None:
         logger.info(f"Profiles: {profiles_dir}")
     logger.info(f"Singular parts: {singular_parts_dir}")
     logger.info(f"Gamma comparison: {gamma_dir}")
+    logger.info(f"Error localisation: {localisation_dir}")
     logger.info(f"Report directory: {out_dir}")
 
     with open(aggregation_dir / "summary.yaml") as f:
@@ -433,6 +439,48 @@ def main() -> None:
                     f"fig:greeks-vs-t{suffix}", width=r"0.95\linewidth"))
 
     # ---- 4b. singular parts of the two analytic corner resolutions -----------
+    if localisation_dir is not None and localisation_dir.exists():
+        sections.append(r"\section{Quelle région exclut-on, et où l'erreur se trouve-t-elle ?}")
+        sections.append(
+            r"La métrique de comparaison des sections précédentes retire la fenêtre de coin "
+            r"$N_w=\{|s-B|+(T-t)\le w\}$, un losange qui ne touche le coin qu'au voisinage de $t=T$. Or les "
+            r"constructions de lissage abandonnent la trace terminale exacte sur toute la bande"
+            r"\[ S_\varepsilon=\{(s,t)\ :\ s-B<\varepsilon\}\qquad(\text{tout }t), \]"
+            r"puisque $\zeta((s-B)/\varepsilon)=1$ exactement seulement pour $s-B\ge\varepsilon$. Retirer $N_w$ "
+            r"laisse donc l'essentiel de la région sacrifiée \emph{à l'intérieur} de la métrique, alors que les "
+            r"traitements analytiques n'y sacrifient rien : la comparaison sur $\Omega\setminus N_w$ n'est pas "
+            r"une comparaison à région également traitée. Les panneaux ci-dessous recalculent "
+            r"$\mathrm{rel}_{L^2}$ sur le complémentaire de cinq régions --- rien, $N_w$, $S_\varepsilon$, "
+            r"$S_\varepsilon\cup B_\delta$ avec la bande de strike $B_\delta=\{|s-K|<\delta\}$, et en retirant "
+            r"en plus le champ lointain $\{s\ge2\}$ --- à partir des modèles sauvegardés, en float64. Source : "
+            + path_block(str(localisation_dir.relative_to(repo_root))) + "."
+        )
+        rel = copy_figure(localisation_dir / "figures" / "comparison_by_exclusion_region.png",
+                          "comparison_by_exclusion_region.png")
+        if rel:
+            sections.append(figure_block(
+                rel, r"$\mathrm{rel}_{L^2}(A)=\|\Phi_\theta-V_{DO}\|_{L^2(A)}/\|V_{DO}\|_{L^2(A)}$ sur la région "
+                     r"conservée $A$, un panneau par région exclue ; points : graines individuelles, losange "
+                     r"plein : médiane sur les graines.", "fig:exclusion-regions"))
+        rel = copy_figure(localisation_dir / "figures" / "error_energy_along_s.png", "error_energy_along_s.png")
+        if rel:
+            sections.append(figure_block(
+                rel, r"Densité d'énergie d'erreur le long de $s$, $E(s)=\int_0^T|\Phi_\theta-V_{DO}|^2\,\mathrm{d}t$ "
+                     r"(gauche, échelle log) et part cumulée $\int_B^sE/\int_B^{s_\infty}E$ (droite). Verticales : "
+                     r"$s=B$ et $s=K$ (pointillés), $s=B+\varepsilon$ (tirets rouges, bord de $S_\varepsilon$). "
+                     r"Une construction dont l'erreur est causée par la singularité au strike a son $E$ maximal "
+                     r"en $s=K$ ; une dont l'erreur est causée par le cutoff l'a dans $S_\varepsilon$.",
+                "fig:error-energy"))
+        rel = copy_figure(localisation_dir / "figures" / "error_and_residual_maps.png", "error_and_residual_maps.png")
+        if rel:
+            sections.append(figure_block(
+                rel, r"Gauche : $|\Phi_\theta-V_{DO}|$ ; droite : $|\mathcal L^{BS}\Phi_\theta|$, le résidu "
+                     r"intérieur que la perte échantillonne, assemblé par la route utilisée à l'entraînement. "
+                     r"Échelle de couleur logarithmique, commune aux configurations ; tirets : $s=B+\varepsilon$, "
+                     r"pointillés : $s=K$. La carte d'erreur dit où la solution est fausse, la carte de résidu "
+                     r"où la perte peut le voir : une région à grande erreur et petit résidu est une région que "
+                     r"la perte intérieure ne pénalise pas.", "fig:error-maps", width=r"0.92\linewidth"))
+
     if singular_parts_dir is not None and singular_parts_dir.exists():
         sections.append(r"\section{Ce qui sépare analytiquement l'enrichissement de la soustraction}")
         measured = {}

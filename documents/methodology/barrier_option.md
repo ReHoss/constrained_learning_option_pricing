@@ -1265,3 +1265,95 @@ which only solves the leading-order problem, is switched on.
 
 Figures: `rapports/corner_treatments_wholedomain_20260923`, section "Gamma de l'enrichissement
 contre Gamma de la soustraction".
+
+### 17.6 Which region is excluded, and where the error and the residual are (measured, 2026-09-29)
+
+The comparison metric removes the $\ell^1$ corner window $N_w$, a lozenge covering $0.2$ per cent
+of $\Omega$. The smoothing constructions, however, give up the exact terminal trace on the whole
+strip on which their cutoff differs from one,
+
+$$
+S_\varepsilon = \{(s,t) : s - B < \varepsilon\}\quad(\text{all }t),
+\qquad |S_{0.1}\cap\Omega| / |\Omega| = 0.042,
+$$
+
+since $\zeta((s-B)/\varepsilon) = 1$ exactly only for $s-B \ge \varepsilon$, while the analytic
+treatments give up nothing there. Two further regions are natural: the strike band
+$B_\delta = \{|s-K| < \delta\}$ and the far field $\{s \ge 2\}$, where section 12 shows the
+truncated problem is not well posed without a far-field condition.
+`diagnose_error_localisation.py` recomputes, from the twenty whole-domain runs and the thirty
+analytic runs, the relative error on the complement of each region, the error-energy share of each
+region, and the interior residual on the grid
+(`data/diagnose_error_localisation/20260929_wholedomain/`, $400\times200$ grid, float64, five seeds;
+maps and energy curves for master seed $0$).
+
+**Excluding the cutoff strip does not bring the smoothing closer to the analytic treatments.**
+Medians of $\mathrm{rel}_{L^2}$, whole-domain training, $\Omega$ → $\Omega\setminus N_{0.1}$ →
+$\Omega\setminus S_{0.1}$: smoothing Black-Scholes ordinary route $0.298 \to 0.276 \to 0.284$,
+two-term route $0.190 \to 0.142 \to 0.127$, split $0.302 \to 0.281 \to 0.291$, raw payoff
+$0.522 \to 0.520 \to 0.558$; exact subtraction Black-Scholes $4.5 \to 4.6 \to 5.1 \times10^{-3}$.
+Removing $S_{0.1}$ moves the smoothing metric by at most $11$ per cent and moves it *upward* for two
+of the four arms, because $\|V_{DO}\|$ is concentrated in the same strip: the relative metric
+divides by a denominator that falls as fast as the numerator. The hypothesis that the smoothing
+deficit is an artefact of measuring inside the region the cutoff sacrifices is therefore not
+supported; the margin of a factor $20$ to $70$ of section 17.3 survives the change of region.
+
+**Error-energy share per region** (medians over five seeds, of
+$\|\Phi_\theta - V_{DO}\|^2_{L^2}$ on $\Omega$; the columns are $N_{0.1}$, the part of $S_{0.1}$
+outside it, $B_{0.1}$, $\{s\ge2\}$ and the remainder):
+
+| Configuration | $N_{0.1}$ | $S_{0.1}\setminus N_{0.1}$ | $B_{0.1}$ | $\{s\ge2\}$ | rest |
+|---|---|---|---|---|---|
+| Smoothing, raw payoff | $6$ | $2$ | $55$ | $9$ | $27$ |
+| Smoothing, Black-Scholes, ordinary | $19$ | $9$ | $1$ | $65$ | $7$ |
+| Smoothing, Black-Scholes, two-term | $47$ | $17$ | $2$ | $18$ | $16$ |
+| Smoothing, split-semigroup | $18$ | $8$ | $1$ | $68$ | $6$ |
+| Exact subtraction, raw payoff | $0$ | $0$ | $72$ | $0$ | $28$ |
+| Exact subtraction, Black-Scholes | $0$ | $0$ | $0.3$ | $99$ | $0.4$ |
+| Exact subtraction, split | $0$ | $0$ | $0$ | $99.8$ | $0.1$ |
+| Corner enrichment, raw payoff | $0$ | $0$ | $72$ | $0$ | $28$ |
+| Corner enrichment, Black-Scholes | $0$ | $0$ | $0.1$ | $99$ | $0.8$ |
+| Corner enrichment, split | $0$ | $0$ | $0.1$ | $98$ | $1.5$ |
+
+(percentages; area shares for reference: $N_{0.1}$ $0.2$, $S_{0.1}$ $4.2$, $B_{0.1}$ $8.5$,
+$\{s\ge2\}$ $42$ per cent.)
+
+**The raw-payoff failure is the strike singularity, and it propagates.** For the two analytic
+treatments with the raw profile, $72$ per cent of the error energy is inside $|s-K|<0.1$ — a band
+holding $8.5$ per cent of the area — and nothing measurable is at the corner; the energy density
+along $s$ peaks at $s=K$ by three orders of magnitude over its neighbours
+(`error_energy_along_s.png`). Excluding $B_{0.1}$ nevertheless leaves
+$\mathrm{rel}_{L^2} = 0.29$ against $5\times10^{-3}$ for the treated profiles: the strike defect is
+not confined to a band around the strike, it biases the fit over the whole interval $[B+\varepsilon, 2]$.
+The attribution to the strike is thus supported by the localisation of the energy and of the
+residual, and the propagation is what the band metric records — the two statements were previously
+conflated.
+
+**The similarity of magnitude between the raw-payoff analytic runs and the smoothing runs is a
+coincidence of magnitude, not of cause.** Both sit at $0.28$–$0.52$ on the comparison metric, but
+$72$ per cent of the raw-payoff error is at the strike and none at the corner, whereas
+$19$–$47$ per cent of the smoothing error is in $N_{0.1}$ alone (in $0.2$ per cent of the area) and
+$18$–$68$ per cent in the far field.
+
+**Where the loss can see the error.** The interior residual (seed $0$, assembled through the route
+used in training) has $82$–$91$ per cent of its energy inside $N_{0.1}$ for the smoothing runs,
+$98$–$99$ for the corner enrichment, $63$ per cent for the exact subtraction with the Black-Scholes
+profile, and $5$ per cent for the exact subtraction with the raw profile — whose residual energy is
+instead $90$ per cent inside the strike band. Meanwhile $99$ per cent of the *error* of the treated
+analytic runs is in the far field, where the residual is negligible. The interior loss is therefore
+dominated by a region where the solution is already accurate and is nearly blind to the region where
+it is wrong; this is the non-uniqueness of section 12, and no collocation density acts on it — only
+the far-field condition does.
+
+**Collocation density.** The sampler draws uniformly on $\Omega$, so $0.2$ per cent of a batch falls
+in $N_{0.1}$, which carries $82$–$99$ per cent of the residual energy for every construction that
+leaves a corner residual, while $42$ per cent of the batch falls in $\{s\ge2\}$, which carries
+essentially none. Concentrating points near the corner would lower the variance of the loss estimate
+there (the mean of $n_f = 4096$ uniform draws is dominated by the $\approx 8$ points falling in the
+layer), and is the standard remedy for a residual of this shape; it would not act on the far-field
+error, which the residual does not see. Any such change also changes the norm being minimised unless
+the draws are reweighted by $1/p$, and must be declared as a change of objective rather than of
+sampler. Not implemented, not measured.
+
+Figures: `rapports/corner_treatments_wholedomain_20260923`, section "Quelle région exclut-on, et où
+l'erreur se trouve-t-elle ?".

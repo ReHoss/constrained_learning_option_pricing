@@ -16,7 +16,7 @@
 \usepackage[colorlinks=true,allcolors=blue!55!black]{hyperref}
 \title{Down-and-out put --- traitements du coin sur le domaine complet : figures}
 \author{}
-\date{2026-09-24}
+\date{2026-09-29}
 \begin{document}
 \maketitle
 \tableofcontents
@@ -186,45 +186,6 @@ Corner enrichment, split-semigroup profile & 4.405e-02 [1.123e-03, 7.510e-02] & 
 
 \section{Profils en $s$ et grecques en fonction de $t$ (graine 0)}
 Une seule graine, pas de médiane : ces figures montrent \emph{où} l'erreur de chaque traitement se trouve, ce que les métriques intégrées ne disent pas. Évaluation ponctuelle en float64 ; dérivées comme à la section précédente (autograd imbriqué sur $g_1u_\theta$, forme fermée pour $g_2$). Une sous-section par fonction terminale : à fonction terminale fixée, les trois courbes d'un panneau ne diffèrent que par le traitement du coin. Code couleur commun à toutes ces figures : \textbf{orange} lissage (couche de coin, $\varepsilon=0.1$), \textbf{vert} soustraction exacte (Méthode 1), \textbf{violet} enrichissement de coin (Méthode 2) ; \textbf{tirets noirs} forme fermée.
-\subsection{Fonction terminale : payoff brut $(K-s)^+$}
-Source : \path{data/compare_corner_treatments_profiles/20260924_wholedomain_raw}.
-\begin{landscape}
-\begin{figure}[H]
-\centering
-\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/profiles_price_delta_gamma_raw.png}
-\caption{Lignes : $\Phi_\theta(s,t)$, $\partial_s\Phi_\theta(s,t)$, $\partial_{ss}\Phi_\theta(s,t)$ ; colonnes : $t\in\{0,0.5,0.9,0.99\}$ ; forme fermée en tirets noirs. Prix en échelle linéaire ; $\Delta$ et $\Gamma$ en échelle symlog (linéaire sous $0.1$, logarithmique au-delà, des deux côtés de zéro).}
-\label{fig:profiles_raw}
-\end{figure}
-
-\end{landscape}
-
-\begin{landscape}
-\begin{figure}[H]
-\centering
-\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/profiles_price_delta_gamma_corner_zoom_raw.png}
-\caption{Même figure, restreinte à la région du coin $s\in(B, B+0.3)$ et évaluée sur sa propre grille dense (600 points, pas $5\times10^{-4}$). Tirets gris verticaux : $s=B+B\sigma\sqrt{2(T-t)}$, la longueur de diffusion de la couche de coin à ce $t$. Les ondulations de $\partial_{ss}\Phi_\theta$ du run de lissage (orange) sont confinées à la bande de transition du cutoff $\zeta((s-B)/\varepsilon)$, $s\in[0.6,0.7]$ : c'est la courbure de $\zeta$ ($\zeta''\sim\varepsilon^{-2}$) que le réseau n'annule pas. La soustraction (vert) est confondue avec la forme fermée sur les trois lignes ; l'enrichissement (violet) l'est aussi hors de la bande de transition de $\chi$, $[0.7,0.9]$.}
-\label{fig:profiles-zoom_raw}
-\end{figure}
-
-\end{landscape}
-
-\begin{landscape}
-\begin{figure}[H]
-\centering
-\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/absolute_errors_along_s_raw.png}
-\caption{Erreurs absolues ponctuelles le long de $s$ : $e_0=|\Phi_\theta-V_{DO}|$, $e_1=|\partial_s\Phi_\theta-\partial_sV_{DO}|$, $e_2=|\partial_{ss}\Phi_\theta-\partial_{ss}V_{DO}|$ (échelle log). C'est la figure qui localise la valeur ajoutée des traitements analytiques. Les erreurs relatives par bande grandissent avec $s$ pour toutes les configurations parce que $V_{DO}\to0$, pas parce que l'erreur absolue grandit.}
-\label{fig:abs-errors_raw}
-\end{figure}
-
-\end{landscape}
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=0.95\linewidth]{figures/greeks_at_strike_vs_time_raw.png}
-\caption{Haut : $\partial_s\Phi_\theta(K,t)$ et $\partial_{ss}\Phi_\theta(K,t)$ en fonction de $t$ (traits pleins), valeurs exactes en tirets. Bas : $\mathrm{err}_{\mathrm{rel}}\,\Delta(t)$ et $\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$ (échelle log). La verticale grise marque le zéro de $\partial_{ss}V_{DO}(K,\cdot)$, où l'erreur relative est mal conditionnée.}
-\label{fig:greeks-vs-t_raw}
-\end{figure}
-
 \subsection{Fonction terminale : prix Black-Scholes du put (route autograd ordinaire)}
 Source : \path{data/compare_corner_treatments_profiles/20260924_wholedomain_blackscholes}.
 \begin{landscape}
@@ -301,6 +262,68 @@ Source : \path{data/compare_corner_treatments_profiles/20260924_wholedomain_spli
 \includegraphics[width=0.95\linewidth]{figures/greeks_at_strike_vs_time_split.png}
 \caption{Haut : $\partial_s\Phi_\theta(K,t)$ et $\partial_{ss}\Phi_\theta(K,t)$ en fonction de $t$ (traits pleins), valeurs exactes en tirets. Bas : $\mathrm{err}_{\mathrm{rel}}\,\Delta(t)$ et $\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$ (échelle log). La verticale grise marque le zéro de $\partial_{ss}V_{DO}(K,\cdot)$, où l'erreur relative est mal conditionnée.}
 \label{fig:greeks-vs-t_split}
+\end{figure}
+
+\subsection{Fonction terminale : payoff brut $(K-s)^+$}
+Source : \path{data/compare_corner_treatments_profiles/20260924_wholedomain_raw}.
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/profiles_price_delta_gamma_raw.png}
+\caption{Lignes : $\Phi_\theta(s,t)$, $\partial_s\Phi_\theta(s,t)$, $\partial_{ss}\Phi_\theta(s,t)$ ; colonnes : $t\in\{0,0.5,0.9,0.99\}$ ; forme fermée en tirets noirs. Prix en échelle linéaire ; $\Delta$ et $\Gamma$ en échelle symlog (linéaire sous $0.1$, logarithmique au-delà, des deux côtés de zéro).}
+\label{fig:profiles_raw}
+\end{figure}
+
+\end{landscape}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/profiles_price_delta_gamma_corner_zoom_raw.png}
+\caption{Même figure, restreinte à la région du coin $s\in(B, B+0.3)$ et évaluée sur sa propre grille dense (600 points, pas $5\times10^{-4}$). Tirets gris verticaux : $s=B+B\sigma\sqrt{2(T-t)}$, la longueur de diffusion de la couche de coin à ce $t$. Les ondulations de $\partial_{ss}\Phi_\theta$ du run de lissage (orange) sont confinées à la bande de transition du cutoff $\zeta((s-B)/\varepsilon)$, $s\in[0.6,0.7]$ : c'est la courbure de $\zeta$ ($\zeta''\sim\varepsilon^{-2}$) que le réseau n'annule pas. La soustraction (vert) est confondue avec la forme fermée sur les trois lignes ; l'enrichissement (violet) l'est aussi hors de la bande de transition de $\chi$, $[0.7,0.9]$.}
+\label{fig:profiles-zoom_raw}
+\end{figure}
+
+\end{landscape}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{figures/absolute_errors_along_s_raw.png}
+\caption{Erreurs absolues ponctuelles le long de $s$ : $e_0=|\Phi_\theta-V_{DO}|$, $e_1=|\partial_s\Phi_\theta-\partial_sV_{DO}|$, $e_2=|\partial_{ss}\Phi_\theta-\partial_{ss}V_{DO}|$ (échelle log). C'est la figure qui localise la valeur ajoutée des traitements analytiques. Les erreurs relatives par bande grandissent avec $s$ pour toutes les configurations parce que $V_{DO}\to0$, pas parce que l'erreur absolue grandit.}
+\label{fig:abs-errors_raw}
+\end{figure}
+
+\end{landscape}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{figures/greeks_at_strike_vs_time_raw.png}
+\caption{Haut : $\partial_s\Phi_\theta(K,t)$ et $\partial_{ss}\Phi_\theta(K,t)$ en fonction de $t$ (traits pleins), valeurs exactes en tirets. Bas : $\mathrm{err}_{\mathrm{rel}}\,\Delta(t)$ et $\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$ (échelle log). La verticale grise marque le zéro de $\partial_{ss}V_{DO}(K,\cdot)$, où l'erreur relative est mal conditionnée.}
+\label{fig:greeks-vs-t_raw}
+\end{figure}
+
+\section{Quelle région exclut-on, et où l'erreur se trouve-t-elle ?}
+La métrique de comparaison des sections précédentes retire la fenêtre de coin $N_w=\{|s-B|+(T-t)\le w\}$, un losange qui ne touche le coin qu'au voisinage de $t=T$. Or les constructions de lissage abandonnent la trace terminale exacte sur toute la bande\[ S_\varepsilon=\{(s,t)\ :\ s-B<\varepsilon\}\qquad(\text{tout }t), \]puisque $\zeta((s-B)/\varepsilon)=1$ exactement seulement pour $s-B\ge\varepsilon$. Retirer $N_w$ laisse donc l'essentiel de la région sacrifiée \emph{à l'intérieur} de la métrique, alors que les traitements analytiques n'y sacrifient rien : la comparaison sur $\Omega\setminus N_w$ n'est pas une comparaison à région également traitée. Les panneaux ci-dessous recalculent $\mathrm{rel}_{L^2}$ sur le complémentaire de cinq régions --- rien, $N_w$, $S_\varepsilon$, $S_\varepsilon\cup B_\delta$ avec la bande de strike $B_\delta=\{|s-K|<\delta\}$, et en retirant en plus le champ lointain $\{s\ge2\}$ --- à partir des modèles sauvegardés, en float64. Source : \path{data/diagnose_error_localisation/20260929_wholedomain}.
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{figures/comparison_by_exclusion_region.png}
+\caption{$\mathrm{rel}_{L^2}(A)=\|\Phi_\theta-V_{DO}\|_{L^2(A)}/\|V_{DO}\|_{L^2(A)}$ sur la région conservée $A$, un panneau par région exclue ; points : graines individuelles, losange plein : médiane sur les graines.}
+\label{fig:exclusion-regions}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{figures/error_energy_along_s.png}
+\caption{Densité d'énergie d'erreur le long de $s$, $E(s)=\int_0^T|\Phi_\theta-V_{DO}|^2\,\mathrm{d}t$ (gauche, échelle log) et part cumulée $\int_B^sE/\int_B^{s_\infty}E$ (droite). Verticales : $s=B$ et $s=K$ (pointillés), $s=B+\varepsilon$ (tirets rouges, bord de $S_\varepsilon$). Une construction dont l'erreur est causée par la singularité au strike a son $E$ maximal en $s=K$ ; une dont l'erreur est causée par le cutoff l'a dans $S_\varepsilon$.}
+\label{fig:error-energy}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\linewidth]{figures/error_and_residual_maps.png}
+\caption{Gauche : $|\Phi_\theta-V_{DO}|$ ; droite : $|\mathcal L^{BS}\Phi_\theta|$, le résidu intérieur que la perte échantillonne, assemblé par la route utilisée à l'entraînement. Échelle de couleur logarithmique, commune aux configurations ; tirets : $s=B+\varepsilon$, pointillés : $s=K$. La carte d'erreur dit où la solution est fausse, la carte de résidu où la perte peut le voir : une région à grande erreur et petit résidu est une région que la perte intérieure ne pénalise pas.}
+\label{fig:error-maps}
 \end{figure}
 
 \section{Ce qui sépare analytiquement l'enrichissement de la soustraction}
