@@ -45,6 +45,8 @@ output-folder-from-filename invariant cannot silently drift.
 """
 from __future__ import annotations
 
+import math
+
 # The runner script's filename stem (without extension).  Asserted by the
 # runner at startup so the data folder cannot drift from the script name.
 RUNNER_SCRIPT_STEM = "ablation_split_extension_trained"
@@ -254,6 +256,112 @@ FOURTH_ORDER_CELL_VARIANTS: list[dict] = [
     _generator_variant("exact_solution"),
 ]
 
+
+# ---------------------------------------------------------------------------
+# Variable-coefficient cells (pre-registration
+# documents/methodology/2026-09-29_preregistration_variable_coefficient_split.md)
+# ---------------------------------------------------------------------------
+# Coefficients c(x) = c_0 + c_1 cos(x - phi) with phi = pi/4, so that at the
+# datum's break point x* = 0 the principal coefficient is neither stationary nor
+# equal to its mean (section 3.1).  Base values inherited from G2 (LV2, local
+# volatility in log-price, sigma(x)^2 / 2 = a(x)) and G3 (LV4); the amplitude
+# ratio epsilon is swept.  The two splits retain the principal term only, frozen
+# at x* or at the mean; no exact-solution control (no closed form here).
+
+VARIABLE_COEFFICIENT_PHASE = math.pi / 4.0
+VARIABLE_COEFFICIENT_AMPLITUDE_RATIOS = (0.25, 0.75)
+
+SPLIT_FROZEN_SINGULAR_VARIANT: dict = {
+    # h = e^{(T-t) A*} g, A* = c_{2p}(x*) d_x^{2p} (principal coefficient frozen
+    # at the singular point); forcing (c_{2p}(x) - c_{2p}(x*)) d_x^{2p} h + lower.
+    "name": "split_frozen_singular",
+    "form": "hard_constant",
+    "interpolation": "linear",
+    "extension": "split_frozen_singular",
+    "comparison_diffusivity_ratio": None,
+    "smoothing_scale_ratio": None,
+    "exponential_rate_gamma": None,
+    "color": "#d62728",  # red
+    "label": r"split frozen at the singular point $x^\star$",
+}
+SPLIT_FROZEN_MEAN_VARIANT: dict = {
+    # h = e^{(T-t) bar A} g, bar A = bar c_{2p} d_x^{2p} (frozen at the mean).
+    "name": "split_frozen_mean",
+    "form": "hard_constant",
+    "interpolation": "linear",
+    "extension": "split_frozen_mean",
+    "comparison_diffusivity_ratio": None,
+    "smoothing_scale_ratio": None,
+    "exponential_rate_gamma": None,
+    "color": "#9467bd",  # purple (blue is constant_in_time)
+    "label": r"split frozen at the mean",
+}
+
+VARIABLE_COEFFICIENT_CELL_VARIANTS: list[dict] = [
+    _generator_variant("convex_raw"),
+    _generator_variant("constant_in_time"),
+    SPLIT_FROZEN_SINGULAR_VARIANT,
+    SPLIT_FROZEN_MEAN_VARIANT,
+]
+
+
+def _amplitude_tag(amplitude_ratio: float) -> str:
+    return f"eps{amplitude_ratio:.2f}".replace(".", "p")
+
+
+def _local_volatility_cell(amplitude_ratio: float) -> dict:
+    diffusivity_mean, risk_free_rate = 0.125, 0.03
+    amplitude = diffusivity_mean * amplitude_ratio
+    return {
+        # a(x) = 0.125 (1 + eps cos(x - pi/4)); drift r - a(x); reaction -r.
+        "generator_coefficients": {
+            2: {"constant": diffusivity_mean, "amplitude": amplitude,
+                "phase": VARIABLE_COEFFICIENT_PHASE},
+            1: {"constant": risk_free_rate - diffusivity_mean, "amplitude": -amplitude,
+                "phase": VARIABLE_COEFFICIENT_PHASE},
+            0: -risk_free_rate,
+        },
+        "variable_coefficients": True,
+        "datum": "bernoulli_bandlimited",
+        "truncation_wavenumber": 128,
+        "terminal_time": 1.0,
+        "corner_point": 0.0,  # the datum's break point x*, where A* is frozen
+        "variant_set": "variable_coefficient",
+        "short_label": rf"LV2, $\varepsilon={amplitude_ratio:g}$",
+        "label": (
+            r"$g(x)=\sum_{k=1}^{128}\frac{\cos(kx)}{\pi^2k^2}$,  "
+            r"$A=a(x)\,\partial_{xx}+(r-a(x))\,\partial_x-r$,  "
+            rf"$a(x)=0.125\,(1+{amplitude_ratio:g}\cos(x-\pi/4))$, $r=0.03$ "
+            r"(LV2, local volatility),  $T=1$"
+        ),
+    }
+
+
+def _variable_biharmonic_cell(amplitude_ratio: float) -> dict:
+    beta_mean = 0.05
+    return {
+        # beta(x) = 0.05 (1 + eps cos(x - pi/4)); A = -beta(x) d_x^4 + 1.3 d_x - 0.4.
+        "generator_coefficients": {
+            4: {"constant": -beta_mean, "amplitude": -beta_mean * amplitude_ratio,
+                "phase": VARIABLE_COEFFICIENT_PHASE},
+            1: 1.3,
+            0: -0.4,
+        },
+        "variable_coefficients": True,
+        "datum": "bernoulli_bandlimited",
+        "truncation_wavenumber": 128,
+        "terminal_time": 1.0,
+        "corner_point": 0.0,
+        "variant_set": "variable_coefficient",
+        "short_label": rf"LV4, $\varepsilon={amplitude_ratio:g}$",
+        "label": (
+            r"$g(x)=\sum_{k=1}^{128}\frac{\cos(kx)}{\pi^2k^2}$,  "
+            r"$A=-\beta(x)\,\partial_x^4+1.3\,\partial_x-0.4$,  "
+            rf"$\beta(x)=0.05\,(1+{amplitude_ratio:g}\cos(x-\pi/4))$ "
+            r"(LV4),  $T=1$"
+        ),
+    }
+
 # Rate gamma = nu k_0^2 = 0.125 * 1^2 of the control cell, passed EXPLICITLY
 # (specification decision D10): the library default of
 # make_interpolation_coefficient is the eigenvalue-matched value of the
@@ -292,6 +400,8 @@ METHOD_VARIANTS: list[dict] = GENERATOR_CELL_VARIANTS + [
     SPLIT_PRINCIPAL_VARIANT,
     SPLIT_PRINCIPAL_ADVECTION_VARIANT,
     GRADED_GAUSSIAN_WIDTH_MATCHED_VARIANT,
+    SPLIT_FROZEN_SINGULAR_VARIANT,
+    SPLIT_FROZEN_MEAN_VARIANT,
     MATCHED_EXPONENTIAL_FACTOR_VARIANT
 ]
 
@@ -358,6 +468,14 @@ CELL_CONFIGS: dict[str, dict] = {
             r"$A=-0.05\,\partial_x^4+1.3\,\partial_x-0.4$ (G3, fourth order),  "
             r"$Pu=\partial_t u+Au$,  $T=1$"
         ),
+    },
+    **{
+        f"lv2_bernoulli_bandlimited_{_amplitude_tag(ratio)}": _local_volatility_cell(ratio)
+        for ratio in VARIABLE_COEFFICIENT_AMPLITUDE_RATIOS
+    },
+    **{
+        f"lv4_bernoulli_bandlimited_{_amplitude_tag(ratio)}": _variable_biharmonic_cell(ratio)
+        for ratio in VARIABLE_COEFFICIENT_AMPLITUDE_RATIOS
     },
     "heat_sine_single_component": {
         # Control cell: pure heat at the G2 diffusivity with the
@@ -441,6 +559,8 @@ def variants_for_cell(cell_name: str) -> list[dict]:
         return list(GENERATOR_CELL_VARIANTS)
     if cell_conf["variant_set"] == "fourth_order":
         return list(FOURTH_ORDER_CELL_VARIANTS)
+    if cell_conf["variant_set"] == "variable_coefficient":
+        return list(VARIABLE_COEFFICIENT_CELL_VARIANTS)
     return list(CONTROL_CELL_VARIANTS)
 
 

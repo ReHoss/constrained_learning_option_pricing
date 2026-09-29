@@ -82,6 +82,11 @@ SPECTRA_CANCELLATION_THRESHOLD = 0.5
 # its split {d_xx} twin (specification decision D3).
 GRADED_MATCHED_AGREEMENT_TOLERANCE = 1.0e-6
 
+# Fourier-Galerkin truncation of the reference solution of the variable-
+# coefficient cells (pre-registration 2026-09-29, section 5): N = 512, checked
+# against N = 1024 by the energy study on prepost.
+VARIABLE_COEFFICIENT_GALERKIN_BAND = 512
+
 
 # ===========================================================================
 # Seeding helpers (master seed -> deterministic role-tagged per-role seeds)
@@ -173,6 +178,10 @@ def build_problem(cell_name: str) -> dict:
     )
 
     cell_conf = catalogue.cell_by_name(cell_name)
+    if cell_conf.get("variable_coefficients", False):
+        return _build_variable_coefficient_problem(cell_name, cell_conf)
+    from learning_option_pricing.pde import symmetric_wavenumber_band
+
     generator_coefficients = {
         int(order): float(value)
         for order, value in cell_conf["generator_coefficients"].items()
@@ -224,6 +233,73 @@ def build_problem(cell_name: str) -> dict:
         "matched_exponential_rate": matched_exponential_rate,
         "corner_point": float(cell_conf["corner_point"]),
         "label": cell_conf["label"],
+        # Forcing band of the closed-form sums (the constant-coefficient
+        # forcing has the datum band and no zero mode).
+        "forcing_band_edge": band_edge,
+        "forcing_wavenumber_band": symmetric_wavenumber_band(band_edge),
+        "variable_generator": None,
+    }
+
+
+def _build_variable_coefficient_problem(cell_name: str, cell_conf: dict) -> dict:
+    r"""Problem dictionary of a variable-coefficient cell (pre-registration
+    2026-09-29).
+
+    The generator :math:`L^X = \sum_j c_j(x)\partial_x^j` has trigonometric
+    coefficients; ``generator_coefficients`` holds the runtime form (a float for
+    a constant coefficient, a callable of :math:`x` otherwise).  The exact
+    solution has no closed form: ``exact_field`` is the Fourier-Galerkin
+    reference.  ``datum_field`` is the extension field of the operator frozen at
+    the mean, which equals the datum (with its analytic derivatives) at
+    :math:`t = T`.  The forcing lives on :math:`|k| \le K + 1` and has a zero
+    mode, so the closed-form sums use the full band including :math:`k = 0`.
+    """
+    from learning_option_pricing.pde import (
+        PeriodisedBernoulliDatum,
+        bandlimited_bernoulli_cosine_coefficients,
+        exact_solution_field,
+    )
+    from learning_option_pricing.pde.variable_coefficient_periodic import (
+        BandLimitedDatum,
+        GalerkinReferenceSolution,
+        full_wavenumber_band,
+        generator_from_specification,
+    )
+
+    terminal_time = float(cell_conf["terminal_time"])
+    band_edge = int(cell_conf["truncation_wavenumber"])
+    generator = generator_from_specification(cell_conf["generator_coefficients"], cell_name)
+    cosine_coefficients = bandlimited_bernoulli_cosine_coefficients(band_edge)
+    datum = BandLimitedDatum(PeriodisedBernoulliDatum(1), band_edge)
+    reference = GalerkinReferenceSolution(
+        generator, datum, VARIABLE_COEFFICIENT_GALERKIN_BAND, terminal_time
+    )
+    datum_field = exact_solution_field(
+        generator.frozen_principal_coefficients("mean"),
+        cosine_coefficients,
+        terminal_time=terminal_time,
+    )
+    return {
+        "cell_name": cell_name,
+        "generator_coefficients": generator.runtime_coefficients(),
+        "variable_generator": generator,
+        "band_limited_datum": datum,
+        "singular_point": float(cell_conf["corner_point"]),
+        "terminal_time": terminal_time,
+        "datum_kind": cell_conf["datum"],
+        "band_edge": band_edge,
+        "cosine_coefficients": cosine_coefficients,
+        "sine_coefficients": None,
+        "sine_wavenumber": None,
+        "sine_amplitude": None,
+        "terminal_datum": datum_field.terminal_datum_values,
+        "exact_field": reference,
+        "datum_field": datum_field,
+        "matched_exponential_rate": None,
+        "corner_point": float(cell_conf["corner_point"]),
+        "label": cell_conf["label"],
+        "forcing_band_edge": band_edge + 1,
+        "forcing_wavenumber_band": full_wavenumber_band(band_edge + 1),
     }
 
 
@@ -255,6 +331,28 @@ class SingleSineWavenumberDatum:
 
 
 def build_closed_form_extension(variant: dict, problem: dict):
+    if problem.get("variable_generator") is not None:
+        from learning_option_pricing.pde.variable_coefficient_periodic import (
+            build_variable_coefficient_extension,
+        )
+
+        extension = build_variable_coefficient_extension(
+            variant["name"],
+            problem["variable_generator"],
+            problem["band_limited_datum"],
+            problem["singular_point"],
+            problem["terminal_time"],
+        )
+        if extension is None:
+            raise KeyError(
+                f"No spectral counterpart for variant {variant['name']!r} in the "
+                "variable-coefficient cell"
+            )
+        return extension
+    return _build_constant_coefficient_closed_form_extension(variant, problem)
+
+
+def _build_constant_coefficient_closed_form_extension(variant: dict, problem: dict):
     """Closed-form spectral counterpart of a variant's extension.
 
     Returns the :class:`TerminalDataExtension` instance whose per-wavenumber
@@ -370,7 +468,7 @@ def closed_form_forcing_floor(variant: dict, problem: dict) -> float:
     )
 
     extension = build_closed_form_extension(variant, problem)
-    band = symmetric_wavenumber_band(problem["band_edge"])
+    band = problem["forcing_wavenumber_band"]
     squared_strip_norm = total_strip_forcing_squared(extension, band)
     return squared_strip_norm / (TWO_PI * problem["terminal_time"])
 
@@ -493,7 +591,27 @@ def build_ansatz(variant: dict, problem: dict, hparams: dict, *, model_seed: int
     extension_field = None
     extension_fn = None
     extension_derivative_fns = None
-    if variant["extension"] is not None:
+    if variant["extension"] in ("split_frozen_singular", "split_frozen_mean"):
+        # Variable-coefficient cells: h = e^{(T-t)A} g for the constant-
+        # coefficient operator A obtained by freezing the principal coefficient
+        # at the datum's singular point or at its mean -- the exact-solution
+        # field of A.  The training forcing P h is assembled by the bypass with
+        # the variable coefficients of the cell, not with those of A.
+        from learning_option_pricing.pde import exact_solution_field
+
+        frozen_at = (
+            problem["singular_point"]
+            if variant["extension"] == "split_frozen_singular"
+            else "mean"
+        )
+        extension_field = exact_solution_field(
+            problem["variable_generator"].frozen_principal_coefficients(frozen_at),
+            problem["cosine_coefficients"],
+            terminal_time=terminal_time,
+        )
+        extension_fn = extension_field.field
+        extension_derivative_fns = extension_field.derivative_callables()
+    elif variant["extension"] is not None:
         builder = EXTENSION_FIELD_REGISTRY[variant["extension"]]
         comparison_diffusivity = None
         if variant["comparison_diffusivity_ratio"] is not None:
@@ -893,9 +1011,26 @@ def _generator_applied_to_datum(problem, x64):
     """
     import numpy as np
 
-    exact_field = problem["exact_field"]
     coefficients = problem["generator_coefficients"]
     tT = np.full_like(x64, problem["terminal_time"])
+    if problem.get("variable_generator") is not None:
+        # Variable coefficients: sum_j c_j(x) d_x^j g, with the datum's analytic
+        # derivatives from the frozen-mean field at t = T (where it equals g).
+        datum_field = problem["datum_field"]
+        derivatives = {
+            0: datum_field.field(x64, tT),
+            1: datum_field.space_derivative(x64, tT),
+            2: datum_field.second_space_derivative(x64, tT),
+        }
+        if 4 in coefficients:
+            derivatives[3] = datum_field.third_space_derivative(x64, tT)
+            derivatives[4] = datum_field.fourth_space_derivative(x64, tT)
+        generator_applied = np.zeros_like(x64)
+        for order, coefficient in coefficients.items():
+            values = coefficient(x64) if callable(coefficient) else coefficient
+            generator_applied = generator_applied + values * derivatives[order]
+        return generator_applied
+    exact_field = problem["exact_field"]
     generator_applied = (
         coefficients.get(2, 0.0) * exact_field.second_space_derivative(x64, tT)
         + coefficients.get(1, 0.0) * exact_field.space_derivative(x64, tT)
@@ -950,7 +1085,15 @@ def compute_terminal_target(model, problem, variant, extension_field) -> dict:
             math.sqrt(TWO_PI * float(np.mean(phi_terminal**2)))
         )
     else:
-        if variant["extension"] is not None:
+        if variant["extension"] is not None and problem.get("variable_generator") is not None:
+            # (P h)(., T) = d_t h(., T) + L^X g with the cell's variable
+            # coefficients (the field's own terminal_forcing_profile would use
+            # the frozen operator).
+            phi_star = terminal_time * (
+                extension_field.time_derivative(x64, np.full_like(x64, terminal_time))
+                + _generator_applied_to_datum(problem, x64)
+            )
+        elif variant["extension"] is not None:
             phi_star = terminal_time * extension_field.terminal_forcing_profile(
                 x64
             )
@@ -1075,7 +1218,7 @@ def compute_spectra(
     residual_power = residual_power_per_slice.mean(axis=0)
 
     forcing_power = np.zeros(len(wavenumber_bins))
-    positive_wavenumbers = np.arange(1, problem["band_edge"] + 1)
+    positive_wavenumbers = np.arange(1, problem["forcing_band_edge"] + 1)
     forcing_power_band = np.zeros(len(positive_wavenumbers))
     for fraction in slice_fractions:
         forcing_coefficients = closed_form_extension.forcing_coefficient(
@@ -1083,7 +1226,7 @@ def compute_spectra(
         )
         forcing_power_band += np.abs(forcing_coefficients) ** 2
     forcing_power_band /= len(slice_fractions)
-    forcing_power[1:problem["band_edge"] + 1] = forcing_power_band
+    forcing_power[1:problem["forcing_band_edge"] + 1] = forcing_power_band
 
     forcing_maximum = float(forcing_power.max())
     forcing_defined = forcing_maximum > 0.0
@@ -1349,7 +1492,7 @@ def main(argv=None) -> int:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "cell": args.cell,
             "generator_coefficients": {
-                int(order): float(value)
+                int(order): (value if isinstance(value, dict) else float(value))
                 for order, value in cell_conf["generator_coefficients"].items()
             },
             "seed": args.seed,

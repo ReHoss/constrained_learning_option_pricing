@@ -168,7 +168,25 @@ GENERATOR_CELL_NAMES = (
     "g3_bernoulli_bandlimited",
 )
 
-CELL_NAMES = (*GENERATOR_CELL_NAMES, CONTROL_CELL_NAME)
+# Variable-coefficient cells (pre-registration 2026-09-29), read from the
+# catalogue when it is importable.
+VARIABLE_COEFFICIENT_CELL_NAMES = (
+    tuple(
+        name
+        for name in _catalogue.cell_names()
+        if _catalogue.cell_by_name(name).get("variable_coefficients", False)
+    )
+    if _catalogue is not None
+    else ()
+)
+VARIABLE_COEFFICIENT_CELL_VARIANT_NAMES = (
+    "convex_raw",
+    "constant_in_time",
+    "split_frozen_singular",
+    "split_frozen_mean",
+)
+
+CELL_NAMES = (*GENERATOR_CELL_NAMES, *VARIABLE_COEFFICIENT_CELL_NAMES, CONTROL_CELL_NAME)
 # The stage-1 comparison and additive-versus-convex tables compare the
 # order-2 split variants, which the fourth-order cell does not have; they are
 # written for the second-order cells only (the fourth-order cell appears in the
@@ -212,6 +230,8 @@ def specified_variant_names(cell: str) -> tuple:
         return CONTROL_CELL_VARIANT_NAMES
     if cell == FOURTH_ORDER_CELL_NAME:
         return FOURTH_ORDER_CELL_VARIANT_NAMES
+    if cell in VARIABLE_COEFFICIENT_CELL_NAMES:
+        return VARIABLE_COEFFICIENT_CELL_VARIANT_NAMES
     return GENERATOR_CELL_VARIANT_NAMES
 
 
@@ -253,6 +273,11 @@ FALLBACK_VARIANT_DISPLAY = {
         "color": "#ff7f0e",
         "label": "Graded Gaussian (width-matched)",
     },
+    "split_frozen_singular": {
+        "color": "#d62728",
+        "label": r"Split frozen at $x^\star$",
+    },
+    "split_frozen_mean": {"color": "#9467bd", "label": "Split frozen at the mean"},
     "graded_chen_mangasarian": {
         "color": "#17becf",
         "label": "Graded Chen--Mangasarian",
@@ -798,6 +823,39 @@ def cell_band_edge(cell_name: str, generator_band_edge: int) -> int:
     return CONTROL_CELL_BAND_EDGE
 
 
+def build_variable_coefficient_cell_extension(cell_name: str, variant_name: str):
+    """Exact spectral counterpart of a variant of a variable-coefficient cell,
+    built from the catalogue specification (the runner's own construction)."""
+    from learning_option_pricing.pde.variable_coefficient_periodic import (
+        BandLimitedDatum,
+        build_variable_coefficient_extension,
+        generator_from_specification,
+    )
+
+    cell_conf = _catalogue.cell_by_name(cell_name)
+    generator = generator_from_specification(cell_conf["generator_coefficients"], cell_name)
+    datum = BandLimitedDatum(
+        PeriodisedBernoulliDatum(regularity_index=1), int(cell_conf["truncation_wavenumber"])
+    )
+    return build_variable_coefficient_extension(
+        variant_name, generator, datum, float(cell_conf["corner_point"]), TERMINAL_TIME
+    )
+
+
+def closed_form_wavenumber_band(cell_name: str, generator_band_edge: int) -> np.ndarray:
+    """Wavenumbers of every closed-form sum of a cell: the symmetric band
+    without k = 0 for constant coefficients (unchanged), the full band
+    |k| <= K + 1 including k = 0 for variable coefficients (the coefficient
+    harmonic moves datum content to K + 1 and into the zero mode)."""
+    if cell_name in VARIABLE_COEFFICIENT_CELL_NAMES:
+        from learning_option_pricing.pde.variable_coefficient_periodic import (
+            full_wavenumber_band,
+        )
+
+        return full_wavenumber_band(int(generator_band_edge) + 1)
+    return symmetric_wavenumber_band(cell_band_edge(cell_name, generator_band_edge))
+
+
 def build_terminal_data_extension(
     cell_name: str, variant_name: str
 ) -> TerminalDataExtension | None:
@@ -807,6 +865,8 @@ def build_terminal_data_extension(
     set (the caller records an explicitly empty closed-form slot and prints
     a notice).
     """
+    if cell_name in VARIABLE_COEFFICIENT_CELL_NAMES:
+        return build_variable_coefficient_cell_extension(cell_name, variant_name)
     generator = build_cell_generator(cell_name)
     datum = build_cell_datum(cell_name)
     # Reference diffusivity nu_ref = (|c_{2p}| T)^{1/p} / T: the diffusivity for
@@ -878,7 +938,11 @@ def forcing_mass_above_cutoff(
     :math:`\mathbb{E}[(P\Psi)^2] = \|Lh\|^2_{\mathrm{strip}} / (2\pi T)`
     and the strip norm is :math:`2\pi \sum_k I_k`).
     """
-    band = symmetric_wavenumber_band(int(band_edge))
+    band = (
+        np.asarray(band_edge)
+        if np.ndim(band_edge) > 0
+        else symmetric_wavenumber_band(int(band_edge))
+    )
     per_wavenumber_integrals = extension.squared_forcing_time_integral(band)
     above_cutoff_mask = np.abs(band) > float(cutoff)
     return float(
@@ -900,11 +964,10 @@ def closed_form_band_edge_quantities(
     extension = build_terminal_data_extension(cell_name, variant_name)
     if extension is None:
         return None
-    band_edge = cell_band_edge(cell_name, generator_band_edge)
-    band = symmetric_wavenumber_band(band_edge)
+    band = closed_form_wavenumber_band(cell_name, generator_band_edge)
     squared_strip_forcing = total_strip_forcing_squared(extension, band)
     return {
-        "band_edge": band_edge,
+        "band_edge": int(np.max(np.abs(band))),
         "squared_strip_forcing": squared_strip_forcing,
         # Monte-Carlo expectation over the uniform sampling measure:
         # E[(P Psi)^2] = ||Lh||^2_strip / (2 pi T) (specification 3.3 item 5).
@@ -953,9 +1016,15 @@ def terminal_target_reference_norm(
     extension = build_terminal_data_extension(cell_name, variant_name)
     if extension is None:
         return None
+    terminal_time = extension.terminal_time
+    if cell_name in VARIABLE_COEFFICIENT_CELL_NAMES:
+        # Full band with k = 0: the one-sided doubling below assumes a vanishing
+        # zero mode, which a variable coefficient breaks.
+        band = closed_form_wavenumber_band(cell_name, generator_band_edge)
+        coefficients = terminal_time * extension.forcing_coefficient(band, terminal_time)
+        return float(np.sqrt(TWO_PI * np.sum(np.abs(coefficients) ** 2)))
     band_edge = cell_band_edge(cell_name, generator_band_edge)
     wavenumbers = np.arange(1, band_edge + 1, dtype=np.int64)
-    terminal_time = extension.terminal_time
     coefficients = terminal_time * extension.forcing_coefficient(
         wavenumbers, terminal_time
     )
@@ -1034,9 +1103,9 @@ def compute_unreachable_masses(
             if extension is None or not cutoffs:
                 unreachable[cell][variant] = median_and_interquartile_range([])
                 continue
-            band_edge = cell_band_edge(cell, generator_band_edge)
+            band = closed_form_wavenumber_band(cell, generator_band_edge)
             masses = [
-                forcing_mass_above_cutoff(extension, band_edge, cutoff)
+                forcing_mass_above_cutoff(extension, band, cutoff)
                 for cutoff in cutoffs
             ]
             unreachable[cell][variant] = median_and_interquartile_range(masses)
@@ -2099,10 +2168,21 @@ def build_parser() -> argparse.ArgumentParser:
             "folder with _debug_)."
         ),
     )
+    parser.add_argument(
+        "--cells",
+        nargs="+",
+        default=None,
+        help=(
+            "Restrict the aggregation to these cells (default: every cell "
+            "found), e.g. the variable-coefficient cells of one study."
+        ),
+    )
     return parser
 
 
 def main(argv=None) -> int:
+    # --cells restricts the module-level cell tuple for this aggregation.
+    global CELL_NAMES
     args = build_parser().parse_args(argv)
 
     configure_cli_script_logging(verbose=getattr(args, "verbose", False))
@@ -2135,6 +2215,12 @@ def main(argv=None) -> int:
     run_directories = discover_run_directories(data_root)
     records = [load_run_record(d) for d in run_directories]
     records = [r for r in records if r.variant_summaries]
+    if args.cells is not None:
+        unknown_cells = sorted(set(args.cells) - set(CELL_NAMES))
+        if unknown_cells:
+            raise ValueError(f"--cells names unknown cells: {unknown_cells}")
+        records = [r for r in records if r.cell in args.cells]
+        CELL_NAMES = tuple(c for c in CELL_NAMES if c in args.cells)
     if not records:
         print(
             f"NOTICE: no (non-debug) run directory with summaries found "
