@@ -1,7 +1,7 @@
 # Pre-registration — split extension for variable-coefficient generators (orders 2 and 4)
 
 **Written 2026-09-29, before any implementation or run.** This document fixes the question, the
-cells, the compared extensions, the analytical predictions and the falsification conditions ahead
+cells, the compared extensions, the amplitude sweep, the analytical predictions and the falsification conditions ahead
 of the campaign, so that the outcome cannot steer the design. The outcome is to be reported
 whatever it is. Status: **DRAFT for the author's confirmation**; decisions reserved to the author
 are flagged **[AUTHOR]**.
@@ -43,6 +43,28 @@ Two cells, each the variable-coefficient version of a trained constant-coefficie
 The periodic setting is an idealisation of a local-volatility model (the log-price domain is not a
 circle); it is chosen because it keeps the evaluation exact up to a controlled truncation.
 
+### 2.1 Provenance of the base values (recorded 2026-09-29, at the author's question)
+
+The base values are **inherited** from the constant-coefficient cells, so that each variable-
+coefficient cell differs from an already measured cell by the spatial variation alone, and reduces
+to it at $arepsilon=0$. Their own provenance, as found in the repository:
+
+- **$G_2$** ($
+u_0=\sigma^2/2=0.125$, advection $r-\sigma^2/2=-0.095$, reaction $-r=-0.03$): the
+  Black–Scholes generator in log-price with $\sigma=0.5$, $r=0.03$. The structure is dictated by the
+  model; the two numerical values are conventional and **no documented protocol selects them**.
+- **$G_1$** ($0.7\,\partial_{xx}+1.3\,\partial_x-0.4$) and **$G_3$** ($-0.05\,\partial_x^4+1.3\,\partial_x-0.4$):
+  introduced with the periodic spectral toolbox (commit `356417c`, 2026-07-10) and in the report,
+  **without any recorded justification or selection protocol**. The only properties that can be read
+  off them are structural: every lower-order channel is present (non-zero advection and reaction,
+  so the remainder $B$ of each split is non-trivial), the principal term is dissipative, and $G_3$
+  shares the lower-order terms of $G_1$ so that $G_1$ and $G_3$ differ by the principal part only.
+  Whether these properties motivated the values is not documented; it is an inference.
+
+Consequence for the claims: no result of this study (nor of the constant-coefficient cells) is
+claimed to hold uniformly over the coefficients. Dependence on the variation amplitude is measured
+by the sweep of §3.1; dependence on the base values is not studied and is stated as a limitation.
+
 ## 3. Compared extensions (per cell)
 
 | Name | Extension $h$ | Computable? |
@@ -54,6 +76,25 @@ circle); it is chosen because it keeps the evaluation exact up to a controlled t
 | `split_frozen_mean` | $e^{(T-t)\bar A}g$, $\bar A=\bar c_{2p}\,\partial_x^{2p}$ | yes |
 | `graded_chen_mangasarian` | CM kernel, $\varepsilon_0=\sqrt{2\nu_{\mathrm{ref}}T}$ | yes |
 | `exact_solution` (control) | numerical reference $u^\star$ | **no closed form**: Fourier–Galerkin reference (§5) |
+
+### 3.1 Amplitude sweep (dose–response)
+
+The amplitude $arepsilon$ is swept instead of fixed. The attribution of any difference between the two
+freezings to the coefficient mismatch at the singular point predicts a **dose–response**: the gap
+vanishes at $arepsilon=0$, where both freezings coincide with the constant-coefficient split already
+measured on $G_2$/$G_3$ (the anchor of the curve), and grows with $arepsilon$. The constraint
+$0<arepsilon<1$ keeps the principal coefficient of strict sign (ellipticity), and
+$a_{\max}/a_{\min}=(1+arepsilon)/(1-arepsilon)$.
+
+- Forcing energies (no training): $arepsilon\in\{0.1,\,0.25,\,0.5,\,0.75\}$.
+- Training: $arepsilon\in\{0.25,\,0.75\}$ (ratios $a_{\max}/a_{\min}=5/3$ and $7$).
+
+The phase stays $arphi=\pi/4$: the two non-degeneracy conditions are $\cosarphi
+eq0$ (otherwise
+$c(x^\star)=ar c$ and the two freezings coincide) and $\sinarphi
+eq0$ (otherwise $x^\star$ is a critical
+point of the coefficient, $
+u=2$), and $arphi=\pi/4$ maximises $\min(|\cosarphi|,|\sinarphi|)$.
 
 For LV2, `split_frozen_mean` coincides with a graded Gaussian at $\nu_c=\bar a$; no separate graded
 Gaussian arm is run. For each split the forcing is
@@ -95,8 +136,9 @@ the singular-point freezing.
 ## 5. Measurements
 
 - **Forcing energy** $\lVert\partial_t h+Lh\rVert^2_{L^2(Q)}$ by quadrature on a tensor grid (the spectral
-  closed forms of the constant-coefficient cells do not apply), at $K\in\{32,64,128,256,512\}$, to test
-  P1–P3 by the growth in $K$ (a CPU computation on `prepost`, no training).
+  closed forms of the constant-coefficient cells do not apply), at $K\in\{32,64,128,256,512\}$ and at
+  each $\varepsilon$ of §3.1, to test P1–P3 by the growth in $K$ (a CPU computation on `prepost`, no
+  training).
 - **Trained relative $L^2$ error** $\delta_\Gamma$ on the evaluation grid (1024 points, 11 time slices),
   median and quartiles over 3 seeds; also at $t=0$ and near $(x^\star,T)$.
 - **Reference solution.** Fourier–Galerkin discretisation of $L^X$ on $|k|\le N$ (multiplication by
@@ -112,21 +154,29 @@ the singular-point freezing.
   quartiles), the conjectured trained consequence is not supported, whatever the energies do.
 - A reference solution failing its $N=512$ versus $N=1024$ check invalidates the error measurements
   of the cell.
+- **Dose–response.** If the trained-error gap between the two freezings on LV4 does not increase from
+  $\varepsilon=0.25$ to $\varepsilon=0.75$ (medians, with the quartiles reported), its attribution to the
+  coefficient mismatch at the singular point is not supported. Two trained amplitudes establish a
+  direction, not a functional form; no fit of the gap against $\varepsilon$ is made.
 
 ## 7. Cost and implementation
 
 Implementation: $x$-dependent coefficients in the autograd operator and in the analytic bypass;
 a Fourier–Galerkin variable-coefficient module (matrix, reference solution, derivatives on demand);
 split fields as constant-coefficient semigroups of the frozen operator; new cells and variants;
-tests (Galerkin convergence, forcing identity, bypass against autograd). Training: 2 cells × 7
-variants × 3 seeds = 42 tasks, about 7 min each (LV2) and 30 min each (LV4), about 13 GPU-hours on
+tests (Galerkin convergence, forcing identity, bypass against autograd). Training: 2 cells × 2 amplitudes × 7
+variants × 3 seeds = 84 tasks, about 7 min each (LV2) and 30 min each (LV4), about 26 GPU-hours on
 V100 (`akz`). Energy study on `prepost` (non-billed).
 
 ## 8. Open decisions
 
-- **[AUTHOR]** Coefficient amplitude $\varepsilon=0.5$ and phase $\varphi=\pi/4$ (generic case), or also a
-  case $\varphi=0$ where $x^\star$ is a critical point of the coefficient ($\nu=2$), which the analysis
-  predicts to be more favourable still.
+- Decided 2026-09-29 (author): the amplitude is swept (§3.1) rather than fixed.
+- **[AUTHOR]** Whether to add a case $\varphi=0$, where $x^\star$ is a critical point of the coefficient
+  ($\nu=2$), which the analysis predicts to be more favourable still.
+- **[AUTHOR]** Whether the undocumented base values of $G_1$/$G_3$ (§2.1) should be replaced by values
+  fixed by a stated protocol (for instance prescribed dimensionless ratios between the principal,
+  advection and reaction terms) before this study, at the cost of losing the reduction to the
+  measured cells at $\varepsilon=0$.
 - **[AUTHOR]** Whether an order-6 cell is added to test the predicted failure of the singular-point
   freezing at $p=3$.
 - **[AUTHOR]** Whether to keep the periodic idealisation or move to a bounded interval with boundary
