@@ -400,6 +400,64 @@ def galerkin_convergence_deviation(
     return worst
 
 
+def relative_deviations_from_fields(first_values, second_values, times) -> dict:
+    r"""Relative :math:`\ell^2` deviations between two fields sampled on times :math:`\times` points.
+
+    Both arrays have shape ``(len(times), number of points)``; the second field is the
+    normalising one.  Returns
+
+    * ``per_time``: :math:`\lVert u_1(\cdot,t) - u_2(\cdot,t)\rVert / \lVert u_2(\cdot,t)\rVert`
+      at each time;
+    * ``maximum_over_times`` and ``time_of_maximum``;
+    * ``space_time``: :math:`\lVert u_1 - u_2\rVert / \lVert u_2\rVert` over all times and
+      points together, which the maximum over times bounds from above.
+
+    Raises:
+        ValueError: On mismatched shapes, or if the normalising field vanishes at some
+            time (no epsilon is added to a denominator).
+    """
+    first = np.asarray(first_values, dtype=np.float64)
+    second = np.asarray(second_values, dtype=np.float64)
+    time_values = [float(t) for t in times]
+    if first.shape != second.shape or first.ndim != 2 or first.shape[0] != len(time_values):
+        raise ValueError(
+            f"fields must share the shape (number of times, number of points); received "
+            f"{first.shape} and {second.shape} for {len(time_values)} times"
+        )
+    normalising_norms = np.linalg.norm(second, axis=1)
+    if np.any(normalising_norms == 0.0):
+        raise ValueError("the normalising field vanishes at some time; the relative deviation is undefined")
+    per_time = np.linalg.norm(first - second, axis=1) / normalising_norms
+    index_of_maximum = int(np.argmax(per_time))
+    return {
+        "per_time": [float(value) for value in per_time],
+        "maximum_over_times": float(per_time[index_of_maximum]),
+        "time_of_maximum": time_values[index_of_maximum],
+        "space_time": float(np.linalg.norm(first - second) / np.linalg.norm(second)),
+    }
+
+
+def galerkin_reference_deviations(
+    generator, datum, first_band: int, second_band: int, terminal_time: float, times, x
+) -> dict:
+    r"""Deviations between the references at truncations ``first_band`` and ``second_band``.
+
+    The references are sampled at the points ``x`` and the times ``times``; the second
+    truncation normalises.  Returns the dictionary of
+    :func:`relative_deviations_from_fields`, whose ``maximum_over_times`` entry equals
+    :func:`galerkin_convergence_deviation` and whose ``space_time`` entry is the ratio of
+    the norms over the whole space-time sample.
+    """
+    x_array = np.asarray(x, dtype=np.float64)
+    fields = []
+    for band in (first_band, second_band):
+        reference = GalerkinReferenceSolution(generator, datum, band, terminal_time)
+        fields.append(np.stack([
+            reference.field(x_array, np.full_like(x_array, float(time))) for time in times
+        ]))
+    return relative_deviations_from_fields(fields[0], fields[1], times)
+
+
 # ---------------------------------------------------------------------------
 # Exact spectral counterparts of the extensions
 # ---------------------------------------------------------------------------

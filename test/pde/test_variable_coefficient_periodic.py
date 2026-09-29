@@ -34,6 +34,9 @@ from learning_option_pricing.pde.variable_coefficient_periodic import (
     VariableCoefficientGenerator,
     build_variable_coefficient_extension,
     full_wavenumber_band,
+    galerkin_convergence_deviation,
+    galerkin_reference_deviations,
+    relative_deviations_from_fields,
     strip_forcing_energy,
     synthesise_dense,
 )
@@ -136,6 +139,39 @@ def test_reference_solution_converges_in_the_galerkin_band():
         t = np.full_like(x, time)
         deviation = np.linalg.norm(coarse.field(x, t) - fine.field(x, t)) / np.linalg.norm(fine.field(x, t))
         assert deviation <= 1e-10, (time, deviation)
+
+
+def test_relative_deviations_from_fields_on_a_known_example():
+    times = [0.0, 0.5]
+    second = np.array([[3.0, 4.0], [1.0, 0.0]])
+    first = second + np.array([[0.0, 0.5], [0.0, 1.0]])
+    deviations = relative_deviations_from_fields(first, second, times)
+    np.testing.assert_allclose(deviations["per_time"], [0.1, 1.0])
+    assert deviations["maximum_over_times"] == pytest.approx(1.0)
+    assert deviations["time_of_maximum"] == 0.5
+    assert deviations["space_time"] == pytest.approx(math.sqrt(1.25 / 26.0))
+    assert deviations["space_time"] <= deviations["maximum_over_times"]
+
+
+def test_relative_deviations_reject_a_vanishing_normalising_field():
+    with pytest.raises(ValueError):
+        relative_deviations_from_fields(np.ones((2, 3)), np.zeros((2, 3)), [0.0, 1.0])
+    with pytest.raises(ValueError):
+        relative_deviations_from_fields(np.ones((2, 3)), np.ones((3, 3)), [0.0, 1.0])
+
+
+def test_galerkin_reference_deviations_extend_the_convergence_deviation():
+    datum = BandLimitedDatum(PeriodisedBernoulliDatum(1), 8)
+    generator = _lv4_generator(0.75)
+    x = np.linspace(0.0, TWO_PI, 64, endpoint=False)
+    times = np.linspace(0.0, TERMINAL_TIME, 5)
+    deviations = galerkin_reference_deviations(generator, datum, 16, 24, TERMINAL_TIME, times, x)
+    maximum = galerkin_convergence_deviation(generator, datum, 16, 24, TERMINAL_TIME, times, x)
+    assert deviations["maximum_over_times"] == pytest.approx(maximum, rel=1e-12, abs=0.0)
+    assert len(deviations["per_time"]) == len(times)
+    # Both references return the datum at t = T (zero-padded to different bands).
+    assert deviations["per_time"][-1] <= 1e-14
+    assert deviations["space_time"] <= deviations["maximum_over_times"]
 
 
 @pytest.mark.parametrize("builder", [_lv2_generator, _lv4_generator])
