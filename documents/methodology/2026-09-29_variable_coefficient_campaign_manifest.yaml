@@ -35,7 +35,7 @@ categories:
     code_revision: 4d4eb9f
     galerkin_reference_band: 256   # revision 3: round-off of the matrix exponential grows with N^4
     slurm_jobs: [309797]           # array tasks 0-11 only
-    status: running
+    status: completed, 12/12 tasks
     run_directories:
       - 2026-09-29-11-57-56-321528Z_lv4_bernoulli_bandlimited_eps0p25_iters20000_seed0
       - 2026-09-29-11-58-00-453375Z_lv4_bernoulli_bandlimited_eps0p25_iters20000_seed1
@@ -56,7 +56,7 @@ categories:
     code_revision: 870a0e8          # runner and library identical to 4d4eb9f; the diff is the manifest and the energy-study figure script (git diff --stat 4d4eb9f 870a0e8)
     galerkin_reference_band: 256
     slurm_jobs: [5480597, 5480598]  # two arrays of 6 (Adastra array cap 11)
-    status: running
+    status: completed, 12/12 tasks
     run_directories:
       - 2026-09-29-12-06-51-770128Z_lv4_bernoulli_bandlimited_eps0p75_iters20000_seed0
       - 2026-09-29-12-06-54-735941Z_lv4_bernoulli_bandlimited_eps0p75_iters20000_seed1
@@ -81,3 +81,18 @@ energy_study:
   run_directory: data/measure_variable_coefficient_forcing_energy/2026-09-29-11-37-05-597447Z_Kmax1024_N512
   cluster: Jean Zay prepost (CPU), job 309019, code revision c3e6051
   reference_band_diagnostic: Jean Zay prepost job 309494 (exploratory, _debug_ folder), code revision e82651c
+aggregate:
+  run_directory: data/split_extension_cross_seed_summary/2026-09-29-12-38-05Z_variable_coefficient_4cell_3seed
+  cluster: Jean Zay prepost, job 311271, code revision ac6af3e
+  command: split_extension_cross_seed_summary.py --cells lv2_bernoulli_bandlimited_eps0p25 lv2_bernoulli_bandlimited_eps0p75 lv4_bernoulli_bandlimited_eps0p25 lv4_bernoulli_bandlimited_eps0p75
+  run_directories_aggregated: 12   # exactly the twelve listed above; no _debug_ run, no constant-coefficient cell
+selection_protocol_caveat: >
+  every run retains the state of lowest TRAINING mini-batch loss (no validation part; the saved
+  state is the post-step one), which paper-writing-rules.md section 5bis names as a defect. The
+  evaluation parts (grid rel_l2 against the reference, independent evaluation batch) were never
+  used for selection. For the non-split extensions the retained iterations coincide across cells
+  that share the sampler seed (constant_in_time [574, 19973, 17501] and convex_raw [15574, 19973,
+  14410] on G3, LV4 epsilon 0.25 and LV4 epsilon 0.75), so their selection is driven by the
+  sampler's luckiest batch. These results are therefore provisional pending a validation-selected
+  re-run.
+
