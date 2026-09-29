@@ -360,7 +360,7 @@ def _plot_summary_metrics(out_dir, runs, label):
         ("rel_l2", r"Relative $L^2$ (space-time strip)"),
         ("rel_l2_t0", r"Relative $L^2$ at $t=0$"),
         ("rel_l2_corner_t0", r"Corner-window relative $L^2$ at $t=0$"),
-        ("best_loss", r"Best training loss"),
+        ("loss_best_state_eval", r"Residual at the retained state (evaluation batch)"),
     ]
     names = [n for n in runs if "metrics" in runs[n]]
     if not names:

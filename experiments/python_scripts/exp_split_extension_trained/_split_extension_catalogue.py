@@ -523,6 +523,12 @@ DEFAULT_HPARAMS: dict = {
     "n_interior": 4096,
     "n_terminal": 1024,  # terminal points (diagnostic only for hard forms)
     "n_boundary": 0,
+    # Validation part (pre-registration 2026-09-29, validation-selected series):
+    # a fixed set of n_validation uniform points selects the retained state,
+    # evaluated every validation_every iterations and at the last one.
+    "n_validation": 16384,
+    "validation_every": 100,
+    "selection_rule": "validation_residual",
 }
 
 

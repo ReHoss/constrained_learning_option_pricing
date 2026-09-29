@@ -708,11 +708,13 @@ def train_variant(
     from learning_option_pricing.models.terminal_ansatz import (
         cross_check_extension_forcing_analytic_versus_autograd,
         residual_decomposition,
+        residual_loss_in_chunks,
     )
 
     generator_coefficients = problem["generator_coefficients"]
     model_seed = derive_seed(seed, "model_init")
     sampler_seed = derive_seed(seed, "sampler")
+    validation_seed = derive_seed(seed, "validation")
     model_and_field = cuda_retry(
         lambda: build_ansatz(variant, problem, hparams, model_seed=model_seed)
     )
@@ -720,6 +722,19 @@ def train_variant(
     model = cuda_retry(lambda: model.to(device))
     sample_interior, sample_terminal = make_samplers(
         problem, hparams, sampler_seed=sampler_seed, device=device
+    )
+
+    # Validation part (pre-registration 2026-09-29, validation-selected
+    # series): a FIXED point set, uniform on the cylinder like the training
+    # batches, drawn once from its own derived seed.  It is the only thing that
+    # selects the retained state; the evaluation parts never select.
+    validation_generator = torch.Generator(device="cpu")
+    validation_generator.manual_seed(validation_seed)
+    n_validation = int(hparams["n_validation"])
+    validation_every = int(hparams["validation_every"])
+    x_validation = TWO_PI * torch.rand(n_validation, generator=validation_generator)
+    t_validation = problem["terminal_time"] * torch.rand(
+        n_validation, generator=validation_generator
     )
 
     optimizer = torch.optim.Adam(
@@ -734,19 +749,32 @@ def train_variant(
         "network_energy", "cross_term", "forcing_floor",
         "forcing_velocity", "forcing_diffusion", "forcing_advection",
         "forcing_reaction", "forcing_higher_order", "grad_norm", "lr",
+        "validation_iter", "validation_residual",
     )}
-    best_loss = float("inf")
+    # Retention: argmin of the validation residual over the evaluations; the
+    # saved parameters are exactly the evaluated ones.  The minimum training
+    # mini-batch loss is tracked as a diagnostic only (it selects nothing).
+    best_validation_residual = float("inf")
+    retained_iter = -1
     best_state = None
-    best_iter = -1
+    best_training_batch_loss = float("inf")
+    best_training_batch_iter = -1
     cross_check_deviation = None
 
     n_parameters = sum(p.numel() for p in model.parameters())
     logger.info(
         "[%s/%s] training: form=%s interpolation=%s extension=%s params=%d "
-        "seeds(model=%d, sampler=%d)",
+        "seeds(model=%d, sampler=%d, validation=%d)",
         problem["cell_name"], variant["name"], variant["form"],
         variant["interpolation"], variant["extension"], n_parameters,
-        model_seed, sampler_seed,
+        model_seed, sampler_seed, validation_seed,
+    )
+    logger.info(
+        "[%s/%s] selection rule: argmin of the residual on a fixed validation set of "
+        "%d points (seed %d, uniform on the cylinder), evaluated every %d iterations and "
+        "at the last one; the training mini-batch loss selects nothing",
+        problem["cell_name"], variant["name"], n_validation, validation_seed,
+        validation_every,
     )
     logger.info(
         "[%s/%s] variant config: %s",
@@ -809,13 +837,29 @@ def train_variant(
         scheduler.step()
 
         loss_value = loss.item()
-        if loss_value < best_loss and torch.isfinite(loss).item():
-            best_loss = loss_value
-            best_iter = it
-            best_state = {
-                key: value.detach().cpu().clone()
-                for key, value in model.state_dict().items()
-            }
+        if loss_value < best_training_batch_loss and torch.isfinite(loss).item():
+            best_training_batch_loss = loss_value  # diagnostic only
+            best_training_batch_iter = it
+
+        if it % validation_every == 0 or it == num_iterations:
+            # The parameters evaluated here are the post-step parameters of
+            # iteration it, and they are the ones saved if they are retained.
+            validation_residual = residual_loss_in_chunks(
+                model, x_validation, t_validation,
+                generator_coefficients=generator_coefficients,
+                chunk_size=int(hparams["n_interior"]), device=device,
+            )
+            history["validation_iter"].append(it)
+            history["validation_residual"].append(validation_residual)
+            if math.isfinite(validation_residual) and (
+                validation_residual < best_validation_residual
+            ):
+                best_validation_residual = validation_residual
+                retained_iter = it
+                best_state = {
+                    key: value.detach().cpu().clone()
+                    for key, value in model.state_dict().items()
+                }
 
         # Dense logging over the first 100 iterations (the transient where
         # the network learns to cancel the forcing), then every log_every.
@@ -870,13 +914,24 @@ def train_variant(
                 decomposition["forcing_higher_order"].item(),
             )
 
-    if best_state is not None:
-        model.load_state_dict(best_state)
-        logger.info("[%s] restored best state from iter %d (loss=%.3e)",
-                    variant["name"], best_iter, best_loss)
+    if best_state is None:
+        raise RuntimeError(
+            f"[{variant['name']}] no finite validation residual was recorded; "
+            "no state can be retained"
+        )
+    model.load_state_dict(best_state)
+    logger.info(
+        "[%s] restored the validation-selected state from iter %d (validation "
+        "residual %.3e); diagnostic only: minimum training mini-batch loss %.3e "
+        "at iter %d",
+        variant["name"], retained_iter, best_validation_residual,
+        best_training_batch_loss, best_training_batch_iter,
+    )
 
-    history["best_iter"] = best_iter
-    history["best_loss"] = best_loss
+    history["retained_iter"] = retained_iter
+    history["validation_residual_at_retained_state"] = best_validation_residual
+    history["best_training_batch_loss"] = best_training_batch_loss
+    history["best_training_batch_iter"] = best_training_batch_iter
     history["n_parameters"] = n_parameters
     return model, history, cross_check_deviation
 
@@ -1373,6 +1428,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Basename (no extension) of the YAML config to load.",
     )
     # hyperparameter overrides
+    parser.add_argument(
+        "--series-subfolder", type=str, default=None,
+        help="Write the run directory under data/<script>/<SUBFOLDER>/ (one "
+             "subfolder per model series; aggregate it with --data-root).",
+    )
+    parser.add_argument("--n-validation", type=int, default=None,
+                        help="Size of the fixed validation set.")
+    parser.add_argument("--validation-every", type=int, default=None,
+                        help="Iterations between two validation evaluations.")
     parser.add_argument("--n-interior", type=int, default=None)
     parser.add_argument("--n-terminal", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=None)
@@ -1405,6 +1469,10 @@ def resolve_hparams(args) -> dict:
         hparams["n_terminal"] = args.n_terminal
     if args.learning_rate is not None:
         hparams["learning_rate"] = args.learning_rate
+    if getattr(args, "n_validation", None) is not None:
+        hparams["n_validation"] = args.n_validation
+    if getattr(args, "validation_every", None) is not None:
+        hparams["validation_every"] = args.validation_every
     if getattr(args, "net_width", None) is not None:
         hparams["net_width"] = args.net_width
     if getattr(args, "net_blocks", None) is not None:
@@ -1472,8 +1540,13 @@ def main(argv=None) -> int:
         arch_suffix = (
             f"_{args.arch_tag}" if getattr(args, "arch_tag", None) else ""
         )
+        series_root = script_data_dir(__file__)
+        if getattr(args, "series_subfolder", None):
+            # One subfolder per model series (e.g. the validation-selected
+            # series), so that series never mix in an aggregation.
+            series_root = series_root / args.series_subfolder
         ablation_dir = (
-            script_data_dir(__file__)
+            series_root
             / (f"{debug_prefix}{timestamp}_{args.cell}"
                f"_iters{hparams['num_iterations']}_seed{args.seed}{arch_suffix}")
         )
@@ -1630,8 +1703,12 @@ def main(argv=None) -> int:
             "terminal_target_is_zero_target": float(
                 terminal_target["terminal_target_is_zero_target"]
             ),
-            "best_loss": history["best_loss"],
-            "best_iter": float(history["best_iter"]),
+            "retained_iter": float(history["retained_iter"]),
+            "validation_residual_at_retained_state": history[
+                "validation_residual_at_retained_state"
+            ],
+            "best_training_batch_loss": history["best_training_batch_loss"],
+            "best_training_batch_iter": float(history["best_training_batch_iter"]),
             **best_state_channels,
             "forcing_floor_median_train": forcing_floor_median_train,
             "forcing_floor_closed_form": forcing_floor_closed_form,
@@ -1648,11 +1725,11 @@ def main(argv=None) -> int:
         variant_dir = ablation_dir / f"variant_{variant['name']}"
         save_variant(variant_dir, model, history, metrics, slices, spectra)
         logger.info(
-            "[%s] done in %.1fs (%.3f s/iter) | best_loss=%.3e at iter %d | "
+            "[%s] done in %.1fs (%.3f s/iter) | retained iter %d (validation residual %.3e) | "
             "rel_l2=%.3e rel_l2_t0=%.3e corner_t0=%.3e | floor(median "
             "train)=%.3e vs closed form=%.3e | k_star=%s",
             variant["name"], elapsed, seconds_per_iteration,
-            history["best_loss"], history["best_iter"],
+            history["retained_iter"], history["validation_residual_at_retained_state"],
             error_metrics["rel_l2"], error_metrics["rel_l2_t0"],
             error_metrics["rel_l2_corner_t0"],
             forcing_floor_median_train, forcing_floor_closed_form,
@@ -1667,8 +1744,12 @@ def main(argv=None) -> int:
             "terminal_target_is_zero_target": terminal_target[
                 "terminal_target_is_zero_target"
             ],
-            "best_loss": history["best_loss"],
-            "best_iter": history["best_iter"],
+            "retained_iter": history["retained_iter"],
+            "validation_residual_at_retained_state": history[
+                "validation_residual_at_retained_state"
+            ],
+            "best_training_batch_loss": history["best_training_batch_loss"],
+            "best_training_batch_iter": history["best_training_batch_iter"],
             **best_state_channels,
             "forcing_floor_median_train": forcing_floor_median_train,
             "forcing_floor_closed_form": forcing_floor_closed_form,
