@@ -18,7 +18,7 @@ complement of several regions -- none, N_w, S_eps, a strike band
 B_delta = {|s - K| < delta}, and their unions -- so that the comparison can be
 read on a region every construction treats identically.
 
-**2. Where does the error live?** For each configuration it computes, from the
+**2. How is the error distributed?** For each configuration it computes, from the
 saved models and with no retraining:
 
 - the error-energy density along s, E(s) = int_0^T |Phi_theta - V_DO|^2 dt, and
@@ -68,6 +68,10 @@ from learning_option_pricing.pricing.terminal import bsm_operator  # noqa: E402
 from learning_option_pricing.utils.figure_layout import finalize_figure  # noqa: E402
 from learning_option_pricing.utils.run_context import find_repo_root, script_data_dir  # noqa: E402
 from aggregate_terminal_function_comparison import CONFIGURATION_LABELS  # noqa: E402
+from compare_corner_treatments_profiles import (  # noqa: E402
+    TREATMENT_COLOURS, TREATMENT_LABELS, TERMINAL_PROFILE_LABELS,
+    corner_treatment_of, terminal_profile_of,
+)
 from pilot_down_and_out_put import DEVICE, load_trained_model, read_run_metadata  # noqa: E402
 
 logger = logging.getLogger("diagnose_error_localisation")
@@ -124,22 +128,22 @@ def exclusion_regions(ss: torch.Tensor, tt: torch.Tensor, K: float, B: float, T:
         },
         "minus_corner": {
             "mask": ~corner,
-            "label": rf"$\Omega\setminus N_{{{corner_window:g}}}$ (corner lozenge)",
+            "label": rf"$\Omega\setminus \mathcal{{N}}_{{{corner_window:g}}}$ (corner lozenge)",
             "definition": f"excludes |s-B| + (T-t) <= {corner_window:g}",
         },
         "minus_cutoff_strip": {
             "mask": ~strip,
-            "label": rf"$\Omega\setminus S_{{{cutoff_epsilon:g}}}$ (cutoff strip)",
+            "label": rf"$\Omega\setminus \mathcal{{Z}}_{{{cutoff_epsilon:g}}}$ (cutoff cylinder)",
             "definition": f"excludes s - B < {cutoff_epsilon:g} (all t): where zeta != 1",
         },
         "minus_strip_and_strike": {
             "mask": ~(strip | strike),
-            "label": rf"$\Omega\setminus(S_{{{cutoff_epsilon:g}}}\cup B_{{{strike_delta:g}}})$",
+            "label": rf"$\Omega\setminus(\mathcal{{Z}}_{{{cutoff_epsilon:g}}}\cup \mathcal{{K}}_{{{strike_delta:g}}})$",
             "definition": f"excludes s - B < {cutoff_epsilon:g} and |s - K| < {strike_delta:g}",
         },
         "minus_strip_strike_far": {
             "mask": ~(strip | strike | far),
-            "label": rf"$\Omega\setminus(S_{{{cutoff_epsilon:g}}}\cup B_{{{strike_delta:g}}}\cup\{{s\geq{far_field_start:g}\}})$",
+            "label": rf"$\Omega\setminus(\mathcal{{Z}}_{{{cutoff_epsilon:g}}}\cup \mathcal{{K}}_{{{strike_delta:g}}}\cup \mathcal{{W}}_{{{far_field_start:g}}})$",
             "definition": (f"excludes s - B < {cutoff_epsilon:g}, |s - K| < {strike_delta:g} "
                            f"and s >= {far_field_start:g}"),
         },
@@ -232,29 +236,47 @@ def region_metrics(grid: dict, regions: dict) -> dict:
 
 FORMULA_COMPARISON = (
     r"$\mathrm{rel}_{L^2}(A)=\|\Phi_\theta-V_{DO}\|_{L^2(A)}/\|V_{DO}\|_{L^2(A)}$ on the kept region $A$; "
-    r"$N_w=\{|s-B|+(T-t)\leq w\}$ (corner lozenge), $S_\varepsilon=\{s-B<\varepsilon\}$ (all $t$: the strip "
-    r"where the smoothing cutoff $\zeta((s-B)/\varepsilon)\neq1$, i.e. where the smoothing constructions give "
-    r"up the exact terminal trace), $B_\delta=\{|s-K|<\delta\}$ (strike band)."
+    r"$\mathcal{N}_w=\{(s,t):|s-B|+(T-t)\leq w\}$, the corner lozenge, which is NOT a product; the three "
+    r"others are space-time cylinders $I\times(0,T)$ over a price set $I$: $\mathcal{Z}_\varepsilon$ over "
+    r"$(B,B+\varepsilon)$, where the smoothing cutoff $\zeta((s-B)/\varepsilon)\neq1$ and the smoothing "
+    r"constructions give up the exact terminal trace; $\mathcal{K}_\delta$ over $(K-\delta,K+\delta)$; "
+    r"$\mathcal{W}_a$ over $[a,s_\infty)$."
     "\n"
     r"Points: individual master seeds; filled marker: across-seed median. The analytic corner treatments "
-    r"(subtraction, enrichment) have no cutoff in $s$ and give up nothing on $S_\varepsilon$; excluding it "
+    r"(subtraction, enrichment) have no cutoff in $s$ and give up nothing on $\mathcal{Z}_\varepsilon$; excluding it "
     r"removes the region the smoothing constructions sacrifice, not a region where they merely perform badly."
 )
 FORMULA_ENERGY = (
-    r"$E(s)=\int_0^T|\Phi_\theta(s,t)-V_{DO}(s,t)|^2\,\mathrm{d}t$ (left, log scale) and its cumulative share "
-    r"$\int_B^s E/\int_B^{s_\infty}E$ (right), from the saved models on the evaluation grid."
+    r"$E(s)=\int_0^T|\Phi_\theta(s,t)-V_{DO}(s,t)|^2\,\mathrm{d}t$, evaluated as the Riemann sum "
+    r"$\sum_j |\Phi_\theta(s,t_j)-V_{DO}(s,t_j)|^2\,\Delta t$ over the $200$ uniformly spaced times "
+    r"$t_j\in[0,T-10^{-4}]$ of the evaluation grid (top row, log scale), and its cumulative share "
+    r"$\int_B^sE/\int_B^{s_\infty}E$ (bottom row), from the saved models."
     "\n"
-    r"Vertical markers: $s=B$, $s=B+\varepsilon$ (edge of the cutoff strip $S_\varepsilon$), $s=K$ (strike). "
-    r"A treatment whose error is caused by the strike singularity has its $E$ peaked at $s=K$; one whose error "
-    r"is caused by the cutoff has it inside $S_\varepsilon$."
+    r"Colour: corner treatment. Vertical lines: $s=B$ and $s=K$ (dotted), $s=B+\varepsilon$ (dashed, edge of "
+    r"the cutoff cylinder $\mathcal{Z}_\varepsilon$). A treatment whose error is caused by the strike singularity has $E$ "
+    r"peaked at $s=K$ and its cumulative share stepping up there; one whose error is caused by the cutoff has "
+    r"both inside $\mathcal{Z}_\varepsilon$; one whose error is the far-field component has the step at $s\geq2$."
+)
+FORMULA_RESIDUAL_ENERGY = (
+    r"$R(s)=\int_0^T|\mathcal{L}^{BS}\Phi_\theta(s,t)|^2\,\mathrm{d}t$, the density along the price axis of "
+    r"the interior residual the training loss samples, assembled through the route used in training; same "
+    r"Riemann sum over the $200$ uniform times as $E(s)$ (top row, log scale), and its cumulative share "
+    r"(bottom row). One seed."
+    "\n"
+    r"Colour: corner treatment. Vertical lines: $s=B$ and $s=K$ (dotted), $s=B+\varepsilon$ (dashed). The "
+    r"cutoff residual is supported by the whole cylinder $\mathcal{Z}_\varepsilon$ over $(B,B+\varepsilon)$, where $\zeta'$ and "
+    r"$\zeta''$ are nonzero, not by its edge: the smoothing curves rise at $s=B$ and fall back at "
+    r"$s=B+\varepsilon$. Compare with $E(s)$: the loss is large where the error is not, and conversely."
 )
 FORMULA_MAPS = (
     r"Left: $|\Phi_\theta(s,t)-V_{DO}(s,t)|$; right: $|\mathcal{L}^{BS}\Phi_\theta(s,t)|$, the interior PDE "
     r"residual the training loss samples, assembled through the same route as in training (two-term analytic "
     r"when $g_2$ exposes a closed-form residual, one autograd graph otherwise). Both on a logarithmic colour "
-    r"scale, shared across configurations."
+    r"scale, shared across configurations; in both colour maps a DARK pixel is a LARGE value and a pale one "
+    r"a small value."
     "\n"
-    r"Dashed: $s=B+\varepsilon$ (cutoff strip edge); dotted: $s=K$. The error map says where the solution is "
+    r"Thin grey reference marks (not features of the field): dashed $s=B+\varepsilon$, the far edge of the "
+    r"cutoff cylinder $\mathcal{Z}_\varepsilon$ over $(B,B+\varepsilon)$; dotted $s=K$. The error map says where the solution is "
     r"wrong, the residual map where the loss can see it: a region with a large error and a small residual is "
     r"one the interior loss does not penalise."
 )
@@ -290,33 +312,73 @@ def plot_comparison_by_region(per_configuration: dict, regions: dict, path: Path
     finalize_figure(fig, path, formula=FORMULA_COMPARISON, axes=axes[:len(names)], formula_fontsize=6.5)
 
 
-def plot_error_energy_along_s(grids: dict, path: Path, cutoff_epsilon: float) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5.2))
-    handles = []
+def plot_energy_along_s(grids: dict, path: Path, cutoff_epsilon: float, *, field: str,
+                        title: str, density_label: str, cumulative_label: str, formula: str) -> None:
+    """One column per terminal function, the three corner treatments superposed
+    inside it (colour by treatment): the raw-payoff curves of the subtraction and
+    of the enrichment lie on top of each other to plotting accuracy, so a single
+    panel holding all ten configurations hides one under the other.
+
+    ``field`` selects what is integrated over time at fixed price: ``"error"``
+    for ``Phi_theta - V_DO``, ``"residual"`` for ``L^BS Phi_theta``. Top row: the
+    density; bottom row: its cumulative share.
+    """
+    # Group the two Black-Scholes smoothing routes into one column: they share a
+    # terminal function and differ only in how the residual is assembled.
+    column_of = {"raw": "raw", "blackscholes": "blackscholes",
+                 "blackscholes_analyticres": "blackscholes", "split": "split",
+                 "smoothed": "smoothed"}
+    columns: dict[str, list[str]] = {}
+    for configuration in grids:
+        key = column_of.get(terminal_profile_of(configuration), terminal_profile_of(configuration))
+        columns.setdefault(key, []).append(configuration)
+    order = [k for k in ("raw", "blackscholes", "smoothed", "split") if k in columns]
     first = next(iter(grids.values()))
     K, B = first["contract"]["K"], first["contract"]["B"]
-    for configuration, grid in grids.items():
-        s = grid["s_grid"].numpy()
-        dt = float(grid["t_grid"][1] - grid["t_grid"][0])
-        energy = ((grid["learned"] - grid["reference"]) ** 2).sum(dim=1).numpy() * dt
-        (line,) = axes[0].semilogy(s, np.maximum(energy, 1e-18), lw=1.5,
-                                   label=compact_label(configuration).replace("\n", " "))
-        handles.append(line)
-        cumulative = np.cumsum(energy) / energy.sum()
-        axes[1].plot(s, cumulative, lw=1.5, color=line.get_color())
-    for ax in axes:
-        ax.axvline(B, color="grey", linestyle=":", lw=1)
-        ax.axvline(B + cutoff_epsilon, color="tab:red", linestyle="--", lw=1)
-        ax.axvline(K, color="grey", linestyle=":", lw=1)
-        ax.set_xlabel("Underlying price $s$")
-        ax.grid(alpha=0.3, which="both")
-    axes[0].set_ylabel(r"$E(s)=\int_0^T|\Phi_\theta-V_{DO}|^2\,\mathrm{d}t$")
-    axes[1].set_ylabel(r"cumulative share $\int_B^s E\,/\int_B^{s_\infty}E$")
-    axes[1].set_ylim(0, 1.02)
-    legend = fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, 0.1), ncol=3, fontsize=8)
-    fig.suptitle("Down-and-out put — where the squared error lives along the price axis (one seed)", fontsize=11)
-    fig.subplots_adjust(left=0.07, right=0.98, top=0.92, bottom=0.34, wspace=0.25)
-    finalize_figure(fig, path, legends=[legend], formula=FORMULA_ENERGY, axes=list(axes), formula_fontsize=7)
+
+    fig, axes_grid = plt.subplots(2, len(order), figsize=(5.0 * len(order), 8.4), squeeze=False)
+    handles: dict[str, object] = {}
+    for column, profile in enumerate(order):
+        ax_density, ax_cumulative = axes_grid[0, column], axes_grid[1, column]
+        for configuration in columns[profile]:
+            grid = grids[configuration]
+            if field == "residual" and grid.get("residual") is None:
+                continue
+            s_axis = grid["s_grid"].numpy()
+            dt = float(grid["t_grid"][1] - grid["t_grid"][0])
+            values = (grid["learned"] - grid["reference"]) if field == "error" else grid["residual"]
+            energy = (values ** 2).sum(dim=1).numpy() * dt
+            treatment = corner_treatment_of(configuration)
+            style = {"color": TREATMENT_COLOURS[treatment], "lw": 1.6}
+            if terminal_profile_of(configuration) == "blackscholes_analyticres":
+                style |= {"linestyle": (0, (4, 1.5)), "lw": 1.3}
+            (line,) = ax_density.semilogy(s_axis, np.maximum(energy, 1e-18), **style)
+            label = TREATMENT_LABELS[treatment] + (
+                " — two-term route" if terminal_profile_of(configuration) == "blackscholes_analyticres" else "")
+            handles.setdefault(label, line)
+            ax_cumulative.plot(s_axis, np.cumsum(energy) / energy.sum(), **style)
+        for ax in (ax_density, ax_cumulative):
+            ax.axvline(B, color="grey", linestyle=":", lw=1)
+            ax.axvline(B + cutoff_epsilon, color="black", linestyle="--", lw=0.9)
+            ax.axvline(K, color="grey", linestyle=":", lw=1)
+            ax.grid(alpha=0.3, which="both")
+        ax_density.set_title(f"Terminal function: {TERMINAL_PROFILE_LABELS.get(profile, profile)}", fontsize=8.5)
+        ax_cumulative.set_xlabel("Underlying price $s$")
+        ax_cumulative.set_ylim(0, 1.02)
+    axes_grid[0, 0].set_ylabel(density_label)
+    axes_grid[1, 0].set_ylabel(cumulative_label)
+    # One shared vertical scale per row, so the columns are comparable.
+    for row in range(2):
+        limits = [axes_grid[row, c].get_ylim() for c in range(len(order))]
+        low, high = min(l[0] for l in limits), max(l[1] for l in limits)
+        for c in range(len(order)):
+            axes_grid[row, c].set_ylim(low, high)
+    legend = fig.legend(handles=list(handles.values()), labels=list(handles), loc="lower center",
+                        bbox_to_anchor=(0.5, 0.12), ncol=2, fontsize=8)
+    fig.suptitle(title, fontsize=11)
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.27, wspace=0.22, hspace=0.25)
+    finalize_figure(fig, path, legends=[legend], formula=formula,
+                    axes=list(axes_grid.reshape(-1)), formula_fontsize=7)
 
 
 def plot_error_and_residual_maps(grids: dict, path: Path, cutoff_epsilon: float, s_plot_max: float) -> None:
@@ -344,8 +406,11 @@ def plot_error_and_residual_maps(grids: dict, path: Path, cutoff_epsilon: float,
                 continue
             mesh = ax.pcolormesh(t, s[keep], np.maximum(field[keep], floor), shading="auto", cmap=cmap,
                                  norm=plt.matplotlib.colors.LogNorm(vmin=floor, vmax=vmax))
-            ax.axhline(B + cutoff_epsilon, color="tab:red", linestyle="--", lw=1)
-            ax.axhline(K, color="black", linestyle=":", lw=1)
+            # Reference marks, drawn thin and grey so they cannot be mistaken for
+            # a feature of the field: the cutoff strip is a BAND (B, B+epsilon),
+            # not a line at its edge.
+            ax.axhline(B + cutoff_epsilon, color="0.55", linestyle="--", lw=0.7, alpha=0.8)
+            ax.axhline(K, color="0.55", linestyle=":", lw=0.7, alpha=0.8)
             fig.colorbar(mesh, ax=ax, label=label)
             if row == len(configurations) - 1:
                 ax.set_xlabel("Calendar time $t$")
@@ -447,7 +512,20 @@ def main() -> None:
     plot_comparison_by_region(per_configuration, regions_for_plot,
                               out_dir / "figures" / "comparison_by_exclusion_region.png", iters)
     if grids:
-        plot_error_energy_along_s(grids, out_dir / "figures" / "error_energy_along_s.png", args.cutoff_epsilon)
+        plot_energy_along_s(
+            grids, out_dir / "figures" / "error_energy_along_s.png", args.cutoff_epsilon, field="error",
+            title="Down-and-out put — distribution of the squared error along the price axis (one seed)",
+            density_label=r"$E(s)=\int_0^T|\Phi_\theta-V_{DO}|^2\,\mathrm{d}t$",
+            cumulative_label=r"cumulative share $\int_B^s E\,/\int_B^{s_\infty} E$",
+            formula=FORMULA_ENERGY,
+        )
+        plot_energy_along_s(
+            grids, out_dir / "figures" / "residual_energy_along_s.png", args.cutoff_epsilon, field="residual",
+            title="Down-and-out put — distribution of the squared interior residual along the price axis (one seed)",
+            density_label=r"$R(s)=\int_0^T|\mathcal{L}^{BS}\Phi_\theta|^2\,\mathrm{d}t$",
+            cumulative_label=r"cumulative share $\int_B^s R\,/\int_B^{s_\infty} R$",
+            formula=FORMULA_RESIDUAL_ENERGY,
+        )
         plot_error_and_residual_maps(grids, out_dir / "figures" / "error_and_residual_maps.png",
                                      args.cutoff_epsilon, args.s_plot_max)
     logger.info(f"Figures -> {out_dir / 'figures'}")

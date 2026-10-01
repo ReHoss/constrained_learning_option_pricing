@@ -284,4 +284,103 @@
 \newcommand{\spot}{S}                                   % spot price process value
 \newcommand{\numExerciseDates}{m}                       % number of Bermudan exercise dates (last = maturity)
 
+% ===========================================================================
+% Barrier-option extensions (down-and-out put, 2026-09).
+% Reference: S. Ouaissi, "A rigorous statement of exact-constraint learning at
+% a conflicting constraint corner: the knock-out barrier option" (note A).
+% Additive only: every macro below is a NEW name; no macro above is redefined.
+%
+% Collisions with macros defined earlier in this file, resolved by context.
+% A barrier document uses the barrier reading and never the other one:
+%   \smoothingScale      = \varepsilon  (Chen-Mangasarian scale, spectral report)
+%                          -> here \varepsilon is the CORNER-LAYER bandwidth
+%                             (\cornerBandwidth) and the Chen-Mangasarian one is
+%                             \varepsilon_0 (\mangasarianScale).
+%   \wavenumber          = \xi    -> here \xi is the corner similarity variable.
+%   \policy              = \pi    -> here \pi is the terminal profile.
+%   \samplingTimePoint   = s      -> here s is the underlying price.
+%   \timeDelayPoint      = \tau   -> here \tau = T - t is the time to maturity.
+%   \discretisationSize  = N      -> here N is the standard normal distribution
+%                                    function (note A, equation (15)).
+%   \qFunction           = Q      -> note A writes Q for the pricing cylinder;
+%                                    barrier documents use \domain for that set.
+%   \pdeResidual         = R      -> reused as intended: the interior residual.
+%   \generalSpace        = E      -> here E is the corner enrichment (note A, Def. 8).
+% The option's Delta and Gamma are NOT given symbols: they are written
+% \partial_s and \partial_{ss} of the field, so that \cornerJump = \Delta keeps
+% its note-A meaning (the jump K - B) without ambiguity.
+% ===========================================================================
+
+% --- contract and geometry -------------------------------------------------
+\newcommand{\underlyingPrice}{s}                      % underlying price variable (note A); cf. \samplingTimePoint
+\newcommand{\barrierLevel}{B}                         % knock-out barrier, 0 < B < K
+\newcommand{\priceTruncation}{\underlyingPrice_{\infty}} % truncation of the price axis (note A, Remark 2)
+\newcommand{\riskFreeRate}{r}                         % risk-free rate (no dividend)
+\newcommand{\volatility}{\sigma}                      % contract volatility
+\newcommand{\comparisonVolatility}{\volatility_{c}}   % comparison volatility of the split semigroup
+\newcommand{\timeToMaturity}{\tau}                    % tau = T - t; cf. \timeDelayPoint
+\newcommand{\logMoneynessToBarrier}{y}                % y = \ln(s/B), >= 0 on the domain
+\newcommand{\parabolicBoundary}{\partial_{p}\domain}  % parabolic boundary of the cylinder \domain
+\newcommand{\terminalFace}{\Sigma_{\timeHorizon}}     % terminal face {t = T}
+\newcommand{\barrierFace}{\Sigma_{\barrierLevel}}     % barrier face {s = B}
+\newcommand{\farFace}{\Sigma_{\infty}}                % far face {s = s_infty} of the truncated cylinder
+\newcommand{\cornerPoint}{\mathfrak{c}}               % conflicting corner (B, T) (note A)
+\newcommand{\cornerJump}{\Delta}                      % corner jump K - B (note A); NOT the option's Delta
+
+% --- closed-form prices and the normal law ---------------------------------
+\newcommand{\downAndOutPutPrice}{\vFunction_{\mathrm{DO}}}      % exact down-and-out put (method of images)
+\newcommand{\downAndOutDigitalPrice}{\vFunction_{\mathrm{DOD}}} % down-and-out cash-or-nothing, note A eq. (15)
+\newcommand{\europeanPutPrice}{\vFunction^{e}}                  % Black-Scholes European put
+\newcommand{\normalCdf}{N}                                      % standard normal distribution function
+\newcommand{\normalPdf}{\varphi}                                % standard normal density
+\newcommand{\blackScholesOperator}{\pdeOperator^{\mathrm{BS}}}  % Black-Scholes interior operator
+
+% --- the three corner treatments -------------------------------------------
+\newcommand{\compositeDistance}{\mathrm{d}_{\parabolicBoundary}} % vanishes on the parabolic boundary (code: g1)
+\newcommand{\terminalProfile}{\pi}                    % terminal profile, \pi(s,T) = (K-s)^+; cf. \policy
+\newcommand{\singularPart}{\mathfrak{S}}              % closed-form singular part common to the two analytic
+                                                      % resolutions: \cornerJump\downAndOutDigitalPrice for the
+                                                      % exact subtraction, \cornerEnrichment for the enrichment.
+                                                      % Capital fraktur, so that it is not read as the price s.
+\newcommand{\cornerEnrichment}{E}                     % note A, Definition 8: E = chi Delta Lambda(xi); cf. \generalSpace
+\newcommand{\smoothingCutoff}{\zeta}                  % C^infty step of the smoothing construction (note A, Def. 5)
+\newcommand{\cornerBandwidth}{\varepsilon}            % corner-layer bandwidth; cf. \smoothingScale
+\newcommand{\mangasarianScale}{\varepsilon_{0}}       % Chen-Mangasarian payoff-smoothing scale (independent of \cornerBandwidth)
+\newcommand{\enrichmentCutoff}{\chi}                  % C^infty cutoff in s of the enrichment (note A, Def. 8)
+\newcommand{\enrichmentInnerRadius}{\delta_{0}}       % chi = 1 on {s - B <= delta_0}
+\newcommand{\enrichmentOuterRadius}{\delta_{1}}       % chi = 0 on {s - B >= delta_1}, delta_1 > delta_0
+\newcommand{\similarityVariable}{\xi}                 % xi = ln(s/B) / (sigma sqrt(2 tau)); cf. \wavenumber
+\newcommand{\similarityProfile}{\Lambda}              % leading corner profile, = erf for constant coefficients
+
+% --- subsets of the closure of \domain -------------------------------------
+% Convention: a calligraphic letter is a SUBSET of \closure{\domain}; its
+% subscript is the parameter. \cylinder{I} is the space-time cylinder over a
+% set I of prices, i.e. the product I x (0,T): every region below is such a
+% cylinder EXCEPT \cornerNeighbourhood, which is an ell^1 ball about the corner
+% and is therefore not a product.
+\newcommand{\cylinder}[1]{#1 \times (0,\timeHorizon)}
+\newcommand{\cornerNeighbourhood}{\mathcal{N}}  % N_w = {|s-B| + (T-t) <= w}: NOT a cylinder
+\newcommand{\cutoffCylinder}{\mathcal{Z}}       % Z_eps = (B, B+eps) x (0,T): where \smoothingCutoff != 1
+\newcommand{\strikeCylinder}{\mathcal{K}}       % K_delta = (K-delta, K+delta) x (0,T)
+\newcommand{\farFieldCylinder}{\mathcal{W}}     % W_a = [a, s_infty) x (0,T)
+
+% --- evaluation metrics ----------------------------------------------------
+% \relLtwo (= \eta) is the relative L^2 error already declared above; here it
+% takes the region it is computed on as an argument, since every comparison in
+% the barrier documents is region-dependent. The absolute error is written as
+% the norm itself, so that no symbol hides which region it refers to.
+\newcommand{\relativeErrorOn}[1]{\relLtwo\!\left(#1\right)}
+% Pointwise relative error of a derivative at one point, NOT to be confused
+% with \relLtwo, which is a norm over a region. The subscript is the derivation
+% operator it applies to, so no word-subscript is introduced:
+%   \pointwiseRelativeError{\partial_s}(t)      relative error of the Delta
+%   \pointwiseRelativeError{\partial_{ss}}(t)   relative error of the Gamma
+\newcommand{\pointwiseRelativeError}[1]{\relLtwo_{#1}}
+% Capital fraktur, so that neither is read as Euler's e or as \pdeResidual = R.
+\newcommand{\errorEnergyDensity}{\mathfrak{E}}    % E(s) = int_0^T |Phi_theta - V_DO|^2 dt, at fixed price
+\newcommand{\residualEnergyDensity}{\mathfrak{R}} % R(s) = int_0^T |L^BS Phi_theta|^2 dt, at fixed price
+\newcommand{\cumulativeShare}[2]{%              % cumulative share of a density #1 below the price #2
+  \frac{\int_{\barrierLevel}^{#2} #1(u)\,\mathrm{d}u}%
+       {\int_{\barrierLevel}^{\priceTruncation} #1(u)\,\mathrm{d}u}}
+
 \endinput

@@ -53,9 +53,9 @@ CONFIGURATION_DESCRIPTIONS_FR: dict[str, str] = {
     "blackscholes": r"lissage du coin, profil Black--Scholes $V^e$, route autograd ordinaire",
     "blackscholes_analyticres": r"lissage du coin, profil Black--Scholes $V^e$, route analytique à deux termes",
     "split": r"lissage du coin, profil split-semigroupe",
-    "subtraction_raw": r"soustraction exacte ($\Delta V_{DOD}$), profil payoff brut (contrôle négatif)",
-    "subtraction_blackscholes": r"soustraction exacte ($\Delta V_{DOD}$), profil Black--Scholes $V^e$",
-    "subtraction_split": r"soustraction exacte ($\Delta V_{DOD}$), profil split-semigroupe",
+    "subtraction_raw": r"soustraction exacte ($\Delta \downAndOutDigitalPrice$), profil payoff brut (contrôle négatif)",
+    "subtraction_blackscholes": r"soustraction exacte ($\Delta \downAndOutDigitalPrice$), profil Black--Scholes $V^e$",
+    "subtraction_split": r"soustraction exacte ($\Delta \downAndOutDigitalPrice$), profil split-semigroupe",
     "enrichment_raw": r"enrichissement du coin ($\chi\Delta\,\mathrm{erf}(\xi)$), profil payoff brut (contrôle négatif)",
     "enrichment_blackscholes": r"enrichissement du coin ($\chi\Delta\,\mathrm{erf}(\xi)$), profil Black--Scholes $V^e$",
     "enrichment_split": r"enrichissement du coin ($\chi\Delta\,\mathrm{erf}(\xi)$), profil split-semigroupe",
@@ -271,19 +271,19 @@ def main() -> None:
     sections.append(
         r"Métriques, toutes calculées sur la grille d'évaluation $300\times100$ de "
         r"$\Omega=(B,s_\infty)\times(0,T)$ (pas $0.008$ en $s$, $0.01$ en $t$), avec "
-        r"$N_w=\{(s,t):|s-B|+(T-t)\le w\}$ la fenêtre de coin, $w=0.1$ :"
+        r"$\cornerNeighbourhood_w=\{(s,t):|s-B|+(T-t)\le w\}$ la fenêtre de coin, $w=0.1$ :"
         "\n"
-        r"\[ \mathrm{rel}_{L^2}(A)=\frac{\|\Phi_\theta-V_{DO}\|_{L^2(A)}}{\|V_{DO}\|_{L^2(A)}}, "
-        r"\qquad A\in\{\Omega\setminus N_{0.1}\ (\text{hors coin}),\ \Omega\ (\text{global}),\ N_{0.1}\ (\text{coin})\}, "
+        r"\[ \relLtwo(A)=\frac{\|\architectureOutput_{\weights}-\downAndOutPutPrice\|_{L^2(A)}}{\|\downAndOutPutPrice\|_{L^2(A)}}, "
+        r"\qquad A\in\{\Omega\setminus \cornerNeighbourhood_{0.1}\ (\text{hors coin}),\ \Omega\ (\text{global}),\ \cornerNeighbourhood_{0.1}\ (\text{coin})\}, "
         r"\]"
-        r"\[ \text{best loss}=\min_k\ \frac{1}{n_f}\sum_{(s,t)\in\text{batch}_k}\big(\mathcal L^{BS}\Phi_\theta(s,t)\big)^2, "
-        r"\qquad \text{max\_abs}=\max_{A}|\Phi_\theta-V_{DO}|. \]"
+        r"\[ \text{best loss}=\min_k\ \frac{1}{n_f}\sum_{(s,t)\in\text{batch}_k}\big(\blackScholesOperator\architectureOutput_{\weights}(s,t)\big)^2, "
+        r"\qquad \text{max\_abs}=\max_{A}|\architectureOutput_{\weights}-\downAndOutPutPrice|. \]"
         "\n"
-        "Ces normes portent sur la \\emph{valeur} $\\Phi_\\theta-V_{DO}$, champ continu à dérivée bornée : "
+        "Ces normes portent sur la \\emph{valeur} $\\Phi_\\theta-\downAndOutPutPrice$, champ continu à dérivée bornée : "
         "un raffinement de la grille à $2400\\times800$ change chaque chiffre de moins de $1{,}3\\,\\%$ "
         "(vérifié sur trois runs, section 15.5 du document de méthodologie). "
         "Chaque point est une graine maîtresse, le losange plein la médiane sur les graines. "
-        "\\textbf{Collocation} : les runs de lissage (section 11.1 de la méthodologie) excluent $N_{0.1}$ "
+        "\\textbf{Collocation} : les runs de lissage (section 11.1 de la méthodologie) excluent $\cornerNeighbourhood_{0.1}$ "
         "de la collocation ; les runs de soustraction et d'enrichissement incluent le coin, il n'y a rien "
         "à exclure --- l'étiquette de l'axe le rappelle. Source : "
         + path_block(str(aggregation_dir.relative_to(repo_root))) + "."
@@ -291,13 +291,13 @@ def main() -> None:
     rel = copy_figure(aggregation_dir / "figures" / "terminal_function_comparison.png", "terminal_function_comparison.png")
     if rel:
         sections.append(figure_block(
-            rel, rf"De gauche à droite, de haut en bas : $\mathrm{{rel}}_{{L^2}}(\Omega\setminus N_{{0.1}})$ (métrique de "
-                 rf"comparaison), $\mathrm{{rel}}_{{L^2}}(\Omega)$, $\mathrm{{rel}}_{{L^2}}(N_{{0.1}})$ et la meilleure perte "
-                 rf"intérieure ; {iters} itérations, $\varepsilon={epsilon:g}$ pour les runs de lissage, 5 graines "
+            rel, rf"De gauche à droite, de haut en bas : $\relLtwo(\Omega\setminus \cornerNeighbourhood_{{0.1}})$ (métrique de "
+                 rf"comparaison), $\relLtwo(\Omega)$, $\relLtwo(\cornerNeighbourhood_{{0.1}})$ et la meilleure perte "
+                 rf"intérieure ; {iters} itérations, $\cornerBandwidth={epsilon:g}$ pour les runs de lissage, 5 graines "
                  r"par configuration.", "fig:comparison"))
     for heading, rows in markdown_tables(aggregation_dir / "table.md"):
-        sections.append(table_to_latex(rows, r"$\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$, $\mathrm{rel}_{L^2}(\Omega)$, "
-                                             r"$\mathrm{rel}_{L^2}(N_{0.1})$, $\max_{\Omega\setminus N_{0.1}}|\Phi_\theta-V_{DO}|$, "
+        sections.append(table_to_latex(rows, r"$\relLtwo(\Omega\setminus \cornerNeighbourhood_{0.1})$, $\relLtwo(\Omega)$, "
+                                             r"$\relLtwo(\cornerNeighbourhood_{0.1})$, $\max_{\Omega\setminus \cornerNeighbourhood_{0.1}}|\architectureOutput_{\weights}-\downAndOutPutPrice|$, "
                                              r"meilleure perte et itération correspondante ; médiane [min, max] sur les graines "
                                              r"(\texttt{table.md}).", "tab:metrics"))
         break
@@ -308,35 +308,35 @@ def main() -> None:
         sections.append(r"\section{Diagnostics à partir des modèles sauvegardés}")
         sections.append(
             r"Mêmes modèles, même grille ; aucun réentraînement. Bandes en $s$ : "
-            r"$\mathcal B=[s_1,s_2]\times(0,T)\setminus N_{0.1}$, "
-            r"$\mathrm{rel}_{L^2}(\mathcal B)=\|\Phi_\theta-V_{DO}\|_{L^2(\mathcal B)}/\|V_{DO}\|_{L^2(\mathcal B)}$ et "
-            r"$\mathrm{abs}_{L^2}(\mathcal B)=\|\Phi_\theta-V_{DO}\|_{L^2(\mathcal B)}$ avec "
+            r"$\mathcal B=[s_1,s_2]\times(0,T)\setminus \cornerNeighbourhood_{0.1}$, "
+            r"$\relLtwo(\mathcal B)=\|\architectureOutput_{\weights}-\downAndOutPutPrice\|_{L^2(\mathcal B)}/\|\downAndOutPutPrice\|_{L^2(\mathcal B)}$ et "
+            r"$\mathrm{abs}_{L^2}(\mathcal B)=\|\architectureOutput_{\weights}-\downAndOutPutPrice\|_{L^2(\mathcal B)}$ avec "
             r"$\|f\|_{L^2(\mathcal B)}=(\sum_{\mathcal B}f^2\,\Delta s\,\Delta t)^{1/2}$. "
-            r"La bande $[2,s_\infty]$ est à lire en absolu : $\|V_{DO}\|_{L^2}$ y vaut $1.1\times10^{-4}$, "
+            r"La bande $[2,s_\infty]$ est à lire en absolu : $\|\downAndOutPutPrice\|_{L^2}$ y vaut $1.1\times10^{-4}$, "
             r"une erreur relative de $3$ y correspond à une erreur absolue de $3\times10^{-4}$."
         )
         rel = copy_figure(diagnostics_dir / "figures" / "rel_l2_vs_excluded_area_by_window_shape.png",
                           "rel_l2_vs_excluded_area_by_window_shape.png")
         if rel:
             sections.append(figure_block(
-                rel, r"$\mathrm{rel}_{L^2}(\Omega\setminus N)$ pour trois familles de fenêtre $N$ autour du coin "
-                     r"(losange $N_w=\{|s-B|+\tau\le w\}$, parabole $N_c=\{|s-B|\le cB\sigma\sqrt\tau\}$, "
+                rel, r"$\relLtwo(\Omega\setminus N)$ pour trois familles de fenêtre $N$ autour du coin "
+                     r"(losange $\cornerNeighbourhood_w=\{|s-B|+\tau\le w\}$, parabole $N_c=\{|s-B|\le cB\sigma\sqrt\tau\}$, "
                      r"hyperbole $N_d=\{\tau(s-B)\le d\}$, $\tau=T-t$), en fonction de la fraction d'aire exclue "
                      r"$|N\cap\Omega|/|\Omega|$ ; un panneau par configuration.", "fig:window-shapes"))
         rel = copy_figure(diagnostics_dir / "figures" / "band_network_contribution.png", "band_network_contribution.png")
         if rel:
             sections.append(figure_block(
-                rel, r"Bande $\mathcal B=\{0.1<|s-B|<0.3\}$ (tout $t$) : $\|\Phi_\theta-V_{DO}\|_{L^2(\mathcal B)}$ "
-                     r"(losanges, solution entraînée) contre $\|g_2-V_{DO}\|_{L^2(\mathcal B)}$ (tirets rouges, "
-                     r"extension seule, sans réseau) et $\|V_{DO}\|_{L^2(\mathcal B)}$ (pointillés, échelle). "
+                rel, r"Bande $\mathcal B=\{0.1<|s-B|<0.3\}$ (tout $t$) : $\|\architectureOutput_{\weights}-\downAndOutPutPrice\|_{L^2(\mathcal B)}$ "
+                     r"(losanges, solution entraînée) contre $\|g_2-\downAndOutPutPrice\|_{L^2(\mathcal B)}$ (tirets rouges, "
+                     r"extension seule, sans réseau) et $\|\downAndOutPutPrice\|_{L^2(\mathcal B)}$ (pointillés, échelle). "
                      r"Un rapport proche de 1 signifie que le réseau n'apporte rien dans la bande.", "fig:band"))
         band_tables = markdown_tables(diagnostics_dir / "s_band_errors.md")
         for heading, rows in band_tables:
             if heading.startswith("Relative"):
-                sections.append(table_to_latex(rows, r"$\mathrm{rel}_{L^2}(\mathcal B)$ par bande $\mathcal B$ de $s$ "
-                                                     r"(tout $t$, $N_{0.1}$ retirée), médiane [min, max] sur les graines.", "tab:bands-rel"))
+                sections.append(table_to_latex(rows, r"$\relLtwo(\mathcal B)$ par bande $\mathcal B$ de $s$ "
+                                                     r"(tout $t$, $\cornerNeighbourhood_{0.1}$ retirée), médiane [min, max] sur les graines.", "tab:bands-rel"))
             elif heading.startswith("Absolute"):
-                sections.append(table_to_latex(rows, r"$\mathrm{abs}_{L^2}(\mathcal B)=\|\Phi_\theta-V_{DO}\|_{L^2(\mathcal B)}$ "
+                sections.append(table_to_latex(rows, r"$\mathrm{abs}_{L^2}(\mathcal B)=\|\architectureOutput_{\weights}-\downAndOutPutPrice\|_{L^2(\mathcal B)}$ "
                                                      r"par bande de $s$ (norme discrète pondérée par l'aire des cellules), "
                                                      r"médiane [min, max] sur les graines.", "tab:bands-abs"))
 
@@ -345,31 +345,31 @@ def main() -> None:
         sections.append(r"\section{Grecques au strike}")
         sections.append(
             r"Erreur relative \emph{ponctuelle} en $s=K$, à cinq dates $t\in\{0,0.25,0.5,0.75,0.9\}$ :"
-            r"\[ \mathrm{err}_{\mathrm{rel}}\,\Delta(t)=\frac{|\partial_s\Phi_\theta(K,t)-\partial_sV_{DO}(K,t)|}{|\partial_sV_{DO}(K,t)|},"
-            r"\qquad \mathrm{err}_{\mathrm{rel}}\,\Gamma(t)=\frac{|\partial_{ss}\Phi_\theta(K,t)-\partial_{ss}V_{DO}(K,t)|}{|\partial_{ss}V_{DO}(K,t)|}. \]"
+            r"\[ \pointwiseRelativeError{\partial_{\underlyingPrice}}(t)=\frac{|\partial_s\architectureOutput_{\weights}(K,t)-\partial_s\downAndOutPutPrice(K,t)|}{|\partial_s\downAndOutPutPrice(K,t)|},"
+            r"\qquad \pointwiseRelativeError{\partial_{\underlyingPrice\underlyingPrice}}(t)=\frac{|\partial_{ss}\architectureOutput_{\weights}(K,t)-\partial_{ss}\downAndOutPutPrice(K,t)|}{|\partial_{ss}\downAndOutPutPrice(K,t)|}. \]"
             r"Côté entraîné : $\partial_s$, $\partial_{ss}$ de $g_1u_\theta$ par deux passes autograd imbriquées "
             r"au point $(K,t)$, dérivées de $g_2$ en forme fermée (split, soustraction, enrichissement) ou par "
             r"autograd (lissage Black--Scholes) ; côté référence : dérivée symbolique (sympy, évaluation mpmath) "
             r"de la forme fermée de Reiner--Rubinstein. Aucune grille n'intervient : ce sont des valeurs "
             r"ponctuelles, pas des quadratures, donc la largeur du pic de $\partial_{ss}$ au strike n'est pas un "
-            r"problème de résolution. La fragilité est celle d'un point : $\partial_{ss}V_{DO}(K,t)$ change de "
+            r"problème de résolution. La fragilité est celle d'un point : $\partial_{ss}\downAndOutPutPrice(K,t)$ change de "
             r"signe vers $t\approx0.27$, et l'erreur relative est mal conditionnée près de ce zéro (lignes $t=0.25$). "
             "Médiane [min, max] sur 5 graines. Source : " + path_block(str(greeks_dir.relative_to(repo_root))) + "."
         )
         rel = copy_figure(greeks_dir / "figures" / "greeks_no_corner.png", "greeks_no_corner.png")
         if rel:
             sections.append(figure_block(
-                rel, r"$\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$ en fonction de $\tau=T-t$ (log-log), une courbe par "
+                rel, r"$\pointwiseRelativeError{\partial_{\underlyingPrice\underlyingPrice}}(t)$ en fonction de $\tau=T-t$ (log-log), une courbe par "
                      r"configuration (médiane sur les graines ; points pâles : graines). Les tirets verticaux marquent "
-                     r"les $\tau$ où $|\partial_{ss}V_{DO}(K,t)|$ est inférieur à $10\,\%$ de son maximum (erreur "
+                     r"les $\tau$ où $|\partial_{ss}\downAndOutPutPrice(K,t)|$ est inférieur à $10\,\%$ de son maximum (erreur "
                      r"relative mal conditionnée).", "fig:greeks"))
         for heading, rows in markdown_tables(greeks_dir / "greeks_no_corner_table.md"):
             sections.append(table_to_latex(pivot_greeks_table(rows, "err_rel_Delta"),
-                                           r"$\mathrm{err}_{\mathrm{rel}}\,\Delta(t)$ au strike, une ligne par configuration, "
+                                           r"$\pointwiseRelativeError{\partial_{\underlyingPrice}}(t)$ au strike, une ligne par configuration, "
                                            r"une colonne par $t$ ; médiane [min, max] sur 5 graines.", "tab:greeks-delta"))
             sections.append(table_to_latex(pivot_greeks_table(rows, "err_rel_Gamma"),
-                                           r"$\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$ au strike, idem. La colonne $t=0.25$ "
-                                           r"est mal conditionnée ($\partial_{ss}V_{DO}(K,0.25)=-3.3\times10^{-2}$, proche de "
+                                           r"$\pointwiseRelativeError{\partial_{\underlyingPrice\underlyingPrice}}(t)$ au strike, idem. La colonne $t=0.25$ "
+                                           r"est mal conditionnée ($\partial_{ss}\downAndOutPutPrice(K,0.25)=-3.3\times10^{-2}$, proche de "
                                            r"son zéro) et n'est pas à lire comme une performance.", "tab:greeks-gamma"))
             break
 
@@ -398,7 +398,7 @@ def main() -> None:
                               f"profiles_price_delta_gamma{suffix}.png")
             if rel:
                 sections.append(figure_block(
-                    rel, r"Lignes : $\Phi_\theta(s,t)$, $\partial_s\Phi_\theta(s,t)$, $\partial_{ss}\Phi_\theta(s,t)$ ; "
+                    rel, r"Lignes : $\architectureOutput_{\weights}(s,t)$, $\partial_s\architectureOutput_{\weights}(s,t)$, $\partial_{ss}\architectureOutput_{\weights}(s,t)$ ; "
                          r"colonnes : $t\in\{0,0.5,0.9,0.99\}$ ; forme fermée en tirets noirs. Prix en échelle "
                          r"linéaire ; $\Delta$ et $\Gamma$ en échelle symlog (linéaire sous $0.1$, logarithmique "
                          r"au-delà, des deux côtés de zéro).", f"fig:profiles{suffix}", landscape=True))
@@ -410,7 +410,7 @@ def main() -> None:
                     rel, r"Même figure, restreinte à la région du coin $s\in(B, B+0.3)$ et évaluée sur sa propre "
                          r"grille dense (600 points, pas $5\times10^{-4}$). Tirets gris verticaux : "
                          r"$s=B+B\sigma\sqrt{2(T-t)}$, la longueur de diffusion de la couche de coin à ce $t$. "
-                         r"Les ondulations de $\partial_{ss}\Phi_\theta$ du run de lissage (orange) sont confinées "
+                         r"Les ondulations de $\partial_{ss}\architectureOutput_{\weights}$ du run de lissage (orange) sont confinées "
                          r"à la bande de transition du cutoff $\zeta((s-B)/\varepsilon)$, $s\in[0.6,0.7]$ : c'est la "
                          r"courbure de $\zeta$ ($\zeta''\sim\varepsilon^{-2}$) que le réseau n'annule pas. "
                          r"La soustraction (vert) est confondue avec la forme fermée sur les trois lignes ; "
@@ -421,21 +421,21 @@ def main() -> None:
                               f"absolute_errors_along_s{suffix}.png")
             if rel:
                 sections.append(figure_block(
-                    rel, r"Erreurs absolues ponctuelles le long de $s$ : $e_0=|\Phi_\theta-V_{DO}|$, "
-                         r"$e_1=|\partial_s\Phi_\theta-\partial_sV_{DO}|$, "
-                         r"$e_2=|\partial_{ss}\Phi_\theta-\partial_{ss}V_{DO}|$ (échelle log). C'est la figure qui "
+                    rel, r"Erreurs absolues ponctuelles le long de $s$ : $e_0=|\architectureOutput_{\weights}-\downAndOutPutPrice|$, "
+                         r"$e_1=|\partial_s\architectureOutput_{\weights}-\partial_s\downAndOutPutPrice|$, "
+                         r"$e_2=|\partial_{ss}\architectureOutput_{\weights}-\partial_{ss}\downAndOutPutPrice|$ (échelle log). C'est la figure qui "
                          r"localise la valeur ajoutée des traitements analytiques. Les erreurs relatives par bande "
-                         r"grandissent avec $s$ pour toutes les configurations parce que $V_{DO}\to0$, pas parce "
+                         r"grandissent avec $s$ pour toutes les configurations parce que $\downAndOutPutPrice\to0$, pas parce "
                          r"que l'erreur absolue grandit.", f"fig:abs-errors{suffix}", landscape=True))
 
             rel = copy_figure(profiles_dir / "figures" / "greeks_at_strike_vs_time.png",
                               f"greeks_at_strike_vs_time{suffix}.png")
             if rel:
                 sections.append(figure_block(
-                    rel, r"Haut : $\partial_s\Phi_\theta(K,t)$ et $\partial_{ss}\Phi_\theta(K,t)$ en fonction de $t$ "
-                         r"(traits pleins), valeurs exactes en tirets. Bas : $\mathrm{err}_{\mathrm{rel}}\,\Delta(t)$ "
-                         r"et $\mathrm{err}_{\mathrm{rel}}\,\Gamma(t)$ (échelle log). La verticale grise marque le "
-                         r"zéro de $\partial_{ss}V_{DO}(K,\cdot)$, où l'erreur relative est mal conditionnée.",
+                    rel, r"Haut : $\partial_s\architectureOutput_{\weights}(K,t)$ et $\partial_{ss}\architectureOutput_{\weights}(K,t)$ en fonction de $t$ "
+                         r"(traits pleins), valeurs exactes en tirets. Bas : $\pointwiseRelativeError{\partial_{\underlyingPrice}}(t)$ "
+                         r"et $\pointwiseRelativeError{\partial_{\underlyingPrice\underlyingPrice}}(t)$ (échelle log). La verticale grise marque le "
+                         r"zéro de $\partial_{ss}\downAndOutPutPrice(K,\cdot)$, où l'erreur relative est mal conditionnée.",
                     f"fig:greeks-vs-t{suffix}", width=r"0.95\linewidth"))
 
     # ---- 4b. singular parts of the two analytic corner resolutions -----------
@@ -443,15 +443,15 @@ def main() -> None:
         sections.append(r"\section{Quelle région exclut-on, et où l'erreur se trouve-t-elle ?}")
         sections.append(
             r"La métrique de comparaison des sections précédentes retire la fenêtre de coin "
-            r"$N_w=\{|s-B|+(T-t)\le w\}$, un losange qui ne touche le coin qu'au voisinage de $t=T$. Or les "
+            r"$\cornerNeighbourhood_w=\{|s-B|+(T-t)\le w\}$, un losange qui ne touche le coin qu'au voisinage de $t=T$. Or les "
             r"constructions de lissage abandonnent la trace terminale exacte sur toute la bande"
-            r"\[ S_\varepsilon=\{(s,t)\ :\ s-B<\varepsilon\}\qquad(\text{tout }t), \]"
-            r"puisque $\zeta((s-B)/\varepsilon)=1$ exactement seulement pour $s-B\ge\varepsilon$. Retirer $N_w$ "
+            r"\[ \cutoffCylinder_{\cornerBandwidth}=\{(s,t)\ :\ s-B<\varepsilon\}\qquad(\text{tout }t), \]"
+            r"puisque $\zeta((s-B)/\varepsilon)=1$ exactement seulement pour $s-B\ge\varepsilon$. Retirer $\cornerNeighbourhood_w$ "
             r"laisse donc l'essentiel de la région sacrifiée \emph{à l'intérieur} de la métrique, alors que les "
             r"traitements analytiques n'y sacrifient rien : la comparaison sur $\Omega\setminus N_w$ n'est pas "
             r"une comparaison à région également traitée. Les panneaux ci-dessous recalculent "
-            r"$\mathrm{rel}_{L^2}$ sur le complémentaire de cinq régions --- rien, $N_w$, $S_\varepsilon$, "
-            r"$S_\varepsilon\cup B_\delta$ avec la bande de strike $B_\delta=\{|s-K|<\delta\}$, et en retirant "
+            r"$\relLtwo$ sur le complémentaire de cinq régions --- rien, $\cornerNeighbourhood_w$, $\cutoffCylinder_{\cornerBandwidth}$, "
+            r"$\cutoffCylinder_{\cornerBandwidth}\cup \strikeCylinder_{\delta}$ avec la bande de strike $\strikeCylinder_{\delta}=\{|s-K|<\delta\}$, et en retirant "
             r"en plus le champ lointain $\{s\ge2\}$ --- à partir des modèles sauvegardés, en float64. Source : "
             + path_block(str(localisation_dir.relative_to(repo_root))) + "."
         )
@@ -459,22 +459,32 @@ def main() -> None:
                           "comparison_by_exclusion_region.png")
         if rel:
             sections.append(figure_block(
-                rel, r"$\mathrm{rel}_{L^2}(A)=\|\Phi_\theta-V_{DO}\|_{L^2(A)}/\|V_{DO}\|_{L^2(A)}$ sur la région "
+                rel, r"$\relLtwo(A)=\|\architectureOutput_{\weights}-\downAndOutPutPrice\|_{L^2(A)}/\|\downAndOutPutPrice\|_{L^2(A)}$ sur la région "
                      r"conservée $A$, un panneau par région exclue ; points : graines individuelles, losange "
                      r"plein : médiane sur les graines.", "fig:exclusion-regions"))
         rel = copy_figure(localisation_dir / "figures" / "error_energy_along_s.png", "error_energy_along_s.png")
         if rel:
             sections.append(figure_block(
-                rel, r"Densité d'énergie d'erreur le long de $s$, $E(s)=\int_0^T|\Phi_\theta-V_{DO}|^2\,\mathrm{d}t$ "
+                rel, r"Densité d'énergie d'erreur le long de $s$, $E(s)=\int_0^T|\architectureOutput_{\weights}-\downAndOutPutPrice|^2\,\mathrm{d}t$ "
                      r"(gauche, échelle log) et part cumulée $\int_B^sE/\int_B^{s_\infty}E$ (droite). Verticales : "
-                     r"$s=B$ et $s=K$ (pointillés), $s=B+\varepsilon$ (tirets rouges, bord de $S_\varepsilon$). "
+                     r"$s=B$ et $s=K$ (pointillés), $s=B+\varepsilon$ (tirets rouges, bord de $\cutoffCylinder_{\cornerBandwidth}$). "
                      r"Une construction dont l'erreur est causée par la singularité au strike a son $E$ maximal "
-                     r"en $s=K$ ; une dont l'erreur est causée par le cutoff l'a dans $S_\varepsilon$.",
+                     r"en $s=K$ ; une dont l'erreur est causée par le cutoff l'a dans $\cutoffCylinder_{\cornerBandwidth}$.",
                 "fig:error-energy"))
+        rel = copy_figure(localisation_dir / "figures" / "residual_energy_along_s.png",
+                          "residual_energy_along_s.png")
+        if rel:
+            sections.append(figure_block(
+                rel, r"Densité du résidu intérieur le long de $s$, "
+                     r"$R(s)=\int_0^T|\blackScholesOperator\architectureOutput_{\weights}|^2\,\mathrm{d}t$ (haut, échelle "
+                     r"logarithmique) et part cumulée (bas) : ce que la perte voit, à comparer avec $E(s)$, "
+                     r"qui dit où la solution est fausse. Le résidu du cutoff occupe toute la bande "
+                     r"$(B,B+\varepsilon)$ et retombe de quatre à six ordres de grandeur au-delà.",
+                "fig:residual-energy"))
         rel = copy_figure(localisation_dir / "figures" / "error_and_residual_maps.png", "error_and_residual_maps.png")
         if rel:
             sections.append(figure_block(
-                rel, r"Gauche : $|\Phi_\theta-V_{DO}|$ ; droite : $|\mathcal L^{BS}\Phi_\theta|$, le résidu "
+                rel, r"Gauche : $|\architectureOutput_{\weights}-\downAndOutPutPrice|$ ; droite : $|\blackScholesOperator\architectureOutput_{\weights}|$, le résidu "
                      r"intérieur que la perte échantillonne, assemblé par la route utilisée à l'entraînement. "
                      r"Échelle de couleur logarithmique, commune aux configurations ; tirets : $s=B+\varepsilon$, "
                      r"pointillés : $s=K$. La carte d'erreur dit où la solution est fausse, la carte de résidu "
@@ -496,7 +506,7 @@ def main() -> None:
         sections.append(
             r"Les deux résolutions analytiques écrivent l'extension comme une partie singulière qui reproduit le "
             r"saut du coin plus un reste régulier, $g_2 = S + h$ avec $\Delta = K-B$, et ne diffèrent que par le "
-            r"choix de $S$ : $S_{\mathrm{sub}} = \Delta\,V_{DOD}$ (la digitale down-and-out, Définition 7) contre "
+            r"choix de $S$ : $S_{\mathrm{sub}} = \Delta\,\downAndOutDigitalPrice$ (la digitale down-and-out, Définition 7) contre "
             r"$S_{\mathrm{enr}} = \chi(s)\,\Delta\,\mathrm{erf}(\xi)$ avec "
             r"$\xi = \ln(s/B)/(\sigma\sqrt{2(T-t)})$ (le profil de similarité de la limite en temps court, "
             r"Définition 8). Les deux reproduisent exactement les deux traces, donc les prix entraînés ne sont pas "
@@ -523,11 +533,11 @@ def main() -> None:
         if rel:
             sections.append(figure_block(
                 rel, r"(a) et (b) : les deux parties singulières sur la même échelle. La digitale "
-                     r"$\Delta\,V_{DOD}$ monte de $0$ à la barrière jusqu'à $\Delta=0.4$ et le reste sur tout le "
+                     r"$\Delta\,\downAndOutDigitalPrice$ monte de $0$ à la barrière jusqu'à $\Delta=0.4$ et le reste sur tout le "
                      r"domaine ; le profil de similarité, coupé par $\chi$, est nul au-delà de "
                      r"$s = B+\delta_1 = 0.9$. (c) : leur différence, qui vaut donc $-\Delta$ dans tout le champ "
-                     r"lointain. (d) : $\mathcal L^{BS}S_{\mathrm{sub}}$, identiquement nul. "
-                     r"(e) : $\mathcal L^{BS}S_{\mathrm{enr}}$ en échelle symlog, concentré dans la bande "
+                     r"lointain. (d) : $\blackScholesOperator S_{\mathrm{sub}}$, identiquement nul. "
+                     r"(e) : $\blackScholesOperator S_{\mathrm{enr}}$ en échelle symlog, concentré dans la bande "
                      r"$[B, B+\delta_1]$ et d'amplitude d'ordre $1$ : c'est le forçage que le réseau doit "
                      r"absorber, et la raison pour laquelle la meilleure perte intérieure de l'enrichissement est "
                      r"un à deux ordres de grandeur au-dessus de celle de la soustraction. (f) : la différence des "
@@ -548,7 +558,7 @@ def main() -> None:
                      r"croît de façon monotone vers $\Delta$, le profil de similarité (violet) culmine à $\Delta$ "
                      r"puis est ramené à zéro par le cutoff. Ligne du milieu : la différence des parties "
                      r"singulières (orange), qui sature à $-\Delta$, et celle des extensions complètes (bleu), qui "
-                     r"reste sous $0.09$. Ligne du bas : $|\mathcal L^{BS}S|$ en échelle logarithmique ; celui de "
+                     r"reste sous $0.09$. Ligne du bas : $|\blackScholesOperator S|$ en échelle logarithmique ; celui de "
                      r"la soustraction est exactement nul et ne peut pas être tracé sur un axe logarithmique, ce "
                      r"que le panneau indique.", "fig:singular-parts-slices", landscape=True))
 
@@ -564,7 +574,7 @@ def main() -> None:
             r"La dérivée seconde en prix est la quantité la plus exposée au forçage intérieur de la section "
             r"précédente, et c'est celle à réduire si l'enrichissement doit être amélioré. La figure de zoom du "
             r"coin de la section précédente trace les deux traitements analytiques \emph{avec} le run de "
-            r"lissage, dont $\partial_{ss}\Phi_\theta$ oscille sur quatre décades dans le même panneau : à cette "
+            r"lissage, dont $\partial_{ss}\architectureOutput_{\weights}$ oscille sur quatre décades dans le même panneau : à cette "
             r"échelle les deux courbes analytiques sont confondues et leur écart n'est pas lisible. Les figures "
             r"ci-dessous retirent le lissage et résolvent les deux traitements analytiques seuls, sur les cinq "
             r"graines maîtresses. Évaluation ponctuelle en float64 à partir des modèles sauvegardés, sans "
@@ -598,10 +608,10 @@ def main() -> None:
         rel = copy_figure(gamma_dir / "figures" / "gamma_profiles_corner.png", "gamma_profiles_corner.png")
         if rel:
             sections.append(figure_block(
-                rel, r"Ligne du haut : $\partial_{ss}\Phi_\theta(s,t)$ des deux traitements (médiane sur les "
-                     r"graines en trait épais, graines individuelles en trait fin) et $\partial_{ss}V_{DO}$ en "
+                rel, r"Ligne du haut : $\partial_{ss}\architectureOutput_{\weights}(s,t)$ des deux traitements (médiane sur les "
+                     r"graines en trait épais, graines individuelles en trait fin) et $\partial_{ss}\downAndOutPutPrice$ en "
                      r"tirets noirs. Ligne du milieu : l'erreur signée $e_\Gamma$, en échelle symlog. Ligne du "
-                     r"bas : $|e_\Gamma|$ en échelle logarithmique, avec $|\mathcal L^{BS}S_{\mathrm{enr}}|$ "
+                     r"bas : $|e_\Gamma|$ en échelle logarithmique, avec $|\blackScholesOperator S_{\mathrm{enr}}|$ "
                      r"superposé en pointillé sur l'axe de droite. La lecture : l'erreur de Gamma de "
                      r"l'enrichissement oscille entre la barrière et $s=B+\delta_1=0.9$, exactement le support du "
                      r"forçage, et rejoint celle de la soustraction au-delà.",
@@ -632,7 +642,7 @@ def main() -> None:
         r"symlog (linéaire sous $10^{-6}$, logarithmique au-delà) --- le prix va de $0.4$ près de la barrière à "
         r"$10^{-5}$ dans le champ lointain, invisible en linéaire, et un prix entraîné qui change de signe y "
         r"apparaît comme un passage sous zéro, pas comme une chute vers un plancher ; et, pour les traitements "
-        r"analytiques, la décomposition de l'estimateur $\Phi_\theta=S+h+g_1u_\theta$ ($S=\Delta V_{DOD}$ ou "
+        r"analytiques, la décomposition de l'estimateur $\architectureOutput_{\weights}=S+h+g_1u_\theta$ ($S=\Delta \downAndOutDigitalPrice$ ou "
         r"$S=\chi\Delta\,\mathrm{erf}(\xi)$, $h=\pi-\chi\,\pi(B,\cdot)$). Cette dernière montre ce que la partie "
         r"en forme fermée reproduit à elle seule, ce que l'extension régulière ajoute et ce qui reste au réseau : "
         r"pour la soustraction le réseau est presque nul (l'ansatz porte la solution) ; pour l'enrichissement "
@@ -661,7 +671,7 @@ def main() -> None:
             ("log_slice_eps*.png", r"Coupes $V(s,t)$ à $t\in\{0,0.5,0.9\}$, échelle symlog (solution entraînée en "
                                    r"trait plein, forme fermée en tirets ; trait vertical : $s=B$)."),
             ("subtraction_decomposition.png", r"Décomposition de l'estimateur : partie singulière en forme fermée, "
-                                              r"extension régulière $h$, réseau $g_1u_\theta$, total, contre $V_{DO}$."),
+                                              r"extension régulière $h$, réseau $g_1u_\theta$, total, contre $\downAndOutPutPrice$."),
         ):
             for source in sorted(run_figures.glob(pattern)):
                 rel = copy_figure(source, f"{configuration}_seed{args.seed}_{source.name}")
@@ -677,17 +687,27 @@ def main() -> None:
         r"\usepackage[T1]{fontenc}", r"\usepackage[utf8]{inputenc}", r"\usepackage[french]{babel}",
         r"\usepackage{amsmath,amssymb}", r"\usepackage{booktabs}", r"\usepackage{graphicx}",
         r"\usepackage{adjustbox}", r"\usepackage{float}", r"\usepackage{xcolor}", r"\usepackage{pdflscape}",
+        # Notations partagees du depot : le fichier est copie a cote du .tex par
+        # copy_notation_package ci-dessous, pour que le rapport reste compilable seul.
+        r"\usepackage{notation}",
         r"\usepackage{url}", r"\urlstyle{tt}",
         r"\usepackage[colorlinks=true,allcolors=blue!55!black]{hyperref}",
         rf"\title{{{args.title}}}", r"\author{}", rf"\date{{{datetime.now().strftime('%Y-%m-%d')}}}",
         r"\begin{document}", r"\maketitle", r"\tableofcontents", r"\clearpage",
         r"Recueil des figures et tables produites par les scripts d'agrégation, sans aucun recalcul : "
         r"chaque légende indique ce qui est tracé ; les chemins des artefacts sources sont donnés en tête "
-        r"de section. Notation : $\Delta=K-B$, $V_{DOD}$ le prix du digital down-and-out, "
+        r"de section. Notation : $\Delta=K-B$, $\downAndOutDigitalPrice$ le prix du digital down-and-out, "
         r"$\xi=\ln(s/B)/(\sigma\sqrt{2(T-t)})$, $\chi$ le cutoff de l'enrichissement, "
-        r"$N_{0.1}=\{|s-B|+(T-t)\le0.1\}$ la fenêtre de coin des métriques.",
+        r"$\cornerNeighbourhood_{0.1}=\{|s-B|+(T-t)\le0.1\}$ la fenêtre de coin des métriques.",
         "", *sections, r"\end{document}", "",
     ])
+    notation_source = repo_root / "documents" / "reports" / (
+        "2026-07-03_constrained_learning_spectral_and_induction") / "notation.sty"
+    if notation_source.exists():
+        shutil.copy2(notation_source, out_dir / "notation.sty")
+        logger.info(f"  notation package: {notation_source} -> {out_dir / 'notation.sty'}")
+    else:
+        logger.warning(f"  notation package not found at {notation_source}; the report will not compile")
     tex_path = out_dir / "corner_treatment_figures.tex"
     tex_path.write_text(tex)
     logger.info(f"LaTeX written -> {tex_path}")
