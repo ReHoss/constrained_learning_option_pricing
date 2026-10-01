@@ -1,0 +1,20 @@
+# republique (AVX2, 16 coeurs -> 4 jobs x 4 threads) : enrichissement du coin AVEC la condition
+# de Dirichlet en s_inf, 50000 iterations, coin inclus dans la collocation, graines 0-4,
+# profils Black-Scholes puis split. Memes graines, memes threads et meme hote que le lot
+# d'enrichissement sans condition (20260921), pour que la comparaison soit appariee.
+#
+# Pourquoi seulement l'enrichissement : la borne de troncature sup_t |g2(s_inf,t) - V_DO(s_inf,t)|
+# vaut 4.1e-08 (profil Black-Scholes) et 1.6e-06 (split) pour l'enrichissement, parce que son
+# cutoff chi s'annule en s_inf (delta_1 = 0.3) et que g2 s'y reduit au profil terminal. Pour la
+# soustraction la meme borne vaut 1.25e-02 et 9.7e-03, soit 36 fois l'erreur totale actuelle :
+# la condition y imposerait une valeur fausse. Mesure du 2026-10-02.
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --iters 50000 --seed 0
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --iters 50000 --seed 1
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --iters 50000 --seed 2
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --iters 50000 --seed 3
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --iters 50000 --seed 4
+--corner-treatment enrichment --split-payoff --far-field-dirichlet --iters 50000 --seed 0
+--corner-treatment enrichment --split-payoff --far-field-dirichlet --iters 50000 --seed 1
+--corner-treatment enrichment --split-payoff --far-field-dirichlet --iters 50000 --seed 2
+--corner-treatment enrichment --split-payoff --far-field-dirichlet --iters 50000 --seed 3
+--corner-treatment enrichment --split-payoff --far-field-dirichlet --iters 50000 --seed 4
