@@ -352,23 +352,43 @@
 \newcommand{\similarityVariable}{\xi}                 % xi = ln(s/B) / (sigma sqrt(2 tau)); cf. \wavenumber
 \newcommand{\similarityProfile}{\Lambda}              % leading corner profile, = erf for constant coefficients
 
-% --- subsets of the closure of \domain -------------------------------------
-% Convention: a calligraphic letter is a SUBSET of \closure{\domain}; its
-% subscript is the parameter. \cylinder{I} is the space-time cylinder over a
-% set I of prices, i.e. the product I x (0,T): every region below is such a
-% cylinder EXCEPT \cornerNeighbourhood, which is an ell^1 ball about the corner
-% and is therefore not a product.
+% --- space-time regions and price intervals --------------------------------
+% \domain is the SPACE-TIME pricing cylinder (B, s_infty) x (0,T), not a set of
+% prices. Two kinds of region are therefore distinguished, and the distinction
+% decides which variables an integral over the region runs over:
+%
+%   (i) SPACE-TIME regions: a calligraphic letter, a subset of the closure of
+%       \domain, its subscript being the parameter. An integral or an L^2 norm
+%       over such a region runs over BOTH variables, d\underlyingPrice d\timePoint.
+%       \cylinder{I} is the space-time cylinder over a set I of prices, i.e. the
+%       product I x (0,T); every region below is such a cylinder EXCEPT
+%       \cornerNeighbourhood, which is an ell^1 ball about the corner and is
+%       therefore not a product.
+%
+%  (ii) PRICE INTERVALS: \priceInterval, an interval of prices contained in
+%       (B, s_infty) and NOT a subset of \domain. It carries no time extent: a
+%       norm over \priceInterval is taken at one fixed date and integrates in
+%       d\underlyingPrice alone, which is why such a norm is written with the
+%       date in the argument of the field, \norm{f(\cdot,\timePoint)}_{L^2(\priceInterval)}.
+%       A price interval is never passed to \relativeErrorOn, whose argument is
+%       a space-time region.
 \newcommand{\cylinder}[1]{#1 \times (0,\timeHorizon)}
 \newcommand{\cornerNeighbourhood}{\mathcal{N}}  % N_w = {|s-B| + (T-t) <= w}: NOT a cylinder
 \newcommand{\cutoffCylinder}{\mathcal{Z}}       % Z_eps = (B, B+eps) x (0,T): where \smoothingCutoff != 1
 \newcommand{\strikeCylinder}{\mathcal{K}}       % K_delta = (K-delta, K+delta) x (0,T)
 \newcommand{\farFieldCylinder}{\mathcal{W}}     % W_a = [a, s_infty) x (0,T)
+\newcommand{\priceInterval}{I}                  % price interval, no time extent: I subset (B, s_infty)
 
 % --- evaluation metrics ----------------------------------------------------
 % \relLtwo (= \eta) is the relative L^2 error already declared above; here it
 % takes the region it is computed on as an argument, since every comparison in
 % the barrier documents is region-dependent. The absolute error is written as
 % the norm itself, so that no symbol hides which region it refers to.
+% The argument is a SPACE-TIME region A contained in the closure of \domain,
+% and both norms of the quotient integrate over A in d\underlyingPrice
+% d\timePoint. A price interval is not an admissible argument: for a quantity
+% measured at one date, write the norm explicitly over \priceInterval with the
+% date in the argument of the field.
 \newcommand{\relativeErrorOn}[1]{\relLtwo\!\left(#1\right)}
 % Pointwise relative error of a derivative at one point, NOT to be confused
 % with \relLtwo, which is a norm over a region. The subscript is the derivation
@@ -376,7 +396,15 @@
 %   \pointwiseRelativeError{\partial_s}(t)      relative error of the Delta
 %   \pointwiseRelativeError{\partial_{ss}}(t)   relative error of the Gamma
 \newcommand{\pointwiseRelativeError}[1]{\relLtwo_{#1}}
+% Error field of a derivative of the trial solution, indexed by the derivation
+% operator: \derivativeError{\partial_{\underlyingPrice\underlyingPrice}} is the
+% Gamma error field. Indexed this way rather than written e_\Gamma, since the
+% option's Delta and Gamma are given no symbol of their own in this notation
+% (\cornerJump = \Delta is the corner jump K - B).
+\newcommand{\derivativeError}[1]{e_{#1}}
 % Capital fraktur, so that neither is read as Euler's e or as \pdeResidual = R.
+% Both are densities in the price: a time integral at a fixed price, hence a
+% function of \underlyingPrice alone and not an integral over \domain.
 \newcommand{\errorEnergyDensity}{\mathfrak{E}}    % E(s) = int_0^T |Phi_theta - V_DO|^2 dt, at fixed price
 \newcommand{\residualEnergyDensity}{\mathfrak{R}} % R(s) = int_0^T |L^BS Phi_theta|^2 dt, at fixed price
 \newcommand{\cumulativeShare}[2]{%              % cumulative share of a density #1 below the price #2
