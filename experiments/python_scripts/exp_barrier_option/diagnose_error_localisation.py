@@ -67,10 +67,12 @@ from learning_option_pricing.pricing.barrier import reiner_rubinstein_down_and_o
 from learning_option_pricing.pricing.terminal import bsm_operator  # noqa: E402
 from learning_option_pricing.utils.figure_layout import finalize_figure  # noqa: E402
 from learning_option_pricing.utils.run_context import find_repo_root, script_data_dir  # noqa: E402
-from aggregate_terminal_function_comparison import CONFIGURATION_LABELS  # noqa: E402
+from aggregate_terminal_function_comparison import (  # noqa: E402
+    CONFIGURATION_LABELS, FAR_FIELD_DIRICHLET_SUFFIX,
+)
 from compare_corner_treatments_profiles import (  # noqa: E402
-    TREATMENT_COLOURS, TREATMENT_LABELS, TERMINAL_PROFILE_LABELS,
-    corner_treatment_of, terminal_profile_of,
+    FAR_FIELD_DIRICHLET_LABEL, TREATMENT_LABELS, TERMINAL_PROFILE_LABELS,
+    corner_treatment_of, curve_colour, far_field_dirichlet_of, terminal_profile_of,
 )
 from pilot_down_and_out_put import DEVICE, load_trained_model, read_run_metadata  # noqa: E402
 
@@ -101,6 +103,15 @@ COMPACT_LABELS: dict[str, str] = {
     "enrichment_raw": "Enrichment,\nraw payoff",
     "enrichment_blackscholes": "Enrichment,\nBlack-Scholes",
     "enrichment_split": "Enrichment,\nsplit-semigroup",
+}
+
+
+#: Far-field twin of every compact label, so that an aggregation holding both
+#: arms of the condition (``--far-field any``) keeps short tick labels. The
+#: second line names the condition, which is what such a figure compares.
+COMPACT_LABELS |= {
+    configuration + FAR_FIELD_DIRICHLET_SUFFIX: label + "\n+ far-field Dirichlet"
+    for configuration, label in COMPACT_LABELS.items()
 }
 
 
@@ -235,7 +246,9 @@ def region_metrics(grid: dict, regions: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 FORMULA_COMPARISON = (
-    r"$\mathrm{rel}_{L^2}(A)=\|\Phi_\theta-V_{DO}\|_{L^2(A)}/\|V_{DO}\|_{L^2(A)}$ on the kept region $A$; "
+    r"$\mathrm{rel}_{L^2}(A)=\|\Phi_\theta-V_{DO}\|_{L^2(A)}/\|V_{DO}\|_{L^2(A)}$ on the kept region $A$, a "
+    r"SPACE-TIME region $A\subset\Omega=(B,s_\infty)\times(0,T)$: both norms integrate over $A$ in "
+    r"$\mathrm{d}s\,\mathrm{d}t$, so a region named by a price range below stands for that range times $(0,T)$; "
     r"$\mathcal{N}_w=\{(s,t):|s-B|+(T-t)\leq w\}$, the corner lozenge, which is NOT a product; the three "
     r"others are space-time cylinders $I\times(0,T)$ over a price set $I$: $\mathcal{Z}_\varepsilon$ over "
     r"$(B,B+\varepsilon)$, where the smoothing cutoff $\zeta((s-B)/\varepsilon)\neq1$ and the smoothing "
@@ -252,7 +265,8 @@ FORMULA_ENERGY = (
     r"$t_j\in[0,T-10^{-4}]$ of the evaluation grid (top row, log scale), and its cumulative share "
     r"$\int_B^sE/\int_B^{s_\infty}E$ (bottom row), from the saved models."
     "\n"
-    r"Colour: corner treatment. Vertical lines: $s=B$ and $s=K$ (dotted), $s=B+\varepsilon$ (dashed, edge of "
+    r"Colour: corner treatment, in a darker shade of the same hue for an arm trained with the far-field "
+    r"Dirichlet condition on $\Sigma_\infty$. Vertical lines: $s=B$ and $s=K$ (dotted), $s=B+\varepsilon$ (dashed, edge of "
     r"the cutoff cylinder $\mathcal{Z}_\varepsilon$). A treatment whose error is caused by the strike singularity has $E$ "
     r"peaked at $s=K$ and its cumulative share stepping up there; one whose error is caused by the cutoff has "
     r"both inside $\mathcal{Z}_\varepsilon$; one whose error is the far-field component has the step at $s\geq2$."
@@ -263,7 +277,8 @@ FORMULA_RESIDUAL_ENERGY = (
     r"Riemann sum over the $200$ uniform times as $E(s)$ (top row, log scale), and its cumulative share "
     r"(bottom row). One seed."
     "\n"
-    r"Colour: corner treatment. Vertical lines: $s=B$ and $s=K$ (dotted), $s=B+\varepsilon$ (dashed). The "
+    r"Colour: corner treatment, in a darker shade of the same hue for an arm trained with the far-field "
+    r"Dirichlet condition on $\Sigma_\infty$. Vertical lines: $s=B$ and $s=K$ (dotted), $s=B+\varepsilon$ (dashed). The "
     r"cutoff residual is supported by the whole cylinder $\mathcal{Z}_\varepsilon$ over $(B,B+\varepsilon)$, where $\zeta'$ and "
     r"$\zeta''$ are nonzero, not by its edge: the smoothing curves rise at $s=B$ and fall back at "
     r"$s=B+\varepsilon$. Compare with $E(s)$: the loss is large where the error is not, and conversely."
@@ -349,12 +364,14 @@ def plot_energy_along_s(grids: dict, path: Path, cutoff_epsilon: float, *, field
             values = (grid["learned"] - grid["reference"]) if field == "error" else grid["residual"]
             energy = (values ** 2).sum(dim=1).numpy() * dt
             treatment = corner_treatment_of(configuration)
-            style = {"color": TREATMENT_COLOURS[treatment], "lw": 1.6}
+            style = {"color": curve_colour(configuration), "lw": 1.6}
             if terminal_profile_of(configuration) == "blackscholes_analyticres":
                 style |= {"linestyle": (0, (4, 1.5)), "lw": 1.3}
             (line,) = ax_density.semilogy(s_axis, np.maximum(energy, 1e-18), **style)
             label = TREATMENT_LABELS[treatment] + (
                 " — two-term route" if terminal_profile_of(configuration) == "blackscholes_analyticres" else "")
+            if far_field_dirichlet_of(configuration):
+                label += f" — {FAR_FIELD_DIRICHLET_LABEL}"
             handles.setdefault(label, line)
             ax_cumulative.plot(s_axis, np.cumsum(energy) / energy.sum(), **style)
         for ax in (ax_density, ax_cumulative):

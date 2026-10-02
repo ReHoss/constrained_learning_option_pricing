@@ -57,7 +57,7 @@ from learning_option_pricing.pricing.barrier import (  # noqa: E402
 from learning_option_pricing.utils.figure_layout import finalize_figure  # noqa: E402
 from learning_option_pricing.utils.run_context import find_repo_root, script_data_dir  # noqa: E402
 from aggregate_terminal_function_comparison import (  # noqa: E402
-    CONFIGURATION_LABELS, CORNER_INCLUDED_SUFFIX,
+    CONFIGURATION_LABELS, CORNER_INCLUDED_SUFFIX, FAR_FIELD_DIRICHLET_SUFFIX,
 )
 from pilot_down_and_out_put import DEVICE, load_trained_model, read_run_metadata  # noqa: E402
 
@@ -82,6 +82,18 @@ TREATMENT_COLOURS = {
     "subtraction": "#009E73",  # bluish green
     "enrichment": "#7B3294",   # violet
 }
+#: Colour of the arm of a corner treatment trained with the far-field Dirichlet
+#: condition on the far face. One colour of the same hue as the treatment's but
+#: of clearly lower luminance, so that a pair reads as one method with one
+#: factor changed rather than as two unrelated methods, while remaining
+#: separable at the line widths used here. Linestyle is not available for this
+#: (solid is reserved for a trained curve, dashed for the analytical reference)
+#: and the marker already encodes the terminal profile.
+FAR_FIELD_TREATMENT_COLOURS = {
+    "smoothing": "#7F3800",    # dark vermillion
+    "subtraction": "#004F39",  # dark bluish green
+    "enrichment": "#3B1848",   # dark violet
+}
 #: Marker encodes the TERMINAL PROFILE. It is drawn only when the selected
 #: configurations mix several profiles, in which case colour alone would not
 #: separate them; linestyle is not available for this (solid is reserved for a
@@ -102,12 +114,27 @@ def corner_treatment_of(configuration: str) -> str:
 
 def terminal_profile_of(configuration: str) -> str:
     """The terminal-function part of a configuration key, without the corner
-    treatment prefix and without the whole-domain suffix."""
+    treatment prefix, without the far-field suffix and without the whole-domain
+    suffix. The far-field suffix is removed first, since it is appended last."""
     name = configuration
     for treatment in ("subtraction_", "enrichment_"):
         if name.startswith(treatment):
             name = name[len(treatment):]
-    return name.removesuffix(CORNER_INCLUDED_SUFFIX)
+    return name.removesuffix(FAR_FIELD_DIRICHLET_SUFFIX).removesuffix(CORNER_INCLUDED_SUFFIX)
+
+
+def far_field_dirichlet_of(configuration: str) -> bool:
+    """True when the configuration key names the runs trained with the hard
+    far-field Dirichlet condition on the far face (methodology section 17.7)."""
+    return configuration.endswith(FAR_FIELD_DIRICHLET_SUFFIX)
+
+
+def curve_colour(configuration: str) -> str:
+    """Colour of a curve: the corner treatment, in the dark variant of its hue
+    when the runs carry the far-field Dirichlet condition."""
+    treatment = corner_treatment_of(configuration)
+    table = FAR_FIELD_TREATMENT_COLOURS if far_field_dirichlet_of(configuration) else TREATMENT_COLOURS
+    return table[treatment]
 
 
 #: Legend text of a curve. These figures fix the terminal function and the
@@ -129,27 +156,67 @@ TERMINAL_PROFILE_LABELS = {
 }
 
 
-def curve_label(configuration: str, mixed_profiles: bool) -> str:
+#: Legend clause naming the far-field Dirichlet condition. Named on the curve
+#: itself and not only in the subtitle, since a figure may hold one arm with the
+#: condition and one without, and the two then differ by colour alone.
+FAR_FIELD_DIRICHLET_LABEL = r"with far-field Dirichlet on $\Sigma_\infty$"
+FAR_FIELD_FREE_LABEL = "without far-field condition"
+
+
+def curve_label(configuration: str, mixed_profiles: bool,
+                mixed_far_field: bool = False) -> str:
     """Legend entry: the corner treatment, plus the terminal function when the
-    figure mixes several of them."""
+    figure mixes several of them, plus the far-field condition when the figure
+    holds both arms of it."""
     label = TREATMENT_LABELS[corner_treatment_of(configuration)]
     if mixed_profiles:
         label += f" — {TERMINAL_PROFILE_LABELS[terminal_profile_of(configuration)]}"
+    if mixed_far_field:
+        label += (f" — {FAR_FIELD_DIRICHLET_LABEL}" if far_field_dirichlet_of(configuration)
+                  else f" — {FAR_FIELD_FREE_LABEL}")
     return label
+
+
+def has_mixed_far_field(configurations) -> bool:
+    """True when the selected configurations hold both the arm trained with the
+    far-field Dirichlet condition and the arm trained without it, so that the
+    legend has to name the condition curve by curve."""
+    return len({far_field_dirichlet_of(c) for c in configurations}) > 1
+
+
+def corner_included_of(configuration: str) -> bool:
+    """True when the key names smoothing runs trained on the whole domain, the
+    corner window kept in the collocation sampler. The far-field suffix is
+    appended after the whole-domain one, so it is removed first."""
+    return configuration.removesuffix(FAR_FIELD_DIRICHLET_SUFFIX).endswith(CORNER_INCLUDED_SUFFIX)
+
+
+def far_field_context_clause(configurations) -> str:
+    """Subtitle clause naming the far-field condition of the runs shown: shared
+    by every curve, absent from every curve, or the factor being compared."""
+    arms = {far_field_dirichlet_of(c) for c in configurations}
+    if arms == {True}:
+        return r"far-field Dirichlet condition on $\Sigma_\infty$ imposed on every run shown"
+    if arms == {False}:
+        return "no far-field condition on any run shown"
+    return (r"far-field Dirichlet condition on $\Sigma_\infty$: the compared factor, "
+            "named curve by curve in the legend")
 
 
 def shared_context_line(configurations) -> str:
     """Subtitle clause naming what every curve of the figure has in common: the
-    terminal function when they share one, and the collocation domain."""
+    terminal function when they share one, the collocation domain, and the
+    far-field condition."""
     profiles = {terminal_profile_of(c) for c in configurations}
     smoothing = [c for c in configurations if corner_treatment_of(c) == "smoothing"]
     domain = ("whole domain, corner in collocation"
-              if all(c.endswith(CORNER_INCLUDED_SUFFIX) for c in smoothing) and smoothing
+              if all(corner_included_of(c) for c in smoothing) and smoothing
               else "corner window excluded from the collocation of the smoothing runs"
               if smoothing else "whole domain (the analytic treatments have no corner layer)")
+    context = f"{domain};  {far_field_context_clause(configurations)}"
     if len(profiles) == 1:
-        return f"terminal function: {TERMINAL_PROFILE_LABELS[profiles.pop()]};  {domain}"
-    return domain
+        return f"terminal function: {TERMINAL_PROFILE_LABELS[profiles.pop()]};  {context}"
+    return context
 
 
 def has_mixed_profiles(configurations) -> bool:
@@ -160,9 +227,10 @@ def has_mixed_profiles(configurations) -> bool:
 
 
 def curve_style(configuration: str, mixed_profiles: bool) -> dict:
-    """Plot keywords of one configuration: colour by corner treatment, marker by
-    terminal profile when the figure mixes several of them."""
-    style = {"color": TREATMENT_COLOURS[corner_treatment_of(configuration)]}
+    """Plot keywords of one configuration: colour by corner treatment (dark
+    variant of the hue when the runs carry the far-field Dirichlet condition),
+    marker by terminal profile when the figure mixes several of them."""
+    style = {"color": curve_colour(configuration)}
     if mixed_profiles:
         style |= {"marker": PROFILE_MARKERS.get(terminal_profile_of(configuration), "x"),
                   "markevery": 0.12, "markersize": 4.5, "markerfacecolor": "none"}
@@ -299,6 +367,7 @@ def plot_profiles(curves: dict, path: Path, s_plot_max: float, zoom: bool = Fals
     """Rows Phi, d_s Phi, d_ss Phi; columns t. ``zoom`` uses the dense corner
     grid ``s_zoom`` and its own reference (the whole grid is plotted)."""
     mixed_profiles = has_mixed_profiles(curves["configurations"])
+    mixed_far_field = has_mixed_far_field(curves["configurations"])
     times = curves["times"]
     s = (curves["s_zoom"] if zoom else curves["s_grid"]).numpy()
     keep = np.ones_like(s, dtype=bool) if zoom else s <= s_plot_max
@@ -313,7 +382,7 @@ def plot_profiles(curves: dict, path: Path, s_plot_max: float, zoom: bool = Fals
                 trained = (entry["zoom"][t_value] if zoom else entry[t_value]).numpy()
                 (line,) = ax.plot(s[keep], trained[i][keep], lw=1.5,
                                   **curve_style(configuration, mixed_profiles),
-                                  label=curve_label(configuration, mixed_profiles))
+                                  label=curve_label(configuration, mixed_profiles, mixed_far_field))
                 if i == 0 and j == 0:
                     handles.append(line)
             (ref_line,) = ax.plot(s[keep], reference[i][keep], "k--", lw=1.8, label=r"$V_{DO}$ (Reiner-Rubinstein, exact)")
@@ -349,6 +418,7 @@ def plot_profiles(curves: dict, path: Path, s_plot_max: float, zoom: bool = Fals
 
 def plot_absolute_errors(curves: dict, path: Path, s_plot_max: float, window: float = 0.1) -> None:
     mixed_profiles = has_mixed_profiles(curves["configurations"])
+    mixed_far_field = has_mixed_far_field(curves["configurations"])
     times = curves["times"]
     s = curves["s_grid"].numpy()
     keep = s <= s_plot_max
@@ -365,7 +435,7 @@ def plot_absolute_errors(curves: dict, path: Path, s_plot_max: float, window: fl
                 error = np.abs(entry[t_value].numpy()[i] - reference[i])
                 (line,) = ax.semilogy(s[keep], np.maximum(error[keep], 1e-9), lw=1.4,
                                       **curve_style(configuration, mixed_profiles),
-                                      label=curve_label(configuration, mixed_profiles))
+                                      label=curve_label(configuration, mixed_profiles, mixed_far_field))
                 if i == 0 and j == 0:
                     handles.append(line)
             half_width = window - (T - t_value)
@@ -389,6 +459,7 @@ def plot_absolute_errors(curves: dict, path: Path, s_plot_max: float, window: fl
 
 def plot_greeks_at_strike(curves: dict, path: Path) -> None:
     mixed_profiles = has_mixed_profiles(curves["configurations"])
+    mixed_far_field = has_mixed_far_field(curves["configurations"])
     t = np.array(curves["strike_times"])
     reference = curves["reference"]["strike"].numpy()
     # Width reserved on the right for the legend: the configuration labels carry
@@ -402,7 +473,7 @@ def plot_greeks_at_strike(curves: dict, path: Path) -> None:
         for configuration, entry in curves["configurations"].items():
             numerical = entry["strike"].numpy()[k]
             (line,) = ax_value.plot(t, numerical, lw=1.5, **curve_style(configuration, mixed_profiles),
-                                    label=curve_label(configuration, mixed_profiles))
+                                    label=curve_label(configuration, mixed_profiles, mixed_far_field))
             if column == 0:
                 handles.append(line)
             ax_error.semilogy(t, np.abs(numerical - reference[k]) / np.abs(reference[k]), lw=1.5,

@@ -167,6 +167,19 @@ _BASE_CONFIGURATION_LABELS: dict[str, str] = {
 CORNER_INCLUDED_SUFFIX = "_corner_included"
 CORNER_INCLUDED_ANNOTATION = "\n[whole domain: corner in collocation]"
 
+#: Suffix appended to the configuration key of a run trained with the hard
+#: far-field Dirichlet condition on the far face (the pilot's
+#: ``--far-field-dirichlet``, methodology section 17.7). Same reason as
+#: :data:`CORNER_INCLUDED_SUFFIX`: the condition changes the trial solution, so
+#: a run carrying it and a run without it are two different objects, and a
+#: shared key would make them collide in :func:`collect_runs`, where the more
+#: recent timestamp is kept and the other run is dropped. With the key
+#: distinguishing them, ``--far-field no`` and ``--far-field yes`` select one
+#: arm each as before, and ``--far-field any`` collects both and every figure
+#: downstream reads as a paired comparison of the condition.
+FAR_FIELD_DIRICHLET_SUFFIX = "_far_field_dirichlet"
+FAR_FIELD_DIRICHLET_ANNOTATION = "\n[far-field Dirichlet condition on the far face]"
+
 
 def is_subtraction_configuration(configuration: str) -> bool:
     """True for the analytic corner treatments (exact subtraction, corner
@@ -186,9 +199,22 @@ def _with_corner_included_twins(labels: dict[str, str]) -> dict[str, str]:
     return extended
 
 
+def _with_far_field_dirichlet_twins(labels: dict[str, str]) -> dict[str, str]:
+    """Insert, immediately after every configuration, the key of its far-field
+    Dirichlet twin. Immediately after, rather than at the end of the table, so
+    that the abscissa of the comparison figure and the row order of the tables
+    read as pairs differing by the condition alone."""
+    extended: dict[str, str] = {}
+    for configuration, label in labels.items():
+        extended[configuration] = label
+        extended[configuration + FAR_FIELD_DIRICHLET_SUFFIX] = label + FAR_FIELD_DIRICHLET_ANNOTATION
+    return extended
+
+
 #: Public label table, indexed by the configuration keys :func:`collect_runs`
 #: produces (imported by the Greeks, profile-comparison and report scripts).
-CONFIGURATION_LABELS: dict[str, str] = _with_corner_included_twins(_BASE_CONFIGURATION_LABELS)
+CONFIGURATION_LABELS: dict[str, str] = _with_far_field_dirichlet_twins(
+    _with_corner_included_twins(_BASE_CONFIGURATION_LABELS))
 
 
 def configuration_tick_label(configuration: str, per_seed: dict) -> str:
@@ -351,6 +377,11 @@ def collect_runs(base_dir: Path, iters: int, epsilon: float, collocation_domain:
             logger.info(f"  skipping {run_dir.name}: far-field Dirichlet {'present' if has_far_field else 'absent'}, "
                         f"--far-field {far_field}")
             continue
+        if has_far_field:
+            # A run trained with the condition is a configuration of its own, so
+            # that it neither collides with nor is pooled with the arm trained
+            # without it (see FAR_FIELD_DIRICHLET_SUFFIX).
+            configuration += FAR_FIELD_DIRICHLET_SUFFIX
         summary_path = run_dir / f"summary_eps{run_epsilon:g}.yaml"
         if not summary_path.exists():
             logger.warning(f"  skipping {run_dir.name}: no {summary_path.name} (run incomplete?)")
@@ -851,7 +882,11 @@ def main() -> None:
     parser.add_argument("--far-field", type=str, default="no", choices=["no", "yes", "any"],
                         help="Runs trained with the hard far-field Dirichlet condition (--far-field-dirichlet, "
                              "directory tag _farfield): 'no' (default) aggregates only runs without it, 'yes' only "
-                             "runs with it, 'any' both (the tag then distinguishes them only in the run list).")
+                             "runs with it, 'any' both. A run carrying the condition takes the configuration key of "
+                             "its arm plus the suffix _far_field_dirichlet, so 'any' yields one key per arm and the "
+                             "comparison figure, the diagnostics and the profile figures read as a paired comparison "
+                             "of the condition at equal seeds; with 'yes' the single arm collected keeps that suffix "
+                             "too, so a --compare-summary against an aggregation made with 'no' matches no key.")
     parser.add_argument("--hosts", nargs="+", type=str, default=None,
                         help="Keep only runs whose last training segment ran on one of these short host "
                              "names (as recorded in metadata.yaml; 'unknown' matches runs recorded before the "
