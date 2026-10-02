@@ -1357,3 +1357,73 @@ sampler. Not implemented, not measured.
 
 Figures: `rapports/corner_treatments_wholedomain_20260923`, section "Quelle région exclut-on, et où
 l'erreur se trouve-t-elle ?".
+
+### 17.7 Far-field condition applied to the corner enrichment (measured, 2026-10-02)
+
+Section 17.6 measured that $99$ per cent of the residual error of the analytic treatments with a
+treated terminal profile lies in the far field $\{s\ge2\}$, where the interior residual is
+negligible — the unconstrained component of section 12. The far-field Dirichlet condition of
+section 12 was therefore applied, but only to the corner enrichment. The reason is a property of
+the two constructions, measured in float64 before any training:
+
+| Ansatz | $\sup_t\lvert g_2(s_\infty,t)\rvert$ | $\sup_t\lvert g_2(s_\infty,t) - V_{DO}(s_\infty,t)\rvert$ |
+|---|---|---|
+| (reference) $\sup_t\lvert V_{DO}(s_\infty,t)\rvert$ | $1.01\times10^{-5}$ | — |
+| Smoothing, Black-Scholes / split | $1.01\times10^{-5}$ / $8.5\times10^{-6}$ | $4.1\times10^{-8}$ / $1.6\times10^{-6}$ |
+| Corner enrichment, Black-Scholes / split | $1.01\times10^{-5}$ / $8.5\times10^{-6}$ | $4.1\times10^{-8}$ / $1.6\times10^{-6}$ |
+| Exact subtraction, Black-Scholes / split | $1.25\times10^{-2}$ / $9.7\times10^{-3}$ | $1.25\times10^{-2}$ / $9.7\times10^{-3}$ |
+
+The condition is hard-enforced through $g_1$ vanishing on $\Sigma_\infty$, so it imposes
+$\Phi_\theta(s_\infty,\cdot) = g_2(s_\infty,\cdot)$ and is only admissible where that datum
+approximates $V_{DO}$ there. For the enrichment it does: $\chi(s_\infty) = 0$ since
+$\delta_1 = 0.3$, so $g_2$ reduces to the terminal profile and the bound coincides with the
+smoothing's. For the exact subtraction it does not: $\chi \equiv 1$, so
+$g_2(s_\infty,t) = \Delta V_{DOD}(s_\infty,t) + V^e(s_\infty,t) - V^e(B,t)$, whose two terms
+($\Delta e^{-r\tau} = 0.388$ and $-0.370$ at $\tau = 1$) do not cancel; $1.8\times10^{-2}$ remains.
+By the proposition of section 12 the imposed datum would then bound the error on the whole domain
+by $1.25\times10^{-2}$, about $36$ times the total absolute $L^2$ error the subtraction currently
+attains ($3.5\times10^{-4}$). A far-field condition for the exact subtraction requires a different
+datum: $h$ would have to vanish at $s=B$ and tend to $-\Delta e^{-r\tau}$ at $s_\infty$, which one
+function of $t$ cannot do, so an interpolation in $s$ — a new cutoff, with its own residual — is
+needed. Not constructed, not measured.
+
+**Batch.** `bash_scripts/cluster/cmap/joblist_50k_enrichment_farfield_republique.txt`: ten runs
+(Black-Scholes and split profiles, master seeds $0$–$4$), $50000$ iterations, corner included in
+collocation, $(\delta_0,\delta_1) = (0.1,0.3)$, four threads, on `republique` — the same seeds,
+thread count and host as the enrichment batch of section 16.4, so the pair differs only by the
+condition. Launched 2026-10-02 00:56, finished 03:04, no failed job, no clamp activated. The
+recorded truncation-error bounds are $4.09\times10^{-8}$ (Black-Scholes) and $1.58\times10^{-6}$
+(split), as predicted above.
+
+| Profile | $\mathrm{rel}_{L^2}(\Omega\setminus N_{0.1})$, without $\to$ with | $\mathrm{rel}_{L^2}(N_{0.1})$ | best loss |
+|---|---|---|---|
+| Black-Scholes | $7.32\times10^{-3} \to 1.09\times10^{-3}$ (factor $6.7$) | $7.85 \to 4.96\times10^{-4}$ | $2.85 \to 3.18\times10^{-7}$ |
+| Split-semigroup | $6.85\times10^{-3} \to 7.73\times10^{-4}$ (factor $8.9$) | $8.73 \to 4.58\times10^{-4}$ | $4.40 \to 1.94\times10^{-7}$ |
+
+(medians over five seeds). The across-seed ranges are **disjoint** on the comparison metric
+($[2.2, 17.6]\times10^{-3}$ without, $[0.74, 1.22]\times10^{-3}$ with, for the Black-Scholes
+profile; $[2.9, 14.7]\times10^{-3}$ against $[0.51, 1.84]\times10^{-3}$ for the split), so the
+improvement is not seed noise. The corner-window error also falls by a factor $1.6$ to $1.9$,
+which the condition does not act on directly: the far-field component was contributing there too.
+The best interior loss is unchanged for the Black-Scholes profile and $2.3$ times lower for the
+split, so the gain is not bought by a harder optimisation problem.
+
+**Where the error now is.** Error-energy share per region (medians over five seeds, same regions
+as section 17.6):
+
+| Configuration | $N_{0.1}$ | $S_{0.1}\setminus N_{0.1}$ | $B_{0.1}$ | $\{s\ge2\}$ | rest | total abs. $L^2$ |
+|---|---|---|---|---|---|---|
+| Enrichment, Black-Scholes, without | $0.0$ | $0.0$ | $0.1$ | $99.5$ | $0.4$ | $5.51\times10^{-4}$ |
+| Enrichment, Black-Scholes, with | $1.3$ | $1.7$ | $5.1$ | $29.4$ | $54.4$ | $8.26\times10^{-5}$ |
+| Enrichment, split, without | $0.1$ | $0.3$ | $0.1$ | $99.1$ | $0.8$ | $5.14\times10^{-4}$ |
+| Enrichment, split, with | $1.7$ | $1.7$ | $19.5$ | $15.7$ | $54.4$ | $5.85\times10^{-5}$ |
+
+(percentages). The far-field share falls from $99$ per cent to $16$–$29$ per cent and the total
+absolute error by a factor $6.7$ to $8.8$: the condition removes the component section 12
+predicts it removes, and nothing else moves in its place — what remains is spread over the bulk
+($54$ per cent in "rest", the complement of the four named regions, which is $45$ per cent of the
+area). The enrichment with the condition ($7.7\times10^{-4}$ on the comparison metric) is now
+below the exact subtraction without it ($4.0\times10^{-3}$); this is **not** a like-for-like
+comparison of the two corner treatments, since only one of them carries the condition, and it
+does not reverse the ordering of sections 16.4 and 17.5, which was measured at equal treatment of
+the far field.
