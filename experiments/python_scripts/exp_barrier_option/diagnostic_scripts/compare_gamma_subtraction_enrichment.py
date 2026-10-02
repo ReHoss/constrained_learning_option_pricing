@@ -28,7 +28,8 @@ Computed, in float64, from the saved models only (no retraining):
 - :math:`|\mathcal L^{BS}S_{\mathrm{enr}}|`, the enrichment's own interior
   forcing, on the same grid, to test whether the Gamma error is supported where
   the forcing is;
-- the :math:`L^2` norm of the Gamma error on four price bands against calendar
+- the :math:`L^2` norm in :math:`s` of the Gamma error, at fixed calendar time,
+  on each of four price intervals, against calendar
   time, which is the quantitative statement of where an improvement would pay.
 
 Outputs (under ``data/compare_gamma_subtraction_enrichment/<timestamp>/``):
@@ -89,9 +90,11 @@ FORMULA_GAMMA = (
     r"second derivative of $g_2$;  $\partial_{ss}V_{DO}$ = "
     r"reiner\_rubinstein\_down\_and\_out\_put\_gamma (closed form).  Pointwise, float64, no quadrature."
     "\n"
-    r"Gamma error $e_\Gamma(s,t)=\partial_{ss}\Phi_\theta(s,t)-\partial_{ss}V_{DO}(s,t)$;  band norm "
-    r"$\|e_\Gamma\|_{L^2(\mathcal{B})}(t)=(\int_{\mathcal{B}}e_\Gamma(s,t)^2\,\mathrm{d}s)^{1/2}$ on the "
-    r"trapezoidal rule of the plotted grid."
+    r"Gamma error field $e_{\partial_{ss}}(s,t)=\partial_{ss}\Phi_\theta(s,t)-\partial_{ss}V_{DO}(s,t)$;  "
+    r"band norm $\|e_{\partial_{ss}}(\cdot,t)\|_{L^2(I)}=(\int_{I}e_{\partial_{ss}}(s,t)^2\,"
+    r"\mathrm{d}s)^{1/2}$ on the trapezoidal rule of the plotted grid.  $I\subset(B,s_\infty)$ is a "
+    r"PRICE INTERVAL: the norm is taken at the fixed date $t$ of the abscissa and integrates in $s$ "
+    r"alone, so no integral over the time axis is involved and the curves are functions of $t$."
     "\n"
     r"Forcing $\mathcal{L}^{BS}S_{\rm enr}$, $S_{\rm enr}=\chi(s)\,\Delta\,\mathrm{erf}(\xi)$, "
     r"$\xi=\ln(s/B)/(\sigma\sqrt{2(T-t)})$, $\Delta=K-B$: zero for the subtraction (Proposition 4), "
@@ -279,7 +282,8 @@ def plot_error_heatmaps(curves: dict, path: Path, delta0: float, delta1: float) 
     for ax, (configuration, error) in zip(axes, errors.items()):
         image = ax.imshow(error.numpy(), origin="lower", aspect="auto", cmap="magma",
                           norm=LogNorm(vmin=max(vmin, vmax * 1e-8), vmax=vmax), extent=extent)
-        ax.set_title(f"$|e_\\Gamma|$ — {TREATMENT_DISPLAY[corner_treatment_of(configuration)]}", fontsize=9)
+        ax.set_title(f"$|e_{{\\partial_{{ss}}}}|$ — {TREATMENT_DISPLAY[corner_treatment_of(configuration)]}",
+                     fontsize=9)
         fig.colorbar(image, ax=ax, fraction=0.046, pad=0.03)
         _mark_price_landmarks(ax, contract, delta0, delta1)
         ax.set_xlabel("Underlying price $s$")
@@ -356,7 +360,7 @@ def plot_band_norms(curves: dict, norms: dict, path: Path, delta0: float, delta1
         ax.set_title(rf"$s-B\in[{lower:g}, {upper:g})$" "\n" + role, fontsize=9)
         ax.set_xlabel("Calendar time $t$")
         ax.grid(True, which="both", alpha=0.3)
-    axes[0, 0].set_ylabel(r"$\|e_\Gamma(\cdot,t)\|_{L^2(\mathcal{B})}$")
+    axes[0, 0].set_ylabel(r"$\|e_{\partial_{ss}}(\cdot,t)\|_{L^2(I)}$,  $I$ = price interval of the panel")
     legend = fig.legend(handles=handles, loc="center", bbox_to_anchor=(0.5, 0.20), ncol=2, fontsize=8)
     fig.suptitle("Down-and-out put — Gamma error per price band against calendar time "
                  "(faint: master seeds; solid: median)", fontsize=11)
