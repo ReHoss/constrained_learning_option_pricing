@@ -134,27 +134,27 @@ def exclusion_regions(ss: torch.Tensor, tt: torch.Tensor, K: float, B: float, T:
     return {
         "full": {
             "mask": torch.ones_like(ss, dtype=torch.bool),
-            "label": r"$\Omega$ (nothing excluded)",
+            "label": r"$Q$ (nothing excluded)",
             "definition": "Omega = (B, s_inf) x (0, T)",
         },
         "minus_corner": {
             "mask": ~corner,
-            "label": rf"$\Omega\setminus \mathcal{{N}}_{{{corner_window:g}}}$ (corner lozenge)",
+            "label": rf"$Q\setminus \mathcal{{N}}_{{{corner_window:g}}}$ (corner lozenge)",
             "definition": f"excludes |s-B| + (T-t) <= {corner_window:g}",
         },
         "minus_cutoff_strip": {
             "mask": ~strip,
-            "label": rf"$\Omega\setminus \mathcal{{Z}}_{{{cutoff_epsilon:g}}}$ (cutoff cylinder)",
+            "label": rf"$Q\setminus \mathcal{{Z}}_{{{cutoff_epsilon:g}}}$ (cutoff cylinder)",
             "definition": f"excludes s - B < {cutoff_epsilon:g} (all t): where zeta != 1",
         },
         "minus_strip_and_strike": {
             "mask": ~(strip | strike),
-            "label": rf"$\Omega\setminus(\mathcal{{Z}}_{{{cutoff_epsilon:g}}}\cup \mathcal{{K}}_{{{strike_delta:g}}})$",
+            "label": rf"$Q\setminus(\mathcal{{Z}}_{{{cutoff_epsilon:g}}}\cup \mathcal{{K}}_{{{strike_delta:g}}})$",
             "definition": f"excludes s - B < {cutoff_epsilon:g} and |s - K| < {strike_delta:g}",
         },
         "minus_strip_strike_far": {
             "mask": ~(strip | strike | far),
-            "label": rf"$\Omega\setminus(\mathcal{{Z}}_{{{cutoff_epsilon:g}}}\cup \mathcal{{K}}_{{{strike_delta:g}}}\cup \mathcal{{W}}_{{{far_field_start:g}}})$",
+            "label": rf"$Q\setminus(\mathcal{{Z}}_{{{cutoff_epsilon:g}}}\cup \mathcal{{K}}_{{{strike_delta:g}}}\cup \mathcal{{W}}_{{{far_field_start:g}}})$",
             "definition": (f"excludes s - B < {cutoff_epsilon:g}, |s - K| < {strike_delta:g} "
                            f"and s >= {far_field_start:g}"),
         },
@@ -247,7 +247,7 @@ def region_metrics(grid: dict, regions: dict) -> dict:
 
 FORMULA_COMPARISON = (
     r"$\mathrm{rel}_{L^2}(A)=\|\Phi_\theta-V_{DO}\|_{L^2(A)}/\|V_{DO}\|_{L^2(A)}$ on the kept region $A$, a "
-    r"SPACE-TIME region $A\subset\Omega=(B,s_\infty)\times(0,T)$: both norms integrate over $A$ in "
+    r"SPACE-TIME region $A\subset Q=(B,s_\infty)\times(0,T)$: both norms integrate over $A$ in "
     r"$\mathrm{d}s\,\mathrm{d}t$, so a region named by a price range below stands for that range times $(0,T)$; "
     r"$\mathcal{N}_w=\{(s,t):|s-B|+(T-t)\leq w\}$, the corner lozenge, which is NOT a product; the three "
     r"others are space-time cylinders $I\times(0,T)$ over a price set $I$: $\mathcal{Z}_\varepsilon$ over "

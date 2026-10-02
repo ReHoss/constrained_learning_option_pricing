@@ -302,8 +302,8 @@
 %   \timeDelayPoint      = \tau   -> here \tau = T - t is the time to maturity.
 %   \discretisationSize  = N      -> here N is the standard normal distribution
 %                                    function (note A, equation (15)).
-%   \qFunction           = Q      -> note A writes Q for the pricing cylinder;
-%                                    barrier documents use \domain for that set.
+%   \qFunction           = Q      -> here Q is the space-time pricing cylinder of
+%                                    note A (\pricingCylinder), never a Q-function.
 %   \pdeResidual         = R      -> reused as intended: the interior residual.
 %   \generalSpace        = E      -> here E is the corner enrichment (note A, Def. 8).
 % The option's Delta and Gamma are NOT given symbols: they are written
@@ -319,8 +319,13 @@
 \newcommand{\volatility}{\sigma}                      % contract volatility
 \newcommand{\comparisonVolatility}{\volatility_{c}}   % comparison volatility of the split semigroup
 \newcommand{\timeToMaturity}{\tau}                    % tau = T - t; cf. \timeDelayPoint
-\newcommand{\logMoneynessToBarrier}{y}                % y = \ln(s/B), >= 0 on the domain
-\newcommand{\parabolicBoundary}{\partial_{p}\domain}  % parabolic boundary of the cylinder \domain
+\newcommand{\logMoneynessToBarrier}{y}                % y = \ln(s/B), >= 0 on \domain
+% \domain (= \Omega, defined above) keeps its meaning of a domain of the
+% SPATIAL variable, as in note A where \Omega = (B, +infty): in the barrier
+% documents it is the truncated price interval (B, s_infty). The space-time
+% set is the cylinder over it, note A's Q.
+\newcommand{\pricingCylinder}{Q}                      % Q = \domain x (0,T) = (B, s_infty) x (0,T); cf. \qFunction
+\newcommand{\parabolicBoundary}{\partial_{p}\pricingCylinder} % parabolic boundary of Q (note A: d_{\partial_p Q})
 \newcommand{\terminalFace}{\Sigma_{\timeHorizon}}     % terminal face {t = T}
 \newcommand{\barrierFace}{\Sigma_{\barrierLevel}}     % barrier face {s = B}
 \newcommand{\farFace}{\Sigma_{\infty}}                % far face {s = s_infty} of the truncated cylinder
@@ -353,40 +358,40 @@
 \newcommand{\similarityProfile}{\Lambda}              % leading corner profile, = erf for constant coefficients
 
 % --- space-time regions and price intervals --------------------------------
-% \domain is the SPACE-TIME pricing cylinder (B, s_infty) x (0,T), not a set of
-% prices. Two kinds of region are therefore distinguished, and the distinction
-% decides which variables an integral over the region runs over:
+% Two kinds of set, and the kind decides which variables an integral over the
+% set runs over. Following note A, \domain = \Omega is the PRICE domain and
+% \pricingCylinder = Q = \domain x (0,T) the space-time cylinder.
 %
 %   (i) SPACE-TIME regions: a calligraphic letter, a subset of the closure of
-%       \domain, its subscript being the parameter. An integral or an L^2 norm
-%       over such a region runs over BOTH variables, d\underlyingPrice d\timePoint.
-%       \cylinder{I} is the space-time cylinder over a set I of prices, i.e. the
-%       product I x (0,T); every region below is such a cylinder EXCEPT
-%       \cornerNeighbourhood, which is an ell^1 ball about the corner and is
-%       therefore not a product.
+%       \pricingCylinder (= Q), its subscript being the parameter. An integral
+%       or an L^2 norm over such a region runs over BOTH variables,
+%       d\underlyingPrice d\timePoint. \cylinder{I} is the space-time cylinder
+%       over a set I of prices, i.e. the product I x (0,T); every region below
+%       is such a cylinder EXCEPT \cornerNeighbourhood, which is an ell^1 ball
+%       about the corner and is therefore not a product.
 %
-%  (ii) PRICE INTERVALS: \priceInterval, an interval of prices contained in
-%       (B, s_infty) and NOT a subset of \domain. It carries no time extent: a
-%       norm over \priceInterval is taken at one fixed date and integrates in
-%       d\underlyingPrice alone, which is why such a norm is written with the
-%       date in the argument of the field, \norm{f(\cdot,\timePoint)}_{L^2(\priceInterval)}.
-%       A price interval is never passed to \relativeErrorOn, whose argument is
-%       a space-time region.
+%  (ii) PRICE INTERVALS: \priceInterval, a subset of \domain (= \Omega). It
+%       carries no time extent: a norm over \priceInterval is taken at one
+%       fixed date and integrates in d\underlyingPrice alone, which is why such
+%       a norm is written with the date in the argument of the field,
+%       \norm{f(\cdot,\timePoint)}_{L^2(\priceInterval)}. A price interval is
+%       never passed to \relativeErrorOn, whose argument is a space-time region.
 \newcommand{\cylinder}[1]{#1 \times (0,\timeHorizon)}
 \newcommand{\cornerNeighbourhood}{\mathcal{N}}  % N_w = {|s-B| + (T-t) <= w}: NOT a cylinder
 \newcommand{\cutoffCylinder}{\mathcal{Z}}       % Z_eps = (B, B+eps) x (0,T): where \smoothingCutoff != 1
 \newcommand{\strikeCylinder}{\mathcal{K}}       % K_delta = (K-delta, K+delta) x (0,T)
 \newcommand{\farFieldCylinder}{\mathcal{W}}     % W_a = [a, s_infty) x (0,T)
-\newcommand{\priceInterval}{I}                  % price interval, no time extent: I subset (B, s_infty)
+\newcommand{\priceInterval}{I}                  % price interval, no time extent: I subset \domain = (B, s_infty)
 
 % --- evaluation metrics ----------------------------------------------------
 % \relLtwo (= \eta) is the relative L^2 error already declared above; here it
 % takes the region it is computed on as an argument, since every comparison in
 % the barrier documents is region-dependent. The absolute error is written as
 % the norm itself, so that no symbol hides which region it refers to.
-% The argument is a SPACE-TIME region A contained in the closure of \domain,
-% and both norms of the quotient integrate over A in d\underlyingPrice
-% d\timePoint. A price interval is not an admissible argument: for a quantity
+% The argument is a SPACE-TIME region A contained in the closure of
+% \pricingCylinder (= Q), and both norms of the quotient integrate over A in
+% d\underlyingPrice d\timePoint: \relativeErrorOn{\pricingCylinder} is an error
+% over the whole cylinder, price AND time. A price interval is not an admissible argument: for a quantity
 % measured at one date, write the norm explicitly over \priceInterval with the
 % date in the argument of the field.
 \newcommand{\relativeErrorOn}[1]{\relLtwo\!\left(#1\right)}
@@ -404,7 +409,9 @@
 \newcommand{\derivativeError}[1]{e_{#1}}
 % Capital fraktur, so that neither is read as Euler's e or as \pdeResidual = R.
 % Both are densities in the price: a time integral at a fixed price, hence a
-% function of \underlyingPrice alone and not an integral over \domain.
+% function of \underlyingPrice alone, defined on \domain, and not an integral
+% over \pricingCylinder; integrating it over \domain in d\underlyingPrice gives
+% the squared L^2(\pricingCylinder) norm.
 \newcommand{\errorEnergyDensity}{\mathfrak{E}}    % E(s) = int_0^T |Phi_theta - V_DO|^2 dt, at fixed price
 \newcommand{\residualEnergyDensity}{\mathfrak{R}} % R(s) = int_0^T |L^BS Phi_theta|^2 dt, at fixed price
 \newcommand{\cumulativeShare}[2]{%              % cumulative share of a density #1 below the price #2

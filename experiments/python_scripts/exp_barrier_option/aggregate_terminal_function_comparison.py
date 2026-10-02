@@ -110,9 +110,9 @@ WINDOW_FAMILIES: dict[str, dict] = {
 }
 
 WINDOW_SHAPE_FORMULA_TEXT = (
-    r"$\mathrm{rel}_{L^2}(\Omega\setminus N)=\|V_\theta-V_{DO}\|_{L^2(\Omega\setminus N)}"
-    r"/\|V_{DO}\|_{L^2(\Omega\setminus N)}$ on the pilot's $300\times100$ grid of "
-    r"$\Omega=(B,s_\infty)\times(0,T)$, $\tau=T-t$;  abscissa: $|N\cap\Omega|/|\Omega|$ (grid fraction)."
+    r"$\mathrm{rel}_{L^2}(Q\setminus N)=\|V_\theta-V_{DO}\|_{L^2(Q\setminus N)}"
+    r"/\|V_{DO}\|_{L^2(Q\setminus N)}$ (norms over price AND time) on the pilot's $300\times100$ grid of "
+    r"$Q=(B,s_\infty)\times(0,T)$, $\tau=T-t$;  abscissa: $|N\cap Q|/|Q|$ (grid fraction)."
     "\n"
     r"$N_w=\{|s-B|+\tau\leq w\}$, $w\in\{0.1,0.2,0.3,0.5\}$;  "
     r"$N_c=\{|s-B|\leq c\,B\sigma\sqrt{\tau}\}$, $c\in\{0,1,2,3\}$;  "
@@ -159,7 +159,7 @@ _BASE_CONFIGURATION_LABELS: dict[str, str] = {
 
 #: Suffix appended to the configuration key of a SMOOTHING run trained with the
 #: corner window kept in the collocation sampler, i.e. on the whole domain
-#: :math:`\Omega`, as the analytic corner treatments are. The collocation domain
+#: :math:`Q`, as the analytic corner treatments are. The collocation domain
 #: belongs in the key rather than in an annotation computed at plotting time:
 #: the same terminal function trained on the two domains gives two different
 #: objects, and a shared key would make them collide in :func:`collect_runs`,
@@ -180,6 +180,38 @@ CORNER_INCLUDED_ANNOTATION = "\n[whole domain: corner in collocation]"
 FAR_FIELD_DIRICHLET_SUFFIX = "_far_field_dirichlet"
 FAR_FIELD_DIRICHLET_ANNOTATION = "\n[far-field Dirichlet condition on the far face]"
 
+#: Cutoff radii (delta0, delta1) of the corner-enrichment batches of sections
+#: 16.4 and 17.7, in price units from the barrier. A run carrying these radii
+#: keeps the plain configuration key, so every aggregation produced before the
+#: radii became a swept factor is reproduced unchanged.
+CANONICAL_ENRICHMENT_CUTOFF_RADII = (0.1, 0.3)
+
+#: Cutoff radii other than the canonical pair for which a trained batch is
+#: expected. The radii belong in the configuration key for the same reason as
+#: :data:`CORNER_INCLUDED_SUFFIX` and :data:`FAR_FIELD_DIRICHLET_SUFFIX`: they
+#: change the extension, so two runs differing by them are two different
+#: objects, and a shared key would make them collide in :func:`collect_runs`,
+#: where the more recent timestamp is kept and the other run is dropped --
+#: silently replacing the canonical batch by a swept point. The set is declared
+#: here rather than discovered from the directory names so that the abscissa of
+#: the comparison figure and the row order of the tables are ordered by the
+#: sweep and not by the file system; a run whose radii are absent from this
+#: tuple is reported as an error rather than pooled into a neighbouring key.
+#: Methodology section 17.8.
+ENRICHMENT_CUTOFF_RADII_SWEEP: tuple[tuple[float, float], ...] = (
+    (0.1, 0.6),
+    (0.1, 1.2),
+    (0.1, 2.0),
+)
+
+
+def enrichment_cutoff_radii_suffix(delta0: float, delta1: float) -> str:
+    """Configuration-key suffix of a corner-enrichment run at given cutoff radii;
+    empty for the canonical pair."""
+    if (delta0, delta1) == CANONICAL_ENRICHMENT_CUTOFF_RADII:
+        return ""
+    return f"_d0{delta0:g}_d1{delta1:g}"
+
 
 def is_subtraction_configuration(configuration: str) -> bool:
     """True for the analytic corner treatments (exact subtraction, corner
@@ -199,6 +231,22 @@ def _with_corner_included_twins(labels: dict[str, str]) -> dict[str, str]:
     return extended
 
 
+def _with_enrichment_cutoff_radii_twins(labels: dict[str, str]) -> dict[str, str]:
+    """Insert, immediately after every corner-enrichment configuration, one key
+    per entry of :data:`ENRICHMENT_CUTOFF_RADII_SWEEP`. Immediately after, so
+    that the abscissa of the comparison figure reads as a sweep of the radii at
+    a fixed terminal profile."""
+    extended: dict[str, str] = {}
+    for configuration, label in labels.items():
+        extended[configuration] = label
+        if not configuration.startswith("enrichment_"):
+            continue
+        for delta0, delta1 in ENRICHMENT_CUTOFF_RADII_SWEEP:
+            extended[configuration + enrichment_cutoff_radii_suffix(delta0, delta1)] = (
+                label + f"\n[cutoff radii ({delta0:g}, {delta1:g})]")
+    return extended
+
+
 def _with_far_field_dirichlet_twins(labels: dict[str, str]) -> dict[str, str]:
     """Insert, immediately after every configuration, the key of its far-field
     Dirichlet twin. Immediately after, rather than at the end of the table, so
@@ -214,7 +262,7 @@ def _with_far_field_dirichlet_twins(labels: dict[str, str]) -> dict[str, str]:
 #: Public label table, indexed by the configuration keys :func:`collect_runs`
 #: produces (imported by the Greeks, profile-comparison and report scripts).
 CONFIGURATION_LABELS: dict[str, str] = _with_far_field_dirichlet_twins(
-    _with_corner_included_twins(_BASE_CONFIGURATION_LABELS))
+    _with_corner_included_twins(_with_enrichment_cutoff_radii_twins(_BASE_CONFIGURATION_LABELS)))
 
 
 def configuration_tick_label(configuration: str, per_seed: dict) -> str:
@@ -256,16 +304,24 @@ def metric_panels(collocation_domain: str) -> list[tuple[str, str, str]]:
 METRIC_PANELS: list[tuple[str, str, str]] = metric_panels("excluded")
 
 FORMULA_TEXT = (
-    r"$\mathrm{rel}_{L^2}(\Omega)=\|V_\theta-V_{DO}\|_{L^2(\Omega)}/\|V_{DO}\|_{L^2(\Omega)}$ on a "
+    r"$\mathrm{rel}_{L^2}(Q)=\|V_\theta-V_{DO}\|_{L^2(Q)}/\|V_{DO}\|_{L^2(Q)}$ (norms over price AND time) on a "
     r"$300\times100$ grid of $(B,s_\infty)\times(0,T)$;  corner window "
     r"$N=\{(s,t):|s-B|+(T-t)\leq w\}$, $w$ = --corner-window;  "
-    r"outside corner: $\Omega\setminus N$;  global: $\Omega$;  corner: $N$."
+    r"outside corner: $Q\setminus N$;  global: $Q$;  corner: $N$."
     "\n"
     r"$V_{DO}$ = Reiner-Rubinstein closed form;  "
     r"best loss $=\min_k \mathrm{mean}_{(s,t)\in\mathrm{batch}_k}\,(\mathcal{L}^{BS}V_\theta)^2$ "
     r"over the $n_f$ fresh collocation points of iteration $k$.  "
     "Points: individual master seeds; filled marker: across-seed median."
 )
+
+
+#: Payoff tag of a corner-enrichment run, with its cutoff radii. The trailing
+#: part of a split-profile tag (``_nuc<sigma_c>_closedform``) follows the radii
+#: and is not matched here, so the pattern is anchored at the start only.
+ENRICHMENT_PAYOFF_TAG_PATTERN = re.compile(
+    r"^_enrichment_(?P<profile>raw|blackscholes|split)"
+    r"_d0(?P<delta0>[0-9.]+)_d1(?P<delta1>[0-9.]+)")
 
 
 def configuration_key_from_payoff_tag(payoff_tag: str) -> str:
@@ -286,12 +342,21 @@ def configuration_key_from_payoff_tag(payoff_tag: str) -> str:
         return "subtraction_blackscholes"
     if payoff_tag.startswith("_subtraction_split"):
         return "subtraction_split"
-    if payoff_tag.startswith("_enrichment_raw"):
-        return "enrichment_raw"
-    if payoff_tag.startswith("_enrichment_blackscholes"):
-        return "enrichment_blackscholes"
-    if payoff_tag.startswith("_enrichment_split"):
-        return "enrichment_split"
+    if payoff_tag.startswith("_enrichment_"):
+        match = ENRICHMENT_PAYOFF_TAG_PATTERN.match(payoff_tag)
+        if match is None:
+            raise ValueError(
+                f"corner-enrichment payoff tag {payoff_tag!r} carries no readable cutoff radii; the "
+                f"pilot writes them as _d0<delta0>_d1<delta1> (see its payoff_tag assembly).")
+        radii = (float(match["delta0"]), float(match["delta1"]))
+        if radii != CANONICAL_ENRICHMENT_CUTOFF_RADII and radii not in ENRICHMENT_CUTOFF_RADII_SWEEP:
+            raise ValueError(
+                f"corner-enrichment run at cutoff radii {radii}, which is neither the canonical pair "
+                f"{CANONICAL_ENRICHMENT_CUTOFF_RADII} nor one of the declared sweep points "
+                f"{ENRICHMENT_CUTOFF_RADII_SWEEP}. Add the pair to ENRICHMENT_CUTOFF_RADII_SWEEP so "
+                f"that it gets its own configuration key and label; pooling it into a neighbouring "
+                f"key would drop one of the two batches in collect_runs.")
+        return f"enrichment_{match['profile']}" + enrichment_cutoff_radii_suffix(*radii)
     raise ValueError(f"unrecognised payoff tag {payoff_tag!r}")
 
 
@@ -769,11 +834,11 @@ def plot_window_shape_sweep(sweep: dict, path: Path, iters: int, epsilon: float,
                                 xytext=(4, 4), fontsize=6, color=spec["color"])
         ax.set_yscale("log")
         ax.margins(x=0.12)  # room for the parameter annotations at the right end of each curve
-        ax.set_xlabel("Excluded area fraction $|N\\cap\\Omega|/|\\Omega|$")
+        ax.set_xlabel("Excluded area fraction $|N\\cap Q|/|Q|$")
         ax.set_title(CONFIGURATION_LABELS[configuration], fontsize=9)
         ax.grid(True, which="both", alpha=0.3)
     for ax in axes[::n_cols]:
-        ax.set_ylabel("Relative $L^2$ error on the complement $\\Omega\\setminus N$")
+        ax.set_ylabel("Relative $L^2$ error on the complement $Q\\setminus N$")
     # Legend in the band between the x-axis labels and the formula box (which
     # finalize_figure draws at the bottom edge of the figure).
     legend = fig.legend(handles=list(handles.values()), loc="center", bbox_to_anchor=(0.5, 0.11),

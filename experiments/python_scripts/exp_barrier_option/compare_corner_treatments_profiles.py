@@ -256,8 +256,8 @@ FORMULA_ERRORS = (
 FORMULA_STRIKE = (
     r"Top: $\partial_s\Phi_\theta(K,t)$ and $\partial_{ss}\Phi_\theta(K,t)$ against $t$ (solid), exact "
     r"$\partial_sV_{DO}(K,t)$, $\partial_{ss}V_{DO}(K,t)$ (dashed).  Bottom: "
-    r"$\mathrm{err}_{\mathrm{rel}}(t)=|\partial^{k}_s\Phi_\theta(K,t)-\partial^{k}_sV_{DO}(K,t)|\,/\,|\partial^{k}_sV_{DO}(K,t)|$, "
-    r"$k=1$ (Delta), $k=2$ (Gamma)."
+    r"$\eta_{\partial^{k}_s}(t)=|\partial^{k}_s\Phi_\theta(K,t)-\partial^{k}_sV_{DO}(K,t)|\,/\,|\partial^{k}_sV_{DO}(K,t)|$, "
+    r"pointwise at the single point $(K,t)$, no integral; $k=1$ (Delta), $k=2$ (Gamma)."
     "\n"
     r"The exact Gamma changes sign near $t\approx0.3$ (grey vertical): the relative Gamma error is "
     r"ill-conditioned there (small denominator), not the numerical Gamma."
@@ -485,7 +485,7 @@ def plot_greeks_at_strike(curves: dict, path: Path) -> None:
             for ax in (ax_value, ax_error):
                 ax.axvline(t[idx], color="grey", lw=0.8)
         ax_value.set_ylabel(r"$\partial_s\Phi_\theta(K,t)$" if k == 1 else r"$\partial_{ss}\Phi_\theta(K,t)$")
-        ax_error.set_ylabel(r"$\mathrm{err}_{\mathrm{rel}}\,\Delta(K,t)$" if k == 1 else r"$\mathrm{err}_{\mathrm{rel}}\,\Gamma(K,t)$")
+        ax_error.set_ylabel(r"$\eta_{\partial_s}(t)$" if k == 1 else r"$\eta_{\partial_{ss}}(t)$")
         ax_error.set_xlabel("Calendar time $t$")
         ax_value.set_title("Delta at the strike" if k == 1 else "Gamma at the strike")
         for ax in (ax_value, ax_error):
