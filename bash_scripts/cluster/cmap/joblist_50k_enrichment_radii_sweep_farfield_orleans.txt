@@ -1,0 +1,34 @@
+# porte-d-orleans (AVX2, bit-identique a republique) : balayage de la largeur du cutoff de
+# l'enrichissement du coin, AVEC la condition de Dirichlet en s_inf, 50000 iterations, coin
+# inclus dans la collocation, graines 0-4, profil terminal Black-Scholes, 4 threads.
+# Lance 3 jobs a la fois (et non 5) : le 2026-10-05, republique etait sature par un autre
+# utilisateur (charge 43 pour 16 coeurs) et orleans avait environ 7 coeurs occupes.
+#
+# POURQUOI AVEC LA CONDITION. Sans elle, 99 % de l'erreur des runs d'enrichissement est en champ
+# lointain (section 17.6) et l'effet des rayons, qui agissent pres du coin, serait masque sur
+# eta(Q \ N_0.1). Le point de reference w = 0.2, (delta0, delta1) = (0.1, 0.3), est deja entraine
+# avec la condition (joblist_50k_enrichment_farfield_republique.txt, section 17.7) : il n'est pas
+# relance. Admissibilite : delta1 < s_inf - B = 2.4 garantit chi(s_inf) = 0 ; borne de troncature
+# mesuree aux trois points ci-dessous : 4.09e-08, identique au point de reference.
+#
+# PREDICTION en forme fermee (section 17.8, sans reseau entraine) : forcage interieur rms
+#   w = 0.2 (reference) 9.19e-02 ; w = 0.5 2.41e-02 ; w = 1.1 1.70e-02 (minimum) ; w = 1.5 1.75e-02.
+# Le lot doit dire si l'erreur et la perte entrainees suivent ce classement.
+#
+# Un autre joblist, joblist_50k_enrichment_radii_sweep_republique.txt (non commite), definit le
+# meme balayage SANS condition et jusqu'a w = 1.9 : c'est une experience differente.
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 0.6 --iters 50000 --seed 0
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 0.6 --iters 50000 --seed 1
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 0.6 --iters 50000 --seed 2
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 0.6 --iters 50000 --seed 3
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 0.6 --iters 50000 --seed 4
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 1.2 --iters 50000 --seed 0
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 1.2 --iters 50000 --seed 1
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 1.2 --iters 50000 --seed 2
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 1.2 --iters 50000 --seed 3
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 1.2 --iters 50000 --seed 4
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 1.6 --iters 50000 --seed 0
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 1.6 --iters 50000 --seed 1
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 1.6 --iters 50000 --seed 2
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 1.6 --iters 50000 --seed 3
+--corner-treatment enrichment --black-scholes-payoff --far-field-dirichlet --enrichment-delta0 0.1 --enrichment-delta1 1.6 --iters 50000 --seed 4
