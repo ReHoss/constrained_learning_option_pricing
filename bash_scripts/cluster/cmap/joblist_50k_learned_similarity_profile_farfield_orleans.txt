@@ -1,0 +1,11 @@
+# orleans (AVX2, bit-identical to republique, saturated by another user on 2026-10-05): learned
+# similarity profile (Section 5.3 of the note; methodology section 18) WITH the far-field Dirichlet
+# condition (section 12), 50000 iterations, corner INCLUDED in collocation, Black-Scholes terminal
+# profile, cutoff radii (0.1, 0.3), ONE seed.
+#
+# WHY. The run without the condition (20261005_152619_..._learnedprofile_..._w32_l2) has 96.5 per
+# cent of its squared price error in s in [1.2, 3], maximum at s = s_inf: the factor of 43 against E
+# measured mainly the ill-posed far field, not the corner (section 18.4). Reference at equal seed,
+# threads, CPU family and condition: 20261002_005610_iters50000_eps0_seed0_enrichment_blackscholes_
+# d00.1_d10.3_farfield (republique, section 17.7).
+--corner-treatment learned_similarity_profile --black-scholes-payoff --far-field-dirichlet --iters 50000 --seed 0
