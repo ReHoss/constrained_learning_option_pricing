@@ -47,6 +47,15 @@ barrier-condition loss term) -- Section 4's stated goal in the note.
   the subtraction mode; the residual of g2 is square-integrable but not zero
   (Proposition 5), and no small parameter is introduced (Remark 10)
   (:class:`learning_option_pricing.pricing.barrier.CornerEnrichedExtension`).
+- ``learned_similarity_profile`` (Section 5.3 of the note, Definition 9):
+  the enrichment with the analytic profile erf replaced by the trainable
+  Lambda_theta' = Lambda_0 + omega g_theta' (Lambda_0 = 1 - exp(-xi),
+  omega = exp(-xi)(1 - exp(-xi)), g_theta' a one-variable network), trained
+  jointly with Psi_theta on the interior residual; the residual of g2 then
+  depends on theta' and is recorded in the graph. ||Lambda_theta' - erf||_Linf
+  and the defect integral I of equation (32) are logged during training,
+  recorded in the summary and plotted (figures/learned_similarity_profile.png)
+  (:class:`learning_option_pricing.pricing.barrier.LearnedSimilarityProfileCornerEnrichedExtension`).
 
 Trained models are compared, for each epsilon, to the exact closed-form
 reference (method of images / Reiner-Rubinstein,
@@ -63,6 +72,10 @@ Usage:
     python3 experiments/python_scripts/exp_barrier_option/pilot_down_and_out_put.py \
         --replot data/pilot_down_and_out_put/<run_dir>
 
+    Learned similarity profile (Section 5.3), one seed:
+    python3 experiments/python_scripts/exp_barrier_option/pilot_down_and_out_put.py \
+        --corner-treatment learned_similarity_profile --black-scholes-payoff --iters 50000 --seed 0 --num-threads 4
+
     Smoke test (fast, for CI / sanity-checking the wiring):
     python3 experiments/python_scripts/exp_barrier_option/pilot_down_and_out_put.py \
         --debug --iters 200 --epsilons 0.1 0.02
@@ -70,6 +83,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import logging
 import math
@@ -103,6 +117,10 @@ from learning_option_pricing.pricing.barrier import (  # noqa: E402
     make_corner_regularised_extension_with_smoothed_payoff,
     make_subtracted_digital_extension,
     make_corner_enriched_extension,
+    make_learned_similarity_profile_corner_enriched_extension,
+    error_function_target_of_the_profile_network,
+    learned_similarity_profile_base_and_vanishing_factor,
+    similarity_profile_diagnostics,
     SUBTRACTION_TERMINAL_PROFILES,
     reiner_rubinstein_down_and_out_put,
 )
@@ -160,12 +178,14 @@ DEFAULT_SPLIT_PROFILE = "closed_form"
 # resolution error, which is what actually limits accuracy near maturity).
 DEFAULT_SPLIT_PADDING_DIFFUSION_LENGTHS = 6.0
 
-#: The two corner treatments of Table 1 of the note retained here (see the
-#: module docstring); the leading-order enrichment of Section 5.2 is not
-#: implemented yet.
-CORNER_TREATMENTS = ("smoothing", "subtraction", "enrichment")
-#: The treatments that resolve the corner analytically (no corner layer).
-ANALYTIC_CORNER_TREATMENTS = ("subtraction", "enrichment")
+#: The corner treatments of Table 1 of the note implemented here (see the
+#: module docstring): smoothing, exact subtraction (Section 5.1), enrichment
+#: (Section 5.2) and the learned similarity profile (Section 5.3).
+CORNER_TREATMENTS = ("smoothing", "subtraction", "enrichment", "learned_similarity_profile")
+#: The treatments that resolve the corner without a corner layer (no epsilon).
+ANALYTIC_CORNER_TREATMENTS = ("subtraction", "enrichment", "learned_similarity_profile")
+#: The treatments built on the enrichment of Definition 8 (cutoff radii delta0, delta1).
+ENRICHMENT_CORNER_TREATMENTS = ("enrichment", "learned_similarity_profile")
 # In the analytic treatments there is no corner layer; the epsilon loop, file
 # names (summary_eps<E>.yaml, model_eps<E>.pt) and directory tag use this
 # single placeholder so the artefact layout stays identical to the smoothing runs.
@@ -181,6 +201,13 @@ DEFAULT_SUBTRACTION_CORNER_WINDOW = 0.1
 # the model-based diagnostics of section 11.
 DEFAULT_ENRICHMENT_DELTA0 = 0.1
 DEFAULT_ENRICHMENT_DELTA1 = 0.3
+# Architecture of the one-variable network g_theta' of the learned similarity
+# profile Lambda_theta' = Lambda_0 + omega g_theta' (Definition 9 of the note):
+# tanh hidden layers, linear output layer initialised to zero (Lambda_theta' =
+# Lambda_0 at initialisation). 1153 parameters at the defaults, against 20601 for the
+# backbone Psi_theta of the price (measured from the built model).
+DEFAULT_SIMILARITY_PROFILE_HIDDEN_WIDTH = 32
+DEFAULT_SIMILARITY_PROFILE_HIDDEN_DEPTH = 2
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -323,7 +350,9 @@ def compute_loss(model: ETCNN, s_f: torch.Tensor, t_f: torch.Tensor, r: float, s
       black_scholes_residual -- never autograd, never a finite difference.
       g2 does not depend on theta, so its contribution is computed under
       torch.no_grad() and enters the loss as a constant additive shift; the
-      gradient the optimiser sees is exactly F(g1*u_theta)'s.
+      gradient the optimiser sees is exactly F(g1*u_theta)'s -- except for
+      the learned similarity profile, whose g2 holds the trained parameters
+      theta' of g_theta' and whose residual therefore enters the graph.
     """
     x_f = torch.stack([s_f, t_f], dim=1)
     g2 = model.g2
@@ -337,7 +366,13 @@ def compute_loss(model: ETCNN, s_f: torch.Tensor, t_f: torch.Tensor, r: float, s
     if hasattr(g2, "black_scholes_residual"):
         neural_manifold = model.forward_neural_manifold(x_f).squeeze()
         F_neural_manifold = bsm_operator(neural_manifold, s_f, t_f, r, 0.0, sigma)
-        with torch.no_grad():
+        # The learned similarity profile (Section 5.3 of the note) is the one
+        # extension whose closed-form residual depends on trained parameters
+        # theta': there the residual of g2 is recorded in the graph, so that the
+        # objective (27) trains (theta, theta') jointly. Every other g2 is a
+        # fixed function and its residual a constant additive shift.
+        g2_carries_trained_parameters = getattr(g2, "similarity_profile_is_learned", False)
+        with (contextlib.nullcontext() if g2_carries_trained_parameters else torch.no_grad()):
             F_g2 = g2.black_scholes_residual(s_f.detach(), t_f.detach(), r, sigma)
         F_u = F_neural_manifold + F_g2
     else:
@@ -490,6 +525,9 @@ def build_model(
     subtraction_terminal_profile: str = "raw",
     enrichment_delta0: float = DEFAULT_ENRICHMENT_DELTA0,
     enrichment_delta1: float = DEFAULT_ENRICHMENT_DELTA1,
+    similarity_profile_hidden_width: int = DEFAULT_SIMILARITY_PROFILE_HIDDEN_WIDTH,
+    similarity_profile_hidden_depth: int = DEFAULT_SIMILARITY_PROFILE_HIDDEN_DEPTH,
+    similarity_profile_seed: int = 0,
 ) -> ETCNN:
     """Build the ETCNN ansatz U_theta = g1 * u_theta + g2.
 
@@ -506,6 +544,15 @@ def build_model(
     ``corner_treatment="enrichment"`` does the same with
     :func:`make_corner_enriched_extension` and the cutoff radii
     ``enrichment_delta0``/``enrichment_delta1``.
+    ``corner_treatment="learned_similarity_profile"`` (Section 5.3 of the note,
+    Definition 9) builds the same enrichment with the trainable profile
+    Lambda_theta' = Lambda_0 + omega g_theta' in place of erf
+    (:func:`make_learned_similarity_profile_corner_enriched_extension`), the
+    network g_theta' of width ``similarity_profile_hidden_width`` and depth
+    ``similarity_profile_hidden_depth`` initialised from the explicit seed
+    ``similarity_profile_seed``; the ResNet backbone is drawn first, from
+    ``model_seed`` exactly as in every other mode, so it is identical to the
+    one of the analytic enrichment at the same master seed.
 
     ``far_field_dirichlet`` replaces ``g1 = (T-t)(s-B)`` by
     :func:`barrier_composite_distance_with_far_field`, which also vanishes on
@@ -566,6 +613,15 @@ def build_model(
         )
         if corner_treatment == "subtraction":
             g2 = make_subtracted_digital_extension(K, B, r, sigma, T, subtraction_terminal_profile, **profile_options)
+        elif corner_treatment == "learned_similarity_profile":
+            g2 = make_learned_similarity_profile_corner_enriched_extension(
+                K, B, r, sigma, T, subtraction_terminal_profile,
+                delta0=enrichment_delta0, delta1=enrichment_delta1,
+                similarity_profile_hidden_width=similarity_profile_hidden_width,
+                similarity_profile_hidden_depth=similarity_profile_hidden_depth,
+                similarity_profile_initialisation_seed=similarity_profile_seed,
+                **profile_options,
+            )
         else:
             g2 = make_corner_enriched_extension(
                 K, B, r, sigma, T, subtraction_terminal_profile,
@@ -630,6 +686,8 @@ def train_one_epsilon(
     subtraction_terminal_profile: str = "raw",
     enrichment_delta0: float = DEFAULT_ENRICHMENT_DELTA0,
     enrichment_delta1: float = DEFAULT_ENRICHMENT_DELTA1,
+    similarity_profile_hidden_width: int = DEFAULT_SIMILARITY_PROFILE_HIDDEN_WIDTH,
+    similarity_profile_hidden_depth: int = DEFAULT_SIMILARITY_PROFILE_HIDDEN_DEPTH,
 ) -> tuple[ETCNN, dict, float, int]:
     """Train one ETCNN for one epsilon (or, in the analytic corner treatments,
     the single placeholder epsilon). Returns (best_model, history, best_loss, best_iter)."""
@@ -637,6 +695,7 @@ def train_one_epsilon(
              else f"eps={epsilon:g}")
     model_seed = derive_seed(seed, "model_init")
     sampler_seed = derive_seed(seed, "sampler")
+    similarity_profile_seed = derive_seed(seed, "similarity_profile_init")
 
     model = build_model(
         K, B, T, epsilon, model_seed,
@@ -650,9 +709,21 @@ def train_one_epsilon(
         corner_treatment=corner_treatment,
         subtraction_terminal_profile=subtraction_terminal_profile,
         enrichment_delta0=enrichment_delta0, enrichment_delta1=enrichment_delta1,
+        similarity_profile_hidden_width=similarity_profile_hidden_width,
+        similarity_profile_hidden_depth=similarity_profile_hidden_depth,
+        similarity_profile_seed=similarity_profile_seed,
     ).to(DEVICE)
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(f"[{label}] model parameters: {n_params}")
+    learned_similarity_profile = getattr(model.g2, "similarity_profile_is_learned", False)
+    if learned_similarity_profile:
+        n_profile_params = sum(p.numel() for p in model.g2.parameters())
+        logger.info(
+            f"[{label}]   of which: Psi_theta (ResNet backbone) {n_params - n_profile_params}, "
+            f"g_theta' (similarity profile network, width {similarity_profile_hidden_width}, depth "
+            f"{similarity_profile_hidden_depth}, tanh, zero output layer at initialisation) {n_profile_params}; "
+            f"one Adam optimiser on (theta, theta') jointly."
+        )
     # Report the interior-residual route from the built g2 object itself (the
     # capability test compute_loss performs), not from the CLI flags: this is
     # the line to read to know which route a run actually trained through.
@@ -669,6 +740,12 @@ def train_one_epsilon(
     generator.manual_seed(sampler_seed)
 
     history = {"iter": [], "loss": [], "grad_norm": [], "lr": []}
+    if learned_similarity_profile:
+        # Hypothesis H'' of the note: ||Lambda_theta' - erf||_Linf and the defect
+        # integral I of equation (32), recorded at every logged iteration.
+        history.update({"similarity_profile_sup_distance_to_error_function": [],
+                        "similarity_profile_defect_integral": [],
+                        "similarity_profile_network_grad_norm": []})
     best_loss = math.inf
     best_iter = 0
     best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
@@ -699,6 +776,11 @@ def train_one_epsilon(
             if p.grad is not None:
                 total_norm += p.grad.detach().data.norm(2).item() ** 2
         total_norm = total_norm**0.5
+        profile_grad_norm = None
+        if learned_similarity_profile and (it % log_every == 0 or it == 1):
+            profile_grad_norm = sum(
+                p.grad.detach().norm(2).item() ** 2 for p in model.g2.parameters() if p.grad is not None
+            ) ** 0.5
 
         optimizer.step()
         scheduler.step()
@@ -716,9 +798,22 @@ def train_one_epsilon(
             history["grad_norm"].append(total_norm)
             history["lr"].append(lr_now)
             elapsed = time.time() - t0
+            profile_message = ""
+            if learned_similarity_profile:
+                diagnostics = model.g2.similarity_profile_diagnostics()
+                history["similarity_profile_sup_distance_to_error_function"].append(
+                    diagnostics["sup_distance_to_error_function"])
+                history["similarity_profile_defect_integral"].append(diagnostics["similarity_equation_defect_integral"])
+                history["similarity_profile_network_grad_norm"].append(profile_grad_norm)
+                profile_message = (
+                    f"  sup|Lambda_theta'-erf|={diagnostics['sup_distance_to_error_function']:.3e}"
+                    f"@xi={diagnostics['argmax_xi']:.2f}  I={diagnostics['similarity_equation_defect_integral']:.3e}"
+                    f"  |grad theta'|={profile_grad_norm:.2e}"
+                )
             logger.info(
                 f"[{label}] iter {it:>6d}/{total_iters}  loss={loss_val:.6e}  "
                 f"|grad|={total_norm:.2e}  lr={lr_now:.6f}  best={best_loss:.6e}@{best_iter}  ({elapsed:.1f}s)"
+                + profile_message
             )
 
         if checkpoint_every > 0 and it % checkpoint_every == 0 and it < total_iters:
@@ -920,6 +1015,21 @@ def formula_text_subtraction(
         profile_line += rf",  $\nu_c=\sigma_c^2/2$, $\sigma_c={comparison_volatility:g}$ ({route})"
     operator_line = r"$\mathcal{L}^{BS}V=\partial_tV+\frac{1}{2}\sigma^2s^2\partial_{ss}V+rs\partial_sV-rV$;  "
     reference_line = r"reference: $V_{DO}$ = Reiner-Rubinstein closed form (method of images, $\mathcal{L}^{BS}$-exact)"
+    if corner_treatment == "learned_similarity_profile":
+        # Notation of Section 5.3 of the note (Definition 9, equations (24)-(25)).
+        return "\n".join([
+            operator_line
+            + r"$\Phi_\theta=E_{\theta'}+h+d_{\partial_pQ}\Psi_\theta$, "
+            r"$E_{\theta'}=\chi(s)\,\Delta\,\Lambda_{\theta'}(\xi)$, $\Delta=K-B$, "
+            r"$d_{\partial_pQ}(s,t)=(T-t)(s-B)$ (learned similarity profile, no corner layer)",
+            r"$\Lambda_{\theta'}=\Lambda_0+\omega\,g_{\theta'}$ on $I=[0,+\infty)$, "
+            r"$\Lambda_0(\xi)=1-e^{-\xi}$, $\omega(\xi)=e^{-\xi}(1-e^{-\xi})$, $g_{\theta'}$ trained jointly with $\Psi_\theta$;  "
+            r"$\xi(s,t)=\frac{\ln(s/B)}{\sigma\sqrt{2(T-t)}}$",
+            rf"$\chi(s)=1-\zeta\left((s-B-\delta_0)/(\delta_1-\delta_0)\right)$, $\delta_0={enrichment_delta0:g}$, "
+            rf"$\delta_1={enrichment_delta1:g}$;  "
+            r"$h(s,t)=\pi(s,t)-\chi(s)\,\pi(B,t)$,  " + profile_line,
+            reference_line,
+        ])
     if corner_treatment == "enrichment":
         return "\n".join([
             operator_line
@@ -964,13 +1074,17 @@ def plot_subtraction_decomposition(
         s_np = s_grid.numpy()
         ax.plot(s_np, eval_result["reference"].numpy()[:, j], linestyle="--", color="black", lw=1.8, label=r"$V_{DO}$ (closed form)")
         ax.plot(s_np, eval_result["learned"].numpy()[:, j], color="tab:blue", lw=1.6, label=r"$\Phi_\theta$ (trained)")
-        singular_label = (r"$E=\chi\,\Delta\,\mathrm{erf}(\xi)$ (corner enrichment)" if hasattr(g2, "enrichment")
+        singular_label = (r"$E_{\theta'}=\chi\,\Delta\,\Lambda_{\theta'}(\xi)$ (learned similarity profile)"
+                          if getattr(g2, "similarity_profile_is_learned", False)
+                          else r"$E=\chi\,\Delta\,\mathrm{erf}(\xi)$ (corner enrichment)" if hasattr(g2, "enrichment")
                           else r"$\Delta\,V_{DOD}$ (subtracted singular part)")
         regular_label = (r"$h=\pi-\chi\,\pi(B,\cdot)$ (regular extension)" if hasattr(g2, "enrichment")
                          else r"$h=\pi-\pi(B,\cdot)$ (regular extension)")
         ax.plot(s_np, singular, color="tab:red", lw=1.4, label=singular_label)
         ax.plot(s_np, regular, color="tab:green", lw=1.4, label=regular_label)
-        ax.plot(s_np, manifold, color="tab:purple", lw=1.4, label=r"$g_1u_\theta$ (network)")
+        manifold_label = (r"$d_{\partial_pQ}\Psi_\theta$ (network)" if getattr(g2, "similarity_profile_is_learned", False)
+                          else r"$g_1u_\theta$ (network)")
+        ax.plot(s_np, manifold, color="tab:purple", lw=1.4, label=manifold_label)
         ax.axvline(B, color="black", linestyle=":", lw=1.0)
         ax.axvline(K, color="grey", linestyle=":", lw=1.0)
         ax.set_xlabel("Underlying price $s$")
@@ -980,6 +1094,71 @@ def plot_subtraction_decomposition(
     legend = axes[-1].legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8)
     fig.subplots_adjust(right=0.78, bottom=0.36)
     finalize_figure(fig, out_path, legends=[legend], formula=formula_text, axes=list(axes))
+
+
+FORMULA_TEXT_SIMILARITY_PROFILE = (
+    r"$\Lambda_{\theta'}(\xi)=\Lambda_0(\xi)+\omega(\xi)\,g_{\theta'}(\xi)$ (Definition 9), "
+    r"$\Lambda_0(\xi)=1-e^{-\xi}$, $\omega(\xi)=e^{-\xi}(1-e^{-\xi})$, $\xi\in I=[0,+\infty)$;  "
+    r"$\Lambda=\mathrm{erf}$: unique bounded solution of $\Lambda''+2\xi\Lambda'=0$, $\Lambda(0)=0$, $\Lambda(+\infty)=1$"
+    "\n"
+    r"$\|\Lambda_{\theta'}-\Lambda\|_{L^\infty}$ on a uniform grid of $[0,20]$ (4001 points);  "
+    r"$I=\int_0^{\infty}(\Lambda_{\theta'}''+2\xi\Lambda_{\theta'}')^2\,d\xi$ (equation (32), trapezoidal rule on the same grid);  "
+    r"$g^\star=(\mathrm{erf}-\Lambda_0)/\omega$: the network output for which $\Lambda_{\theta'}=\Lambda$"
+)
+
+
+def plot_learned_similarity_profile(model: ETCNN, history: dict, out_path: Path) -> None:
+    """Learned similarity profile against erf (left), the network output
+    g_theta' against its target g* (middle), and the trajectories of
+    ||Lambda_theta' - erf||_Linf and of the defect integral I over training
+    (right; read from the saved history, never recomputed)."""
+    g2 = model.g2
+    network = g2.similarity_profile_network
+    parameter = next(network.parameters())
+    xi = torch.linspace(0.0, 6.0, 1201, dtype=torch.float64)
+    with torch.no_grad():
+        xi_network = xi.to(device=parameter.device, dtype=parameter.dtype)
+        learned, _, _ = network.profile_value_and_derivatives(xi_network)
+        network_output = network(xi_network)
+    learned = learned.double().cpu().numpy()
+    network_output = network_output.double().cpu().numpy()
+    base = (1.0 - torch.exp(-xi)).numpy()
+    xi_positive = xi[1:]
+    target = error_function_target_of_the_profile_network(xi_positive).numpy()
+    xi_np = xi.numpy()
+
+    fig, axes = plt.subplots(1, 3, figsize=(17, 4.6))
+    ax = axes[0]
+    ax.plot(xi_np, learned, color="tab:blue", lw=1.8, label=r"$\Lambda_{\theta'}$ (trained)")
+    ax.plot(xi_np, torch.erf(xi).numpy(), color="black", linestyle="--", lw=1.4, label=r"$\Lambda=\mathrm{erf}$ (analytic)")
+    ax.plot(xi_np, base, color="grey", linestyle=":", lw=1.2, label=r"$\Lambda_0=1-e^{-\xi}$ (base, initialisation)")
+    ax.set_xlabel(r"Similarity variable $\xi$")
+    ax.set_ylabel("Profile")
+    ax.set_title("Similarity profile")
+    ax.grid(alpha=0.3)
+    ax = axes[1]
+    ax.plot(xi_np, network_output, color="tab:blue", lw=1.8, label=r"$g_{\theta'}$ (trained)")
+    ax.plot(xi_positive.numpy(), target, color="black", linestyle="--", lw=1.4, label=r"$g^\star=(\mathrm{erf}-\Lambda_0)/\omega$")
+    ax.set_xlabel(r"Similarity variable $\xi$")
+    ax.set_ylabel("Network output")
+    ax.set_title(r"Network $g_{\theta'}$ and its target")
+    ax.grid(alpha=0.3)
+    ax = axes[2]
+    iterations = np.asarray(history["iter"])
+    ax.semilogy(iterations, history["similarity_profile_sup_distance_to_error_function"], color="tab:blue", lw=1.6,
+                label=r"$\|\Lambda_{\theta'}-\Lambda\|_{L^\infty}$")
+    ax.semilogy(iterations, history["similarity_profile_defect_integral"], color="tab:orange", lw=1.6,
+                label=r"$I$ (equation (32))")
+    ax.set_xlabel("Iteration")
+    ax.set_title("Profile error during training")
+    ax.grid(alpha=0.3, which="both")
+    legends = [axis.legend(loc="upper left", bbox_to_anchor=(0.0, -0.24), fontsize=8) for axis in axes]
+    fig.subplots_adjust(bottom=0.45, wspace=0.3)
+    finalize_figure(fig, out_path, legends=legends, formula=FORMULA_TEXT_SIMILARITY_PROFILE, axes=list(axes))
+
+
+def _history_path(out_dir: Path, epsilon: float) -> Path:
+    return out_dir / f"history_eps{epsilon:g}.yaml"
 
 
 def plot_error_vs_epsilon(summaries: list[dict], out_path: Path, formula_text: str = FORMULA_TEXT_RAW_PAYOFF) -> None:
@@ -1149,6 +1328,10 @@ def load_trained_model(run_dir: Path, epsilon: float, meta: dict | None = None) 
         subtraction_terminal_profile=hyper.get("subtraction_terminal_profile", "raw"),
         enrichment_delta0=hyper.get("enrichment_delta0", DEFAULT_ENRICHMENT_DELTA0),
         enrichment_delta1=hyper.get("enrichment_delta1", DEFAULT_ENRICHMENT_DELTA1),
+        # The architecture of g_theta' must match the saved state; its seed is
+        # irrelevant (the weights are overwritten).
+        similarity_profile_hidden_width=hyper.get("similarity_profile_hidden_width") or DEFAULT_SIMILARITY_PROFILE_HIDDEN_WIDTH,
+        similarity_profile_hidden_depth=hyper.get("similarity_profile_hidden_depth") or DEFAULT_SIMILARITY_PROFILE_HIDDEN_DEPTH,
     )
     model_path = run_dir / "models" / f"model_eps{epsilon:g}.pt"
     model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
@@ -1166,6 +1349,25 @@ def _evaluation_metrics(eval_result: dict) -> dict:
     """The scalar evaluation metrics of ``evaluate_against_closed_form``, as
     written to ``summary_eps<EPSILON>.yaml`` (tensors excluded)."""
     return {key: eval_result[key] for key in EVALUATION_METRIC_KEYS}
+
+
+def _similarity_profile_summary(model: ETCNN) -> dict:
+    """Scalar diagnostics of the learned similarity profile of a trained model
+    (hypothesis H'' of the note), with those of the base profile Lambda_0 --
+    the profile at initialisation -- for comparison."""
+    trained = model.g2.similarity_profile_diagnostics()
+    base = similarity_profile_diagnostics(
+        lambda xi: learned_similarity_profile_base_and_vanishing_factor(xi)[:3],
+        trained["xi_max"], trained["n_points"],
+    )
+    return {
+        "similarity_profile_sup_distance_to_error_function": trained["sup_distance_to_error_function"],
+        "similarity_profile_argmax_xi": trained["argmax_xi"],
+        "similarity_profile_defect_integral": trained["similarity_equation_defect_integral"],
+        "similarity_profile_base_sup_distance_to_error_function": base["sup_distance_to_error_function"],
+        "similarity_profile_base_defect_integral": base["similarity_equation_defect_integral"],
+        "similarity_profile_diagnostic_grid": {"xi_max": trained["xi_max"], "n_points": trained["n_points"]},
+    }
 
 
 def _read_summaries(out_dir: Path) -> list[dict]:
@@ -1242,13 +1444,26 @@ def main() -> None:
                               "C-infinity cutoff in s with radii --enrichment-delta0/--enrichment-delta1; same "
                               "conventions as 'subtraction' (placeholder eps=0, corner window, two-term route). "
                               "The residual of g2 is square-integrable but not zero (Proposition 5). Directory "
-                              "tag _enrichment_<profile>_d0<delta0>_d1<delta1>.")
+                              "tag _enrichment_<profile>_d0<delta0>_d1<delta1>. 'learned_similarity_profile' "
+                              "(Section 5.3, Definition 9): the enrichment with erf replaced by the trainable "
+                              "Lambda_theta' = Lambda_0 + omega g_theta', Lambda_0 = 1 - exp(-xi), omega = "
+                              "exp(-xi)(1 - exp(-xi)), g_theta' a one-variable network trained jointly with "
+                              "Psi_theta; same cutoff, regular part and conventions as 'enrichment'. "
+                              "||Lambda_theta' - erf||_Linf and the defect integral I of equation (32) are logged "
+                              "at every logged iteration and recorded. Directory tag "
+                              "_learnedprofile_<profile>_d0<delta0>_d1<delta1>_w<width>_l<depth>.")
     parser.add_argument("--enrichment-delta0", type=float, default=DEFAULT_ENRICHMENT_DELTA0,
                          help="Inner cutoff radius delta0 of the corner enrichment (chi = 1 on s - B <= delta0), "
-                              "price units; only used with --corner-treatment enrichment.")
+                              "price units; only used with --corner-treatment enrichment or learned_similarity_profile.")
     parser.add_argument("--enrichment-delta1", type=float, default=DEFAULT_ENRICHMENT_DELTA1,
                          help="Outer cutoff radius delta1 of the corner enrichment (chi = 0 on s - B >= delta1 > "
-                              "delta0); only used with --corner-treatment enrichment.")
+                              "delta0); only used with --corner-treatment enrichment or learned_similarity_profile.")
+    parser.add_argument("--similarity-profile-hidden-width", type=int, default=DEFAULT_SIMILARITY_PROFILE_HIDDEN_WIDTH,
+                         help="Width of the hidden layers of g_theta' (Definition 9); only used with "
+                              "--corner-treatment learned_similarity_profile.")
+    parser.add_argument("--similarity-profile-hidden-depth", type=int, default=DEFAULT_SIMILARITY_PROFILE_HIDDEN_DEPTH,
+                         help="Number of hidden layers of g_theta'; only used with --corner-treatment "
+                              "learned_similarity_profile.")
     parser.add_argument("--exclude-corner-from-collocation", action="store_true",
                          help="Reject interior collocation points falling in the ell^1 corner window "
                               "(s-B)+(T-t) <= --corner-window, so the PDE residual is never enforced at the "
@@ -1401,6 +1616,14 @@ def main() -> None:
                 plot_subtraction_decomposition(
                     model, eval_result, K, B, T, out_dir / "figures" / "subtraction_decomposition.png", formula_text,
                 )
+            if getattr(model.g2, "similarity_profile_is_learned", False):
+                history_path = _history_path(out_dir, epsilon)
+                with open(history_path) as f:
+                    history = yaml.safe_load(f)
+                summary.update(_similarity_profile_summary(model))
+                _write_summary(out_dir, epsilon, summary)
+                plot_learned_similarity_profile(model, history, out_dir / "figures" / "learned_similarity_profile.png")
+                logger.info(f"[eps={epsilon:g}] learned similarity profile figure rebuilt from {model_path} and {history_path}")
             logger.info(f"[eps={epsilon:g}] price-surface figure rebuilt from {model_path}")
 
         if replot_subtraction:
@@ -1441,7 +1664,7 @@ def main() -> None:
     subtraction = args.corner_treatment in ANALYTIC_CORNER_TREATMENTS  # subtraction OR enrichment
     subtraction_terminal_profile = None
     if subtraction:
-        if args.corner_treatment == "enrichment" and not (0.0 < args.enrichment_delta0 < args.enrichment_delta1):
+        if args.corner_treatment in ENRICHMENT_CORNER_TREATMENTS and not (0.0 < args.enrichment_delta0 < args.enrichment_delta1):
             print(f"ERROR: need 0 < --enrichment-delta0 < --enrichment-delta1; got {args.enrichment_delta0}, "
                   f"{args.enrichment_delta1}.", file=sys.stderr)
             sys.exit(2)
@@ -1498,8 +1721,12 @@ def main() -> None:
         # The treatment and its terminal profile name the run: aggregation
         # scripts key on this tag (aggregate_terminal_function_comparison.py).
         payoff_tag = f"_{args.corner_treatment}_{subtraction_terminal_profile.replace('_', '')}"
-        if args.corner_treatment == "enrichment":
+        if args.corner_treatment == "learned_similarity_profile":
+            payoff_tag = f"_learnedprofile_{subtraction_terminal_profile.replace('_', '')}"
+        if args.corner_treatment in ENRICHMENT_CORNER_TREATMENTS:
             payoff_tag += f"_d0{args.enrichment_delta0:g}_d1{args.enrichment_delta1:g}"
+        if args.corner_treatment == "learned_similarity_profile":
+            payoff_tag += f"_w{args.similarity_profile_hidden_width}_l{args.similarity_profile_hidden_depth}"
         if subtraction_terminal_profile == "split":
             payoff_tag += f"_nuc{comparison_volatility:g}" + (
                 "_closedform" if args.split_profile == "closed_form" else f"_nquad{args.split_n_quad}"
@@ -1595,7 +1822,34 @@ def main() -> None:
     logger.info(f"  Master seed: {args.seed}")
     logger.info(f"    -> model_init seed: {derive_seed(args.seed, 'model_init')}")
     logger.info(f"    -> sampler seed:    {derive_seed(args.seed, 'sampler')}")
-    if args.corner_treatment == "enrichment":
+    if args.corner_treatment == "learned_similarity_profile":
+        logger.info(f"    -> similarity_profile_init seed: {derive_seed(args.seed, 'similarity_profile_init')}  "
+                    "(hidden layers of g_theta'; drawn after Psi_theta from its own generator, so Psi_theta is "
+                    "initialised identically to the analytic enrichment at the same master seed)")
+        logger.info(
+            "  Ansatz: learned similarity profile (Section 5.3 of the note, Definition 9): "
+            "Phi_theta = E_theta' + h + d_dpQ Psi_theta, E_theta' = chi(s) Delta Lambda_theta'(xi), "
+            "Lambda_theta' = Lambda_0 + omega g_theta' on I = [0, +inf), Lambda_0(xi) = 1 - exp(-xi), "
+            "omega(xi) = exp(-xi)(1 - exp(-xi)) (default realisation (25)); xi = ln(s/B)/(sigma sqrt(2(T-t))), "
+            f"h = pi - chi(s) pi(B, .), Delta = K - B = {args.K - args.B:g}, d_dpQ = (T-t)(s-B); cutoff radii "
+            f"delta0={args.enrichment_delta0:g}, delta1={args.enrichment_delta1:g}; terminal profile pi = "
+            f"{subtraction_terminal_profile}; g_theta': width {args.similarity_profile_hidden_width}, depth "
+            f"{args.similarity_profile_hidden_depth}, tanh, output layer initialised to zero (Lambda_theta' = Lambda_0 "
+            "at initialisation: no information on erf enters the estimator) "
+            "(make_learned_similarity_profile_corner_enriched_extension)."
+        )
+        logger.info(
+            "    Interior residual: two-term route, F(d_dpQ Psi_theta) by autograd + F(E_theta') + F(h) assembled from "
+            "the closed-form derivatives of xi and the derivatives of Lambda_theta' in xi (autograd on the one-variable "
+            "network); F(E_theta') is RECORDED in the graph (it depends on theta'), and (theta, theta') are trained "
+            "jointly by one Adam optimiser on the interior objective (27). Proposition 6: its leading term "
+            "chi Delta (Lambda_theta'' + 2 xi Lambda_theta')/(4 tau) has finite L2(Q) norm iff Lambda_theta' = erf. "
+            "The corner is "
+            + ("EXCLUDED from collocation (--exclude-corner-from-collocation): the signal on theta' then comes only "
+               "from tau > the window." if args.exclude_corner_from_collocation
+               else "INCLUDED in collocation.")
+        )
+    elif args.corner_treatment == "enrichment":
         logger.info(
             f"  Ansatz: corner enrichment (Method 2, Section 5.2, Definition 8): "
             f"Phi = E + h + g1 u_theta, E = chi(s) (K-B) erf(xi), xi = ln(s/B)/(sigma sqrt(2(T-t))), "
@@ -1729,8 +1983,14 @@ def main() -> None:
             "split_profile": args.split_profile,
             "corner_treatment": args.corner_treatment,
             "subtraction_terminal_profile": subtraction_terminal_profile,
-            "enrichment_delta0": args.enrichment_delta0 if args.corner_treatment == "enrichment" else None,
-            "enrichment_delta1": args.enrichment_delta1 if args.corner_treatment == "enrichment" else None,
+            "enrichment_delta0": args.enrichment_delta0 if args.corner_treatment in ENRICHMENT_CORNER_TREATMENTS else None,
+            "enrichment_delta1": args.enrichment_delta1 if args.corner_treatment in ENRICHMENT_CORNER_TREATMENTS else None,
+            "similarity_profile_hidden_width": (args.similarity_profile_hidden_width
+                                                if args.corner_treatment == "learned_similarity_profile" else None),
+            "similarity_profile_hidden_depth": (args.similarity_profile_hidden_depth
+                                                if args.corner_treatment == "learned_similarity_profile" else None),
+            "similarity_profile_seed": (derive_seed(args.seed, "similarity_profile_init")
+                                        if args.corner_treatment == "learned_similarity_profile" else None),
         },
     }
     if resuming_existing_run:
@@ -1783,7 +2043,15 @@ def main() -> None:
             corner_treatment=args.corner_treatment,
             subtraction_terminal_profile=subtraction_terminal_profile or "raw",
             enrichment_delta0=args.enrichment_delta0, enrichment_delta1=args.enrichment_delta1,
+            similarity_profile_hidden_width=args.similarity_profile_hidden_width,
+            similarity_profile_hidden_depth=args.similarity_profile_hidden_depth,
         )
+        # The per-iteration history (loss, gradient norms and, for the learned
+        # profile, the profile error) is saved so trajectory figures can be
+        # rebuilt by --replot without retraining.
+        with open(_history_path(out_dir, epsilon), "w") as f:
+            yaml.dump(history, f, default_flow_style=None, sort_keys=False)
+        logger.info(f"[eps={epsilon:g}] training history saved -> {_history_path(out_dir, epsilon)}")
         truncation_bound = None
         if args.far_field_dirichlet:
             truncation_bound = far_field_truncation_error_bound(model, args.K, args.B, args.r, args.sigma, args.T, args.s_inf)
@@ -1818,7 +2086,17 @@ def main() -> None:
             **_evaluation_metrics(eval_result),
             "final_history_loss": history["loss"][-1] if history["loss"] else None,
             **({"far_field_truncation_error_bound": truncation_bound["bound"]} if truncation_bound else {}),
+            **(_similarity_profile_summary(model) if getattr(model.g2, "similarity_profile_is_learned", False) else {}),
         }
+        if getattr(model.g2, "similarity_profile_is_learned", False):
+            logger.info(
+                f"[eps={epsilon:g}] learned similarity profile (best-loss state): "
+                f"||Lambda_theta' - erf||_Linf = {summary['similarity_profile_sup_distance_to_error_function']:.4e} "
+                f"at xi = {summary['similarity_profile_argmax_xi']:.3f}; defect integral I = "
+                f"{summary['similarity_profile_defect_integral']:.4e}  (at initialisation, Lambda_0: "
+                f"||Lambda_0 - erf||_Linf = {summary['similarity_profile_base_sup_distance_to_error_function']:.4e}, "
+                f"I = {summary['similarity_profile_base_defect_integral']:.4e})"
+            )
         _write_summary(out_dir, epsilon, summary)
         summaries.append({**summary, **{k: eval_result[k] for k in ("s_grid", "t_grid", "learned", "reference")}})
 
@@ -1829,6 +2107,8 @@ def main() -> None:
                 model, eval_result, args.K, args.B, args.T,
                 out_dir / "figures" / "subtraction_decomposition.png", formula_text,
             )
+        if getattr(model.g2, "similarity_profile_is_learned", False):
+            plot_learned_similarity_profile(model, history, out_dir / "figures" / "learned_similarity_profile.png")
     if subtraction:
         logger.info(f"  error_vs_epsilon.png not produced: no epsilon sweep in {args.corner_treatment} mode.")
     else:
