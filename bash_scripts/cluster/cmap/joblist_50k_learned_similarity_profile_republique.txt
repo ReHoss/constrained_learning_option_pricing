@@ -1,0 +1,9 @@
+# republique (AVX2): learned similarity profile (Section 5.3 of the note, Definition 9; methodology
+# section 18), 50000 iterations, corner INCLUDED in collocation, Black-Scholes terminal profile,
+# cutoff radii (delta0, delta1) = (0.1, 0.3), ONE seed: first test of whether the profile is recovered
+# before a seed set is spent. Same seed, thread count (4), host family and absence of far-field
+# condition as the seed-0 run of the enrichment batch of 20260921 (section 16.4,
+# 20260921_003313_iters50000_eps0_seed0_enrichment_blackscholes_d00.1_d10.3), so E_theta' against E
+# differs only in the profile: identical backbone initialisation and collocation sequence.
+# Launch: nohup bash bash_scripts/cluster/cmap/run_joblist.sh <this file> 1 4 < /dev/null > launch.log 2>&1 & disown
+--corner-treatment learned_similarity_profile --black-scholes-payoff --iters 50000 --seed 0
