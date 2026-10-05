@@ -43,6 +43,12 @@ from learning_option_pricing.pricing.barrier import (
     CornerEnrichedExtension,
     corner_similarity_profile_value_and_derivatives,
     make_corner_enriched_extension,
+    SimilarityProfileNetwork,
+    error_function_similarity_profile_value_and_derivatives,
+    error_function_target_of_the_profile_network,
+    learned_similarity_profile_base_and_vanishing_factor,
+    make_learned_similarity_profile_corner_enriched_extension,
+    similarity_profile_diagnostics,
 )
 from learning_option_pricing.pricing.terminal import black_scholes_put, bsm_operator, payoff_put
 
@@ -1383,3 +1389,123 @@ class TestCornerEnrichedExtension:
         g2 = self._extensions()[0]
         with pytest.raises(ValueError):
             g2.black_scholes_residual(torch.tensor([1.0], dtype=torch.float64), torch.tensor([0.3], dtype=torch.float64), self.r, 2 * self.sigma)
+
+
+# ---------------------------------------------------------------------------
+# Learned similarity profile (Section 5.3 of the note, Definition 9)
+# ---------------------------------------------------------------------------
+
+class TestLearnedSimilarityProfileCornerEnrichedExtension:
+    """g2 = chi Delta Lambda_theta'(xi) + pi - chi pi(B, .) with
+    Lambda_theta' = Lambda_0 + omega g_theta': both hard data hold for every
+    theta', the closed-form residual matches autograd, and that residual
+    carries a gradient to theta' (the objective trains the profile)."""
+    K, B, r, sigma, T = 1.0, 0.6, 0.03, 0.3, 1.0
+    delta0, delta1 = 0.1, 0.3
+
+    def _extension(self, perturb_output_layer: bool = True, terminal_profile: str = "black_scholes"):
+        g2 = make_learned_similarity_profile_corner_enriched_extension(
+            self.K, self.B, self.r, self.sigma, self.T, terminal_profile,
+            delta0=self.delta0, delta1=self.delta1, similarity_profile_initialisation_seed=3,
+        ).double()
+        if perturb_output_layer:
+            # The output layer is zero at initialisation; a nonzero one makes
+            # g_theta' a genuine function of xi for the checks below.
+            generator = torch.Generator().manual_seed(11)
+            with torch.no_grad():
+                layer = g2.similarity_profile_network.output_layer
+                layer.weight.copy_(torch.randn(layer.weight.shape, generator=generator, dtype=torch.float64))
+                layer.bias.fill_(0.3)
+        return g2
+
+    def test_base_profile_and_vanishing_factor_derivatives_match_autograd(self) -> None:
+        xi = torch.linspace(0.0, 8.0, 400, dtype=torch.float64).requires_grad_(True)
+        pieces = learned_similarity_profile_base_and_vanishing_factor(xi)
+        for value, first, second in ((pieces[0], pieces[1], pieces[2]), (pieces[3], pieces[4], pieces[5])):
+            first_autograd = torch.autograd.grad(value.sum(), xi, create_graph=True)[0]
+            second_autograd = torch.autograd.grad(first_autograd.sum(), xi, retain_graph=True)[0]
+            assert torch.allclose(first, first_autograd, atol=1e-14)
+            assert torch.allclose(second, second_autograd, atol=1e-14)
+
+    def test_endpoint_values_are_pinned_for_every_network(self) -> None:
+        network = self._extension().similarity_profile_network
+        value, _, _ = network.profile_value_and_derivatives(torch.tensor([0.0, 40.0], dtype=torch.float64))
+        assert float(value[0]) == 0.0
+        assert abs(float(value[1]) - 1.0) < 1e-15
+
+    def test_zero_output_layer_gives_the_base_profile_at_initialisation(self) -> None:
+        network = self._extension(perturb_output_layer=False).similarity_profile_network
+        xi = torch.linspace(0.0, 10.0, 200, dtype=torch.float64)
+        value, _, _ = network.profile_value_and_derivatives(xi)
+        assert torch.equal(value, learned_similarity_profile_base_and_vanishing_factor(xi)[0])
+
+    def test_initialisation_is_a_function_of_the_seed_and_leaves_the_global_generator_untouched(self) -> None:
+        torch.manual_seed(0)
+        before = torch.rand(1)
+        torch.manual_seed(0)
+        first = SimilarityProfileNetwork(initialisation_seed=5)
+        after = torch.rand(1)
+        second = SimilarityProfileNetwork(initialisation_seed=5)
+        assert torch.equal(before, after)
+        for p, q in zip(first.parameters(), second.parameters()):
+            assert torch.equal(p, q)
+
+    def test_terminal_and_barrier_traces_are_exact(self) -> None:
+        for name in SUBTRACTION_TERMINAL_PROFILES:
+            g2 = self._extension(terminal_profile=name)
+            s = torch.linspace(self.B + 1e-9, 3.0, 1000, dtype=torch.float64)
+            assert torch.allclose(g2(s, torch.full_like(s, self.T)), payoff_put(s, self.K), atol=1e-13), name
+            t = torch.linspace(0.0, self.T, 201, dtype=torch.float64)
+            assert torch.equal(g2(torch.full_like(t, self.B), t), torch.zeros_like(t)), name
+
+    def test_closed_form_residual_and_derivatives_match_autograd(self) -> None:
+        g2 = self._extension()
+        s = torch.cat([torch.linspace(self.B + 0.005, self.K - 0.01, 300, dtype=torch.float64),
+                       torch.linspace(self.K + 0.01, 3.0, 300, dtype=torch.float64)]).requires_grad_(True)
+        t = torch.linspace(0.0, self.T - 1e-3, 600, dtype=torch.float64).requires_grad_(True)
+        value = g2(s, t)
+        residual_autograd = bsm_operator(value, s, t, self.r, 0.0, self.sigma)
+        d_s_ag = torch.autograd.grad(value.sum(), s, create_graph=True)[0]
+        d_ss_ag = torch.autograd.grad(d_s_ag.sum(), s, retain_graph=True)[0]
+        d_t_ag = torch.autograd.grad(value.sum(), t, retain_graph=True)[0]
+        sd, td = s.detach(), t.detach()
+        assert torch.allclose(g2.black_scholes_residual(sd, td, self.r, self.sigma), residual_autograd.detach(), atol=1e-9)
+        assert torch.allclose(g2.first_price_derivative(sd, td), d_s_ag.detach(), atol=1e-10)
+        assert torch.allclose(g2.second_price_derivative(sd, td), d_ss_ag.detach(), atol=1e-7)
+        assert torch.allclose(g2.first_time_derivative(sd, td), d_t_ag.detach(), atol=1e-9)
+
+    def test_residual_carries_a_gradient_to_the_profile_parameters(self) -> None:
+        g2 = self._extension()
+        s = torch.linspace(self.B + 0.001, self.B + self.delta1, 200, dtype=torch.float64)
+        t = torch.full_like(s, 0.95)
+        (g2.black_scholes_residual(s, t, self.r, self.sigma) ** 2).mean().backward()
+        gradient_norm = sum(float(p.grad.norm()) for p in g2.parameters())
+        assert math.isfinite(gradient_norm) and gradient_norm > 0.0
+        with torch.no_grad():
+            assert not g2.black_scholes_residual(s, t, self.r, self.sigma).requires_grad
+
+    def test_profile_parameters_are_registered_in_the_price_network(self) -> None:
+        from learning_option_pricing.models.etcnn import ETCNN
+        from learning_option_pricing.models.resnet import ResNet
+        g2 = self._extension()
+        model = ETCNN(resnet=ResNet(), g1=lambda s, t: barrier_composite_distance(s, t, self.B, self.T), g2=g2)
+        names = [name for name, _ in model.named_parameters()]
+        assert any(name.startswith("_g2.similarity_profile_network.") for name in names)
+
+    def test_diagnostics_vanish_for_the_error_function_and_not_for_the_base_profile(self) -> None:
+        analytic = similarity_profile_diagnostics(error_function_similarity_profile_value_and_derivatives)
+        assert analytic["sup_distance_to_error_function"] == 0.0
+        assert analytic["similarity_equation_defect_integral"] < 1e-20
+        base = similarity_profile_diagnostics(lambda xi: learned_similarity_profile_base_and_vanishing_factor(xi)[:3])
+        assert base["sup_distance_to_error_function"] > 0.1
+        # Lambda_0'' + 2 xi Lambda_0' = (2 xi - 1) e^{-xi}; its squared integral on [0, inf) is
+        # exactly 1/2. The trapezoidal rule at step h = 20/4000 = 0.005 has an O(h^2) error,
+        # measured 1.25e-5.
+        assert abs(base["similarity_equation_defect_integral"] - 0.5) < 5e-5
+
+    def test_the_network_target_reproduces_the_error_function(self) -> None:
+        xi = torch.linspace(1e-3, 8.0, 500, dtype=torch.float64)
+        base, _, _, factor, _, _ = learned_similarity_profile_base_and_vanishing_factor(xi)
+        target = error_function_target_of_the_profile_network(xi)
+        assert torch.allclose(base + factor * target, torch.erf(xi), atol=1e-12)
+        assert float(target.abs().max()) < 2.0

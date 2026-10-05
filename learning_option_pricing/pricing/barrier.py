@@ -63,6 +63,18 @@ GaussianSemigroupExtensionField` evaluated on the log-price line and
   :class:`BlackScholesPutTerminalProfile` and
   :class:`SplitSemigroupPutTerminalProfile`; no corner layer, no bandwidth
   :math:`\varepsilon`; interior residual and price derivatives in closed form.
+- :class:`CornerEnrichedExtension` (built by
+  :func:`make_corner_enriched_extension`) -- the corner enrichment
+  :math:`g_2 = \chi\Delta\Lambda(\xi) + \pi - \chi\,\pi(B,\cdot)` with the
+  analytic similarity profile :math:`\Lambda = \operatorname{erf}` (Definition 8).
+- :class:`LearnedSimilarityProfileCornerEnrichedExtension` (built by
+  :func:`make_learned_similarity_profile_corner_enriched_extension`) -- the same
+  enrichment with the learned similarity profile
+  :math:`\Lambda_{\theta'} = \Lambda_0 + \omega\,g_{\theta'}` of Definition 9
+  (Section 5.3), :math:`g_{\theta'}` a :class:`SimilarityProfileNetwork`;
+  :func:`similarity_profile_diagnostics` measures
+  :math:`\|\Lambda_{\theta'} - \operatorname{erf}\|_{L^\infty}` and the defect
+  integral :math:`I` of equation (32).
 """
 from __future__ import annotations
 
@@ -1864,6 +1876,56 @@ def corner_similarity_profile_value_and_derivatives(
     Returns:
         Four tensors of the broadcast shape of ``s``/``tau``.
     """
+    return similarity_profile_composition_value_and_derivatives(
+        s, B, sigma, tau, error_function_similarity_profile_value_and_derivatives,
+        caller_name="corner_similarity_profile_value_and_derivatives",
+    )
+
+
+def error_function_similarity_profile_value_and_derivatives(
+    xi: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    r"""``(Lambda, Lambda', Lambda'')`` of the analytic similarity profile
+    :math:`\Lambda = \operatorname{erf}` (Lemma 1 of the note), as functions of
+    the similarity variable :math:`\xi \in [0, +\infty)`:
+    :math:`\Lambda' = (2/\sqrt\pi)e^{-\xi^2}`, :math:`\Lambda'' = -2\xi\Lambda'`."""
+    lambda_prime = (2.0 / math.sqrt(math.pi)) * torch.exp(-(xi**2))
+    return torch.erf(xi), lambda_prime, -2.0 * xi * lambda_prime
+
+
+def similarity_profile_composition_value_and_derivatives(
+    s: torch.Tensor, B: float, sigma: float, tau: torch.Tensor,
+    profile_value_and_derivatives: Callable[[torch.Tensor], tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+    caller_name: str = "similarity_profile_composition_value_and_derivatives",
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    r"""``(Lambda(xi), d_s Lambda(xi), d_ss Lambda(xi), d_t Lambda(xi))`` for any
+    similarity profile :math:`\Lambda:[0,+\infty)\to\mathbb R` with
+    :math:`\Lambda(0) = 0` and :math:`\lim_{\xi\to\infty}\Lambda(\xi) = 1`, composed
+    with the similarity map :math:`\xi(s,t) = \ln(s/B)/(\sigma\sqrt{2(T-t)})`.
+
+    The profile enters only through ``profile_value_and_derivatives``, which
+    returns :math:`(\Lambda, \Lambda', \Lambda'')` at the points ``xi``; the
+    similarity variable and its derivatives, :math:`\partial_s\xi = 1/(s\sigma\sqrt{2\tau})`,
+    :math:`\partial_{ss}\xi = -\partial_s\xi/s`, :math:`\partial_t\xi = \xi/(2\tau)`,
+    are the part of the construction supplied by the four-step calculation of
+    Section 5.3 of the note (no solution of the equation involved) and are
+    shared by the analytic profile (:func:`corner_similarity_profile_value_and_derivatives`)
+    and the learned one (:class:`LearnedSimilarityProfileCornerEnrichedExtension`).
+    At ``tau = 0`` exactly the limit :math:`\mathbf 1_{s>B}` is returned with zero
+    derivatives (it is the limit for every admissible profile, by the endpoint
+    condition at infinity); for ``s <= B`` everything is ``0``.
+
+    Args:
+        s: Underlying asset price tensor.
+        B: Knock-out barrier, ``B > 0``.
+        sigma: Volatility.
+        tau: Time to maturity, broadcastable with ``s``.
+        profile_value_and_derivatives: ``xi -> (Lambda, Lambda', Lambda'')``.
+        caller_name: Name reported if the time-to-maturity floor binds.
+
+    Returns:
+        Four tensors of the broadcast shape of ``s``/``tau``.
+    """
     if B <= 0.0:
         raise ValueError(f"the barrier must be positive; got {B=}.")
     tau_tensor = torch.as_tensor(tau)
@@ -1871,16 +1933,14 @@ def corner_similarity_profile_value_and_derivatives(
     s_safe = torch.clamp(s, min=B * (1.0 + 1e-6))
     scale = sigma * torch.sqrt(2.0 * tau_safe)
     xi = torch.log(s_safe / B) / scale
-    value = torch.erf(xi)
-    lambda_prime = (2.0 / math.sqrt(math.pi)) * torch.exp(-(xi**2))
-    lambda_double_prime = -2.0 * xi * lambda_prime
+    value, lambda_prime, lambda_double_prime = profile_value_and_derivatives(xi)
     d_s_xi = 1.0 / (s_safe * scale)
     d_ss_xi = -d_s_xi / s_safe
     d_t_xi = xi / (2.0 * tau_safe)
     d_s = lambda_prime * d_s_xi
     d_ss = lambda_double_prime * d_s_xi**2 + lambda_prime * d_ss_xi
     d_t = lambda_prime * d_t_xi
-    _report_tau_floor_activation(tau_tensor, "corner_similarity_profile_value_and_derivatives")
+    _report_tau_floor_activation(tau_tensor, caller_name)
 
     positive_tau = tau_tensor > 0
     zero = torch.zeros_like(value)
@@ -1977,11 +2037,22 @@ class CornerEnrichedExtension(_AnalyticallyResolvedCornerExtension):
         zeta, zeta_prime, zeta_double_prime = _smoothstep01_value_and_derivatives(ratio)
         return 1.0 - zeta, -zeta_prime / width, -zeta_double_prime / width**2
 
+    def similarity_profile_value_and_derivatives(
+        self, xi: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        r"""``(Lambda, Lambda', Lambda'')`` of the similarity profile used by this
+        enrichment, at the similarity variable ``xi``: the analytic
+        :math:`\Lambda = \operatorname{erf}` here, a trained one in
+        :class:`LearnedSimilarityProfileCornerEnrichedExtension`."""
+        return error_function_similarity_profile_value_and_derivatives(xi)
+
     def _similarity_pieces(self, s: torch.Tensor, t: torch.Tensor):
         broadcast_shape = torch.broadcast_shapes(s.shape, torch.as_tensor(t).shape)
         s_b = s.expand(broadcast_shape)
-        value, d_s, d_ss, d_t = corner_similarity_profile_value_and_derivatives(
+        value, d_s, d_ss, d_t = similarity_profile_composition_value_and_derivatives(
             s_b, self.B, self.sigma, torch.as_tensor(self.T - t).expand(broadcast_shape),
+            self.similarity_profile_value_and_derivatives,
+            caller_name=f"{type(self).__name__}._similarity_pieces",
         )
         chi, d_s_chi, d_ss_chi = self._cutoff_value_and_derivatives(s_b)
         return s_b, value, d_s, d_ss, d_t, chi, d_s_chi, d_ss_chi
@@ -2004,6 +2075,254 @@ class CornerEnrichedExtension(_AnalyticallyResolvedCornerExtension):
     def enrichment(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         r"""The enrichment :math:`E = \chi\Delta\Lambda(\xi)` alone."""
         return self.singular_part(s, t)
+
+
+# ---------------------------------------------------------------------------
+# Learned similarity profile (Section 5.3 of the note, Definition 9)
+# ---------------------------------------------------------------------------
+
+def learned_similarity_profile_base_and_vanishing_factor(
+    xi: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    r"""``(Lambda_0, Lambda_0', Lambda_0'', omega, omega', omega'')`` of the default
+    realisation (25) of Definition 9 of the note, on :math:`I = [0, +\infty)`:
+
+    .. math::
+
+        \Lambda_0(\xi) = 1 - e^{-\xi}, \qquad
+        \omega(\xi) = e^{-\xi}\big(1 - e^{-\xi}\big) = e^{-\xi} - e^{-2\xi},
+
+    so that :math:`\Lambda_0(0) = 0`, :math:`\Lambda_0 \to 1`, :math:`\omega(0) = 0`,
+    :math:`\omega \to 0`, with :math:`\Lambda_0' = e^{-\xi}`, :math:`\Lambda_0'' = -e^{-\xi}`,
+    :math:`\omega' = -e^{-\xi} + 2e^{-2\xi}`, :math:`\omega'' = e^{-\xi} - 4e^{-2\xi}`.
+    Neither function depends on the analytic profile :math:`\operatorname{erf}`;
+    :math:`\Lambda_0` does not solve the similarity equation
+    (:math:`\Lambda_0'' + 2\xi\Lambda_0' = (2\xi - 1)e^{-\xi}`).
+    """
+    exp_minus_xi = torch.exp(-xi)
+    exp_minus_two_xi = exp_minus_xi * exp_minus_xi
+    return (
+        1.0 - exp_minus_xi, exp_minus_xi, -exp_minus_xi,
+        exp_minus_xi - exp_minus_two_xi,
+        -exp_minus_xi + 2.0 * exp_minus_two_xi,
+        exp_minus_xi - 4.0 * exp_minus_two_xi,
+    )
+
+
+def error_function_target_of_the_profile_network(xi: torch.Tensor) -> torch.Tensor:
+    r"""The network output :math:`g^\star` for which the learned profile equals the
+    analytic one, :math:`\Lambda_0 + \omega g^\star = \operatorname{erf}`, i.e.
+    :math:`g^\star = (\operatorname{erf}\xi - 1 + e^{-\xi})/(e^{-\xi}(1-e^{-\xi}))`
+    for :math:`\xi > 0`.  Diagnostic only (never an input of the estimator): it
+    is bounded, tends to :math:`2/\sqrt\pi - 1` as :math:`\xi \to 0^+` and to
+    :math:`1` as :math:`\xi \to \infty`, so the target lies in the class of
+    bounded networks of Definition 9.  Evaluated in the caller's dtype; for
+    :math:`\xi \gtrsim 15` in float64 the quotient loses its significant digits.
+    """
+    base, _, _, vanishing_factor, _, _ = learned_similarity_profile_base_and_vanishing_factor(xi)
+    return (torch.erf(xi) - base) / vanishing_factor
+
+
+class SimilarityProfileNetwork(torch.nn.Module):
+    r"""The free one-variable network :math:`g_{\theta'}: I \to \mathbb R` of
+    Definition 9 and the learned similarity profile it defines,
+    :math:`\Lambda_{\theta'} = \Lambda_0 + \omega\,g_{\theta'}` (equation (24)).
+
+    A fully connected network with ``tanh`` activations and a linear output
+    layer: bounded, with bounded first and second derivatives, as Definition 9
+    requires.  The first two derivatives :math:`g_{\theta'}'`, :math:`g_{\theta'}''`
+    in :math:`\xi` are obtained by automatic differentiation of this smooth
+    one-variable network (no singular quantity is differentiated: the
+    singularity of the corner is in the map :math:`\xi(s,t)`, whose derivatives
+    are in closed form), keeping the graph to :math:`\theta'` whenever gradient
+    recording is enabled by the caller.
+
+    The weights of the hidden layers are drawn (Xavier-uniform, zero biases)
+    from an explicit generator seeded by ``initialisation_seed``; the output
+    layer is initialised to zero, so that at initialisation the learned
+    profile equals the base profile :math:`\Lambda_0`, which contains no
+    information on :math:`\operatorname{erf}`.
+
+    Args:
+        hidden_width: Number of neurons per hidden layer.
+        hidden_depth: Number of hidden layers, ``>= 1``.
+        initialisation_seed: Seed of the explicit generator of the hidden weights.
+    """
+
+    def __init__(self, hidden_width: int = 32, hidden_depth: int = 2, initialisation_seed: int = 0) -> None:
+        super().__init__()
+        if hidden_width < 1 or hidden_depth < 1:
+            raise ValueError(f"hidden_width and hidden_depth must be >= 1; got {hidden_width=}, {hidden_depth=}.")
+        self.hidden_width, self.hidden_depth = hidden_width, hidden_depth
+        widths = [1] + [hidden_width] * hidden_depth
+        # Building torch.nn.Linear draws its default initialisation from the
+        # global generator; forking it keeps that draw from shifting any random
+        # stream of the caller (the backbone of the price network in particular).
+        with torch.random.fork_rng(devices=[]):
+            self.hidden_layers = torch.nn.ModuleList(
+                torch.nn.Linear(widths[i], widths[i + 1]) for i in range(hidden_depth)
+            )
+            self.output_layer = torch.nn.Linear(hidden_width, 1)
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(initialisation_seed)
+        with torch.no_grad():
+            for layer in self.hidden_layers:
+                torch.nn.init.xavier_uniform_(layer.weight, generator=generator)
+                layer.bias.zero_()
+            self.output_layer.weight.zero_()
+            self.output_layer.bias.zero_()
+
+    def forward(self, xi: torch.Tensor) -> torch.Tensor:
+        r""":math:`g_{\theta'}(\xi)`, same shape as ``xi``."""
+        hidden = xi.reshape(-1, 1)
+        for layer in self.hidden_layers:
+            hidden = torch.tanh(layer(hidden))
+        return self.output_layer(hidden).reshape(xi.shape)
+
+    def network_value_and_derivatives(
+        self, xi: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        r""":math:`(g_{\theta'}, g_{\theta'}', g_{\theta'}'')` at ``xi``; differentiable in
+        :math:`\theta'` iff the caller records gradients (``torch.is_grad_enabled()``)."""
+        record_graph_to_parameters = torch.is_grad_enabled()
+        with torch.enable_grad():
+            # A xi that already carries a graph (e.g. to s, when a caller
+            # differentiates g2 by autograd) is kept as is, so that graph is not
+            # cut; otherwise a fresh leaf is made to differentiate in xi.
+            xi_differentiable = (xi if (record_graph_to_parameters and xi.requires_grad)
+                                 else xi.detach().requires_grad_(True))
+            value = self(xi_differentiable)
+            (first,) = torch.autograd.grad(value, xi_differentiable, torch.ones_like(value), create_graph=True)
+            (second,) = torch.autograd.grad(first, xi_differentiable, torch.ones_like(first),
+                                            create_graph=record_graph_to_parameters)
+        if not record_graph_to_parameters:
+            value, first = value.detach(), first.detach()
+        return value, first, second
+
+    def profile_value_and_derivatives(
+        self, xi: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        r""":math:`(\Lambda_{\theta'}, \Lambda_{\theta'}', \Lambda_{\theta'}'')` at ``xi`` -- the
+        learned similarity profile :math:`\Lambda_{\theta'} = \Lambda_0 + \omega\,g_{\theta'}`
+        (equation (24)) and its first two derivatives in :math:`\xi`, by the product rule."""
+        base, d_base, dd_base, factor, d_factor, dd_factor = learned_similarity_profile_base_and_vanishing_factor(xi)
+        g, d_g, dd_g = self.network_value_and_derivatives(xi)
+        return (
+            base + factor * g,
+            d_base + d_factor * g + factor * d_g,
+            dd_base + dd_factor * g + 2.0 * d_factor * d_g + factor * dd_g,
+        )
+
+
+def similarity_profile_diagnostics(
+    profile_value_and_derivatives: Callable[[torch.Tensor], tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+    xi_max: float = 20.0,
+    n_points: int = 4001,
+) -> dict:
+    r"""Distance of a similarity profile to :math:`\operatorname{erf}` and its
+    defect in the similarity equation, on a uniform float64 grid of
+    :math:`[0, \xi_{\max}]`:
+
+    - ``sup_distance_to_error_function``: :math:`\max|\Lambda - \operatorname{erf}|`,
+      the measured quantity :math:`\|\Lambda_{\theta'} - \Lambda\|_{L^\infty}` of
+      hypothesis H'' of the note (beyond :math:`\xi_{\max} = 20` both profiles
+      differ from 1 by at most :math:`e^{-20}(1+\sup|g_{\theta'}|)` for the
+      default realisation (25));
+    - ``similarity_equation_defect_integral``: the trapezoidal value of
+      :math:`I = \int_0^{\infty}(\Lambda'' + 2\xi\Lambda')^2\,d\xi` (equation (32),
+      Proposition 8), zero exactly for the analytic profile;
+    - ``argmax_xi``: the point at which the supremum is attained.
+
+    Returns:
+        A dict of Python floats.
+    """
+    xi = torch.linspace(0.0, xi_max, n_points, dtype=torch.float64)
+    with torch.no_grad():
+        value, first, second = profile_value_and_derivatives(xi)
+    value, first, second = value.double(), first.double(), second.double()
+    distance = (value - torch.erf(xi)).abs()
+    index = int(torch.argmax(distance))
+    defect = second + 2.0 * xi * first
+    return {
+        "sup_distance_to_error_function": float(distance[index]),
+        "argmax_xi": float(xi[index]),
+        "similarity_equation_defect_integral": float(torch.trapezoid(defect**2, xi)),
+        "xi_max": xi_max,
+        "n_points": n_points,
+    }
+
+
+class LearnedSimilarityProfileCornerEnrichedExtension(CornerEnrichedExtension, torch.nn.Module):
+    r"""Terminal-and-barrier extension of the learned-profile estimator
+    :math:`E_{\theta'}` (Section 5.3 of the note, Definition 9): the corner
+    enrichment of :class:`CornerEnrichedExtension` with the analytic profile
+    :math:`\operatorname{erf}` replaced by the trainable
+    :math:`\Lambda_{\theta'} = \Lambda_0 + \omega\,g_{\theta'}` of
+    :class:`SimilarityProfileNetwork`,
+
+    .. math::
+
+        g_2(s,t) = \chi(s)\,\Delta\,\Lambda_{\theta'}\big(\xi(s,t)\big) + \pi(s,t) - \chi(s)\,\pi(B,t).
+
+    The similarity variable :math:`\xi`, the cutoff :math:`\chi`, the regular
+    part :math:`h` and the residual assembly are those of the analytic
+    enrichment, unchanged: only the shape of the transition is trained.  Both
+    hard constraints hold for every :math:`\theta'` -- on :math:`\Sigma_B`,
+    :math:`\Lambda_{\theta'}(0) = 0`; on :math:`\Sigma_T`, :math:`\Lambda_{\theta'} \to 1`
+    -- by the endpoint values pinned through :math:`\omega` (the analogue on
+    :math:`I` of the distance factor :math:`d_{\partial_pQ}`).
+
+    The object is a :class:`torch.nn.Module` holding :math:`g_{\theta'}` as a
+    sub-module: assigned as ``g2`` of an :class:`~learning_option_pricing.models.etcnn.ETCNN`,
+    it is registered there, so :math:`\theta'` is returned by
+    ``model.parameters()`` (one optimiser trains :math:`(\theta, \theta')`
+    jointly on the objective (27)), saved in ``model.state_dict()`` and moved by
+    ``model.to(device)``.  Unlike the analytic extensions, its closed-form
+    residual ``black_scholes_residual`` therefore depends on trained parameters
+    and must be evaluated with gradient recording enabled during training.
+
+    Args:
+        K, B, r, sigma, T, terminal_profile, delta0, delta1: As in
+            :class:`CornerEnrichedExtension`.
+        similarity_profile_network: The network :math:`g_{\theta'}`.
+    """
+
+    #: Read by the training script to decide whether the residual of g2 carries gradient.
+    similarity_profile_is_learned = True
+
+    def __init__(
+        self, K: float, B: float, r: float, sigma: float, T: float, terminal_profile,
+        delta0: float, delta1: float, similarity_profile_network: SimilarityProfileNetwork,
+    ) -> None:
+        torch.nn.Module.__init__(self)
+        CornerEnrichedExtension.__init__(self, K, B, r, sigma, T, terminal_profile, delta0, delta1)
+        self.similarity_profile_network = similarity_profile_network
+
+    # torch.nn.Module.__call__ would dispatch to forward(x); the extension is
+    # called as g2(s, t) like every other extension, which the method
+    # resolution order already guarantees (the base class's __call__ comes
+    # first).  forward is defined for completeness only.
+    def forward(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return CornerEnrichedExtension.__call__(self, s, t)
+
+    def similarity_profile_value_and_derivatives(
+        self, xi: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self.similarity_profile_network.profile_value_and_derivatives(xi)
+
+    def similarity_profile_diagnostics(self, xi_max: float = 20.0, n_points: int = 4001) -> dict:
+        r""":func:`similarity_profile_diagnostics` of the current :math:`\Lambda_{\theta'}`,
+        evaluated in the network's own dtype and device."""
+        parameter = next(self.similarity_profile_network.parameters())
+
+        def profile_on_network_device(xi: torch.Tensor):
+            return self.similarity_profile_network.profile_value_and_derivatives(
+                xi.to(device=parameter.device, dtype=parameter.dtype),
+            )
+
+        return similarity_profile_diagnostics(
+            lambda xi: tuple(part.cpu() for part in profile_on_network_device(xi)), xi_max, n_points,
+        )
 
 
 def _build_terminal_profile(
@@ -2075,6 +2394,48 @@ def make_corner_enriched_extension(
         K, r, sigma, T, terminal_profile, comparison_volatility, y_lo, y_hi, n_quad, split_profile,
     )
     return CornerEnrichedExtension(K, B, r, sigma, T, profile, delta0, delta1)
+
+
+def make_learned_similarity_profile_corner_enriched_extension(
+    K: float,
+    B: float,
+    r: float,
+    sigma: float,
+    T: float,
+    terminal_profile: str = "black_scholes",
+    delta0: float = 0.1,
+    delta1: float = 0.3,
+    similarity_profile_hidden_width: int = 32,
+    similarity_profile_hidden_depth: int = 2,
+    similarity_profile_initialisation_seed: int = 0,
+    comparison_volatility: float | None = None,
+    y_lo: float | None = None,
+    y_hi: float | None = None,
+    n_quad: int = 8000,
+    split_profile: str = "closed_form",
+) -> LearnedSimilarityProfileCornerEnrichedExtension:
+    r"""Build the learned-profile extension
+    :math:`g_2 = \chi\Delta\Lambda_{\theta'}(\xi) + \pi - \chi\,\pi(B,\cdot)` of
+    :class:`LearnedSimilarityProfileCornerEnrichedExtension` (Definition 9 of the
+    note) for a named terminal profile.
+
+    Args:
+        K, B, r, sigma, T, terminal_profile, delta0, delta1, comparison_volatility,
+            y_lo, y_hi, n_quad, split_profile: As in :func:`make_corner_enriched_extension`.
+        similarity_profile_hidden_width, similarity_profile_hidden_depth,
+            similarity_profile_initialisation_seed: Architecture and seed of
+            :math:`g_{\theta'}` (:class:`SimilarityProfileNetwork`).
+
+    Returns:
+        The extension object (a :class:`torch.nn.Module`).
+    """
+    profile = _build_terminal_profile(
+        K, r, sigma, T, terminal_profile, comparison_volatility, y_lo, y_hi, n_quad, split_profile,
+    )
+    network = SimilarityProfileNetwork(
+        similarity_profile_hidden_width, similarity_profile_hidden_depth, similarity_profile_initialisation_seed,
+    )
+    return LearnedSimilarityProfileCornerEnrichedExtension(K, B, r, sigma, T, profile, delta0, delta1, network)
 
 
 def make_subtracted_digital_extension(
