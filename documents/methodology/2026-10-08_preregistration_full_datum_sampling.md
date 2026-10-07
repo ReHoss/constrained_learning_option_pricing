@@ -56,9 +56,11 @@ Two predictions rest on the theory and one is a belief.
 
 ## 5. Closed-form prediction from the smoke test
 
-Filled in after the smoke test and before the array (closed form, independent of training):
+Filled in after the smoke test (job 754987, revision 25680ed, 2026-10-08) and before the array. These values are closed-form, independent of training:
 
-| Cell | `line_source_correction_relative_l2` |
-|---|---|
-| `g2_bernoulli_full` | pending |
-| `g3_bernoulli_full` | pending |
+| Cell | `line_source_correction_relative_l2` | Threshold of Q2 (half of it) |
+|---|---|---|
+| `g2_bernoulli_full` | $0.1384$ | $0.0692$ |
+| `g3_bernoulli_full` | $0.1504$ | $0.0752$ |
+
+The smoke runs (300 iterations, `--debug`) also measured errors. They are not results of this study and are not reported.
