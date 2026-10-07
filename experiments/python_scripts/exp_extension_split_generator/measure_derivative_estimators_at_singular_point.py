@@ -557,7 +557,7 @@ BANDLIMITED_FORMULA = (
     r"$g_K(x)=\sum_{k=1}^{K}\frac{\cos(kx)}{\pi^2k^2}$"
     "\n"
     r"$g_K''(x)=\frac{1}{2\pi^2}-\frac{1}{2\pi^2}\frac{\sin((K+\frac{1}{2})x)}{\sin(x/2)}$ (Dirichlet kernel), "
-    r"$g_K''(0)=-\frac{K}{\pi^2}$, $\int_{-\pi}^{\pi}\big(g_K''-\frac{1}{2\pi^2}\big)=-\frac{1}{\pi}$"
+    r"$g_K''(0)=-\frac{K}{\pi^2}$, $\int_{-\pi}^{\pi}\left(g_K''-\frac{1}{2\pi^2}\right)=-\frac{1}{\pi}$"
 )
 
 
