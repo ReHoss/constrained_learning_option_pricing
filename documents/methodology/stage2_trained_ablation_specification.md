@@ -957,3 +957,14 @@ non-finite; the activation at the other updates was not recorded. The runner now
 The unit tests are in `test/utils/test_gradient_norm_safeguard.py` (no activation, activation with
 one WARNING followed by DEBUG reports, non-finite norm, invalid threshold) and
 `test/utils/test_run_context.py` (tracked modifications ignore untracked files).
+
+## 11. Addendum (2026-10-08) — datum band edge as a runner option
+
+The truncation study (`2026-10-08_preregistration_truncation_study.md`) trains the constant-coefficient cells at band edges other than the catalogue value $K=128$.
+
+- **Runner.** The option `--truncation-wavenumber K` overrides the band edge of the band-limited datum $g_K(x)=\sum_{k=1}^{K}\cos(kx)/(\pi^2k^2)$. It is recorded as `hparams.truncation_wavenumber` in `metadata.yaml` and in every task configuration.
+- **What the band edge sets.** `build_problem(cell, truncation_wavenumber)` builds the datum, the exact solution and the forcing band at that $K$. The log states the band edge used.
+- **Restriction.** The option is rejected for the single-component control cell, whose datum has no band edge.
+- **Run directories.** Their names are unchanged. Each band edge is written to its own series subfolder (`--series-subfolder truncation_study_2026-10-08/K<K>`), so the aggregator's discovery pattern applies as before.
+- **Aggregator.** `split_extension_cross_seed_summary.py` recomputes its closed forms at `--band-edge`. The function `assert_run_band_edges_match` raises when a run's recorded band edge differs from that value. A run without the key used the catalogue value.
+- **Tests.** `test/experiments/test_split_extension_truncation_override.py` covers the default band edge, the override, the rejection for the control cell, and the command line. `test/experiments/test_split_extension_cross_seed_summary.py` covers the band-edge check.
