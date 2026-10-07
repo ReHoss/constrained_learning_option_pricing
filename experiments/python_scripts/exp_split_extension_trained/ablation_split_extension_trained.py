@@ -216,7 +216,7 @@ def build_problem(cell_name: str, truncation_wavenumber: int | None = None) -> d
     }
     terminal_time = float(cell_conf["terminal_time"])
 
-    if cell_conf["datum"] == "bernoulli_bandlimited":
+    if cell_conf["datum"] in ("bernoulli_bandlimited", "bernoulli_full"):
         band_edge = int(cell_conf["truncation_wavenumber"])
         cosine_coefficients = bandlimited_bernoulli_cosine_coefficients(band_edge)
         sine_coefficients = None
@@ -246,11 +246,16 @@ def build_problem(cell_name: str, truncation_wavenumber: int | None = None) -> d
     else:  # pragma: no cover - guarded by the catalogue schema
         raise ValueError(f"Unknown datum kind {cell_conf['datum']!r}")
 
+    full_datum = cell_conf["datum"] == "bernoulli_full"
     return {
         "cell_name": cell_name,
         "generator_coefficients": generator_coefficients,
         "terminal_time": terminal_time,
         "datum_kind": cell_conf["datum"],
+        # Full-datum cells: the unprojected datum, used by the datum-path
+        # variants (problem_for_variant); the spectral objects above use the
+        # reference band.
+        "full_terminal_datum": full_bernoulli_datum_values if full_datum else None,
         "band_edge": band_edge,
         "cosine_coefficients": cosine_coefficients,
         "sine_coefficients": sine_coefficients,
@@ -266,6 +271,143 @@ def build_problem(cell_name: str, truncation_wavenumber: int | None = None) -> d
         "forcing_band_edge": band_edge,
         "forcing_wavenumber_band": symmetric_wavenumber_band(band_edge),
         "variable_generator": None,
+    }
+
+
+def full_bernoulli_datum_values(x):
+    r"""Full periodised Bernoulli datum
+    :math:`g(x) = y^2 - y + 1/6`, :math:`y = (x \bmod 2\pi) / 2\pi`.
+
+    Its Fourier series is :math:`\sum_{k\ge1}\cos(kx)/(\pi^2k^2)`, the limit of the
+    band-limited datum as :math:`K\to\infty`.  Accepts numpy arrays or torch
+    tensors and keeps the dtype.  For a tensor, autograd differentiates through
+    ``torch.remainder`` (derivative one), so the derivatives are the classical
+    ones away from the break point :math:`x = 0 \bmod 2\pi`:
+    :math:`g' = (2y - 1)/(2\pi)`, :math:`g'' = 1/(2\pi^2)`, and zero beyond.  The
+    Dirac part of :math:`g''` at the break point is absent from these
+    pointwise values, which is the object of the full-datum experiment.
+    """
+    import numpy as np
+
+    try:
+        import torch
+    except ImportError:  # pragma: no cover - torch is installed wherever the runner trains
+        torch = None
+    if torch is not None and isinstance(x, torch.Tensor):
+        unit_position = torch.remainder(x, TWO_PI) / TWO_PI
+    else:
+        unit_position = np.mod(np.asarray(x), TWO_PI) / TWO_PI
+    return unit_position * unit_position - unit_position + 1.0 / 6.0
+
+
+def problem_for_variant(problem: dict, variant: dict) -> dict:
+    """Problem seen by one variant.
+
+    For a full-datum cell, a datum-path variant (``extension`` is ``None``)
+    carries the unprojected datum, so its terminal identity and its residual
+    use the full datum; the extension variants and the exact reference keep
+    the spectral datum at the reference band.  Every other cell is unchanged.
+    """
+    if problem.get("full_terminal_datum") is not None and variant["extension"] is None:
+        return dict(problem, terminal_datum=problem["full_terminal_datum"])
+    return problem
+
+
+def line_source_correction_values(problem: dict, x, t):
+    r"""Correction :math:`w` that the unseen singular forcing imposes on a field
+    whose pointwise residual vanishes almost everywhere (full-datum cells,
+    constant-in-time extension).
+
+    The forcing of :math:`\Psi = g` is :math:`P g = A g`.  With the jump
+    :math:`J = -1/\pi` of :math:`g'` at :math:`x = 0`, its singular part is
+    :math:`f = J \sum_{j\ge2} c_j \delta_0^{(j-2)}`, with Fourier coefficients
+    :math:`\hat f_k = (J/2\pi)\sum_{j\ge2} c_j (ik)^{j-2}`.  A field
+    :math:`u = g + (\text{correction})` whose pointwise residual vanishes almost
+    everywhere solves :math:`P u = f` in the sense of distributions with
+    :math:`u(\cdot, T) = g`, so :math:`u = u^\star + w`, where :math:`P w = f`,
+    :math:`w(\cdot, T) = 0`:
+
+    .. math::
+
+        \hat w_k(t) = -\hat f_k\,\frac{e^{(T-t)a_k} - 1}{a_k},
+        \qquad a_k = \sum_j c_j (ik)^j,
+
+    with the limit :math:`-\hat f_k (T - t)` when :math:`a_k = 0`.  The sum is
+    truncated at the reference band of the cell.  This is a closed-form
+    prediction of the limit field; whether training reaches it is measured.
+
+    Returns:
+        ``float64`` array of :math:`w(x, t)` with the broadcast shape of
+        ``x`` and ``t``.
+    """
+    import numpy as np
+
+    from learning_option_pricing.pde import PeriodisedBernoulliDatum
+
+    coefficients = problem["generator_coefficients"]
+    terminal_time = problem["terminal_time"]
+    band_edge = int(problem["band_edge"])
+    jump = PeriodisedBernoulliDatum(1).jump_of_rho_derivative
+    wavenumbers = np.arange(-band_edge, band_edge + 1, dtype=np.float64)
+    symbol = sum(float(c) * (1j * wavenumbers) ** int(j) for j, c in coefficients.items())
+    singular_coefficients = (jump / TWO_PI) * sum(
+        float(c) * (1j * wavenumbers) ** (int(j) - 2)
+        for j, c in coefficients.items() if int(j) >= 2
+    )
+    x_array, t_array = np.broadcast_arrays(np.asarray(x, dtype=np.float64),
+                                           np.asarray(t, dtype=np.float64))
+    remaining_time = (terminal_time - t_array)[..., None]
+    nonzero_symbol = np.abs(symbol) > 0.0
+    safe_symbol = np.where(nonzero_symbol, symbol, 1.0)
+    duhamel_factor = np.where(
+        nonzero_symbol,
+        (np.exp(remaining_time * safe_symbol) - 1.0) / safe_symbol,
+        remaining_time + 0.0j,
+    )
+    correction_coefficients = -singular_coefficients * duhamel_factor
+    phases = np.exp(1j * x_array[..., None] * wavenumbers)
+    return np.real(np.sum(correction_coefficients * phases, axis=-1))
+
+
+def compute_line_source_metrics(model, problem: dict) -> dict:
+    r"""Distance of the trained field to the predicted limit :math:`u^\star + w`
+    (full-datum cells, datum-path variants), on the evaluation grid.
+
+    Returns ``line_source_correction_relative_l2`` = :math:`\lVert w\rVert /
+    \lVert u^\star\rVert`, the closed-form prediction of the relative error of a
+    field whose pointwise residual vanishes, and
+    ``relative_l2_to_line_source_limit`` = :math:`\lVert \hat u - (u^\star + w)\rVert /
+    \lVert u^\star + w\rVert`, measured on the trained field.
+    """
+    import numpy as np
+    import torch
+
+    device = next(model.parameters()).device
+    terminal_time = problem["terminal_time"]
+    exact_field = problem["exact_field"]
+    x64 = _evaluation_grid()
+    x32 = torch.as_tensor(x64, dtype=torch.float32, device=device)
+    time_slices = np.linspace(0.0, terminal_time, EVALUATION_TIME_SLICE_COUNT)
+    predicted = np.empty((len(time_slices), len(x64)), dtype=np.float64)
+    reference = np.empty_like(predicted)
+    correction = np.empty_like(predicted)
+    for slice_index, time_value in enumerate(time_slices):
+        t32 = torch.full_like(x32, float(time_value))
+        with torch.no_grad():
+            predicted[slice_index] = (
+                model(torch.stack([x32, t32], dim=1)).squeeze(-1).cpu().numpy().astype(np.float64)
+            )
+        time_array = np.full_like(x64, float(time_value))
+        reference[slice_index] = exact_field.field(x64, time_array)
+        correction[slice_index] = line_source_correction_values(problem, x64, time_array)
+    limit = reference + correction
+    return {
+        "line_source_correction_relative_l2": float(
+            np.linalg.norm(correction) / np.linalg.norm(reference)
+        ),
+        "relative_l2_to_line_source_limit": float(
+            np.linalg.norm(predicted - limit) / np.linalg.norm(limit)
+        ),
     }
 
 
@@ -411,7 +553,7 @@ def _build_constant_coefficient_closed_form_extension(variant: dict, problem: di
         coefficients=problem["generator_coefficients"],
         name=problem["cell_name"],
     )
-    if problem["datum_kind"] == "bernoulli_bandlimited":
+    if problem["datum_kind"] in ("bernoulli_bandlimited", "bernoulli_full"):
         # On the retained band |k| <= K_g the truncated datum's coefficients
         # coincide exactly with the regularity-index-1 periodised Bernoulli
         # datum: c_k = 1 / (2 pi^2 k^2).
@@ -1316,7 +1458,10 @@ def compute_spectra(
     residual_power = residual_power_per_slice.mean(axis=0)
 
     forcing_power = np.zeros(len(wavenumber_bins))
-    positive_wavenumbers = np.arange(1, problem["forcing_band_edge"] + 1)
+    # The spectra grid resolves wavenumbers up to n_grid / 2; a forcing band
+    # beyond it (full-datum cells, reference band 4096) is clipped there.
+    resolved_band_edge = min(int(problem["forcing_band_edge"]), len(wavenumber_bins) - 1)
+    positive_wavenumbers = np.arange(1, resolved_band_edge + 1)
     forcing_power_band = np.zeros(len(positive_wavenumbers))
     for fraction in slice_fractions:
         forcing_coefficients = closed_form_extension.forcing_coefficient(
@@ -1324,7 +1469,7 @@ def compute_spectra(
         )
         forcing_power_band += np.abs(forcing_coefficients) ** 2
     forcing_power_band /= len(slice_fractions)
-    forcing_power[1:problem["forcing_band_edge"] + 1] = forcing_power_band
+    forcing_power[1:resolved_band_edge + 1] = forcing_power_band
 
     forcing_maximum = float(forcing_power.max())
     forcing_defined = forcing_maximum > 0.0
@@ -1717,8 +1862,10 @@ def main(argv=None) -> int:
     log_every = max(1, hparams["num_iterations"] // 50)
 
     summary: dict = {}
+    cell_problem = problem
     for variant in variants_to_run:
         start_time = time.time()
+        problem = problem_for_variant(cell_problem, variant)
         model, history, cross_check_deviation = train_variant(
             variant, problem, hparams,
             num_iterations=hparams["num_iterations"],
@@ -1750,7 +1897,28 @@ def main(argv=None) -> int:
         forcing_floor_median_train = float(
             np.median(np.asarray(history["forcing_floor"]))
         )
-        forcing_floor_closed_form = closed_form_forcing_floor(variant, problem)
+        full_datum_path = (
+            problem.get("full_terminal_datum") is not None and variant["extension"] is None
+        )
+        if full_datum_path:
+            # The forcing of the unprojected datum has a Dirac part: its energy
+            # is infinite and no band-limited closed form represents it.
+            forcing_floor_closed_form = float("nan")
+            logger.info(
+                "[%s] closed-form forcing floor not defined: the forcing of the full "
+                "datum has a singular part at x = 0 (recorded as NaN)", variant["name"]
+            )
+            line_source_metrics = compute_line_source_metrics(model, problem)
+            logger.info(
+                "[%s] line-source limit: predicted relative L2 of the correction %.3e "
+                "(closed form); measured relative L2 distance of the trained field to "
+                "u* + w %.3e", variant["name"],
+                line_source_metrics["line_source_correction_relative_l2"],
+                line_source_metrics["relative_l2_to_line_source_limit"],
+            )
+        else:
+            forcing_floor_closed_form = closed_form_forcing_floor(variant, problem)
+            line_source_metrics = {}
 
         elapsed = time.time() - start_time
         seconds_per_iteration = elapsed / max(1, hparams["num_iterations"])
@@ -1775,6 +1943,7 @@ def main(argv=None) -> int:
             **best_state_channels,
             "forcing_floor_median_train": forcing_floor_median_train,
             "forcing_floor_closed_form": forcing_floor_closed_form,
+            **line_source_metrics,
             "cross_check_deviation": (
                 cross_check_deviation
                 if cross_check_deviation is not None else float("nan")
@@ -1821,7 +1990,10 @@ def main(argv=None) -> int:
             "best_training_batch_iter": history["best_training_batch_iter"],
             **best_state_channels,
             "forcing_floor_median_train": forcing_floor_median_train,
-            "forcing_floor_closed_form": forcing_floor_closed_form,
+            "forcing_floor_closed_form": (
+                None if math.isnan(forcing_floor_closed_form) else forcing_floor_closed_form
+            ),
+            **line_source_metrics,
             "cross_check_deviation": cross_check_deviation,
             "k_star": k_star_value if k_star_defined else None,
             "n_parameters": history["n_parameters"],

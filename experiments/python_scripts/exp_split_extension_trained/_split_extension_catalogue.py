@@ -305,6 +305,30 @@ VARIABLE_COEFFICIENT_CELL_VARIANTS: list[dict] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Full-datum cells (pre-registration
+# documents/methodology/2026-10-08_preregistration_full_datum_sampling.md)
+# ---------------------------------------------------------------------------
+# The datum is the full periodised Bernoulli polynomial
+# g(x) = 1/6 - y/(2 pi) + y^2/(4 pi^2), y = x mod 2 pi, without Fourier
+# projection.  The constant-in-time variant uses g itself (datum path, autograd
+# derivatives, defined everywhere except at x = 0 mod 2 pi), so its sampled
+# residual sees only the regular part of the forcing; the Dirac part at x = 0
+# is invisible to pointwise sampling.  The split of the highest-order term and
+# the exact reference are Fourier sums truncated at FULL_DATUM_REFERENCE_BAND_EDGE.
+
+FULL_DATUM_REFERENCE_BAND_EDGE = 4096
+
+FULL_DATUM_SECOND_ORDER_CELL_VARIANTS: list[dict] = [
+    _generator_variant("constant_in_time"),
+    _generator_variant("split_diffusion"),
+]
+FULL_DATUM_FOURTH_ORDER_CELL_VARIANTS: list[dict] = [
+    _generator_variant("constant_in_time"),
+    SPLIT_PRINCIPAL_VARIANT,
+]
+
+
 def _amplitude_tag(amplitude_ratio: float) -> str:
     return f"eps{amplitude_ratio:.2f}".replace(".", "p")
 
@@ -477,6 +501,34 @@ CELL_CONFIGS: dict[str, dict] = {
         f"lv4_bernoulli_bandlimited_{_amplitude_tag(ratio)}": _variable_biharmonic_cell(ratio)
         for ratio in VARIABLE_COEFFICIENT_AMPLITUDE_RATIOS
     },
+    "g2_bernoulli_full": {
+        # G2 with the full (unprojected) Bernoulli datum.
+        "generator_coefficients": {2: 0.125, 1: -0.095, 0: -0.03},
+        "datum": "bernoulli_full",
+        "truncation_wavenumber": FULL_DATUM_REFERENCE_BAND_EDGE,
+        "terminal_time": 1.0,
+        "corner_point": 0.0,
+        "variant_set": "full_datum_second_order",
+        "short_label": r"$G_2$, full datum",
+        "label": (
+            r"$g(x)=\tfrac16-\tfrac{x}{2\pi}+\tfrac{x^2}{4\pi^2}$ on $[0,2\pi)$ (full datum),  "
+            r"$A=0.125\,\partial_{xx}-0.095\,\partial_x-0.03$,  $T=1$"
+        ),
+    },
+    "g3_bernoulli_full": {
+        # G3 with the full (unprojected) Bernoulli datum.
+        "generator_coefficients": {4: -0.05, 1: 1.3, 0: -0.4},
+        "datum": "bernoulli_full",
+        "truncation_wavenumber": FULL_DATUM_REFERENCE_BAND_EDGE,
+        "terminal_time": 1.0,
+        "corner_point": 0.0,
+        "variant_set": "full_datum_fourth_order",
+        "short_label": r"$G_3$, full datum",
+        "label": (
+            r"$g(x)=\tfrac16-\tfrac{x}{2\pi}+\tfrac{x^2}{4\pi^2}$ on $[0,2\pi)$ (full datum),  "
+            r"$A=-0.05\,\partial_x^4+1.3\,\partial_x-0.4$,  $T=1$"
+        ),
+    },
     "heat_sine_single_component": {
         # Control cell: pure heat at the G2 diffusivity with the
         # single-spectral-component datum g(x) = sin x (k_0 = 1); exact
@@ -567,6 +619,10 @@ def variants_for_cell(cell_name: str) -> list[dict]:
         return list(FOURTH_ORDER_CELL_VARIANTS)
     if cell_conf["variant_set"] == "variable_coefficient":
         return list(VARIABLE_COEFFICIENT_CELL_VARIANTS)
+    if cell_conf["variant_set"] == "full_datum_second_order":
+        return list(FULL_DATUM_SECOND_ORDER_CELL_VARIANTS)
+    if cell_conf["variant_set"] == "full_datum_fourth_order":
+        return list(FULL_DATUM_FOURTH_ORDER_CELL_VARIANTS)
     return list(CONTROL_CELL_VARIANTS)
 
 
