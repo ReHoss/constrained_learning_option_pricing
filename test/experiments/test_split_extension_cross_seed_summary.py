@@ -734,3 +734,48 @@ def test_terminal_target_absolute_error_leaves_a_missing_factor_empty():
     assert aggregator.terminal_target_absolute_error(
         {"terminal_target_rel_l2": {"median": 0.25}}, 4.0
     ) == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Datum band edge of the trained runs (truncation study, 2026-10-08)
+# ---------------------------------------------------------------------------
+
+
+def _write_run_metadata(run_directory: Path, cell: str, seed: int, hparams: dict) -> Path:
+    run_directory.mkdir(parents=True)
+    with open(run_directory / "metadata.yaml", "w") as handle:
+        yaml.safe_dump({"cell": cell, "seed": seed, "hparams": hparams}, handle)
+    return run_directory
+
+
+def test_trained_band_edge_reads_the_override_from_metadata(tmp_path):
+    run_directory = _write_run_metadata(
+        tmp_path / "2026-10-08-00-00-00-000000Z_g2_bernoulli_bandlimited_iters20000_seed0",
+        "g2_bernoulli_bandlimited", 0, {"truncation_wavenumber": 32},
+    )
+    assert aggregator.trained_datum_band_edge(run_directory, "g2_bernoulli_bandlimited") == 32
+
+
+def test_trained_band_edge_defaults_to_the_catalogue_value(tmp_path):
+    run_directory = _write_run_metadata(
+        tmp_path / "2026-10-08-00-00-00-000000Z_g2_bernoulli_bandlimited_iters20000_seed0",
+        "g2_bernoulli_bandlimited", 0, {"num_iterations": 20000},
+    )
+    assert aggregator.trained_datum_band_edge(run_directory, "g2_bernoulli_bandlimited") == 128
+
+
+def test_band_edge_check_accepts_matching_runs(tmp_path):
+    run_directory = _write_run_metadata(
+        tmp_path / "2026-10-08-00-00-00-000000Z_g3_bernoulli_bandlimited_iters20000_seed1",
+        "g3_bernoulli_bandlimited", 1, {"truncation_wavenumber": 512},
+    )
+    aggregator.assert_run_band_edges_match([run_directory], 512)
+
+
+def test_band_edge_check_raises_on_a_run_trained_at_another_band_edge(tmp_path):
+    run_directory = _write_run_metadata(
+        tmp_path / "2026-10-08-00-00-00-000000Z_g2_bernoulli_bandlimited_iters20000_seed0",
+        "g2_bernoulli_bandlimited", 0, {"truncation_wavenumber": 32},
+    )
+    with pytest.raises(ValueError, match="band edge 32"):
+        aggregator.assert_run_band_edges_match([run_directory], 128)

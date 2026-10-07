@@ -484,6 +484,66 @@ class RunRecord:
     variant_summaries: dict[str, dict] = field(default_factory=dict)
 
 
+def catalogue_datum_band_edge(cell_name: str) -> int:
+    """Catalogue band edge of a cell (the specification value when the
+    catalogue is not importable)."""
+    if _catalogue is None:
+        return GENERATOR_CELL_BAND_EDGE
+    return int(_catalogue.cell_by_name(cell_name)["truncation_wavenumber"])
+
+
+def trained_datum_band_edge(run_directory: Path, cell_name: str) -> int:
+    """Datum band edge a run was trained with.
+
+    The runner records an override of the catalogue band edge as
+    ``hparams.truncation_wavenumber`` in ``metadata.yaml`` (truncation study,
+    pre-registration 2026-10-08); without that key the run used the catalogue
+    value of its cell.
+    """
+    metadata_path = Path(run_directory) / "metadata.yaml"
+    if metadata_path.exists():
+        with open(metadata_path) as handle:
+            metadata = yaml.safe_load(handle) or {}
+        override = (metadata.get("hparams") or {}).get("truncation_wavenumber")
+        if override is not None:
+            return int(override)
+    return catalogue_datum_band_edge(cell_name)
+
+
+def assert_run_band_edges_match(run_directories, band_edge: int) -> None:
+    """Raise when a run was trained at a datum band edge the aggregation does not use.
+
+    The closed forms of the generator cells are recomputed at ``band_edge``
+    (``--band-edge``); those of the variable-coefficient cells at the catalogue
+    value.  A run trained at another band edge would be compared with closed
+    forms of a different datum, so the aggregation stops instead of mixing them.
+    The control cell has no band edge to vary and is not checked.
+
+    Raises:
+        ValueError: If a run's trained band edge differs from the band edge
+            of its closed forms.
+    """
+    for run_directory in run_directories:
+        parsed = parse_run_directory_name(Path(run_directory).name)
+        if parsed is None:
+            continue
+        cell_name = parsed["cell"]
+        if cell_name in GENERATOR_CELL_NAMES:
+            expected_band_edge = int(band_edge)
+        elif cell_name in VARIABLE_COEFFICIENT_CELL_NAMES:
+            expected_band_edge = catalogue_datum_band_edge(cell_name)
+        else:
+            continue
+        trained_band_edge = trained_datum_band_edge(Path(run_directory), cell_name)
+        if trained_band_edge != expected_band_edge:
+            raise ValueError(
+                f"{Path(run_directory).name}: trained with datum band edge "
+                f"{trained_band_edge}, aggregated with closed forms at band edge "
+                f"{expected_band_edge}; aggregate each truncation separately with "
+                f"--data-root and the matching --band-edge"
+            )
+
+
 def load_run_record(run_directory: Path) -> RunRecord:
     """Load one run directory into a :class:`RunRecord`.
 
@@ -2227,6 +2287,7 @@ def main(argv=None) -> int:
     )
 
     run_directories = discover_run_directories(data_root)
+    assert_run_band_edges_match(run_directories, args.band_edge)
     records = [load_run_record(d) for d in run_directories]
     records = [r for r in records if r.variant_summaries]
     if args.cells is not None:

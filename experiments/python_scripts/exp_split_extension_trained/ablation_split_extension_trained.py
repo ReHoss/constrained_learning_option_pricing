@@ -168,8 +168,14 @@ def cuda_retry(fn, *, attempts: int = 6, base_delay: float = 10.0):
 # Problem assembly (generator, datum, exact reference)
 # ===========================================================================
 
-def build_problem(cell_name: str) -> dict:
+def build_problem(cell_name: str, truncation_wavenumber: int | None = None) -> dict:
     """Return the torch/numpy problem description of one cell.
+
+    ``truncation_wavenumber`` overrides the band edge :math:`K` of the
+    band-limited datum fixed by the catalogue (truncation study,
+    pre-registration 2026-10-08); ``None`` keeps the catalogue value.  The
+    override is rejected for the single-component control cell, whose datum
+    has no band edge to vary.
 
     Keys: ``cell_name``, ``generator_coefficients`` (order -> coefficient),
     ``terminal_time``, ``datum_kind``, ``band_edge`` (the retained band
@@ -188,6 +194,18 @@ def build_problem(cell_name: str) -> dict:
     )
 
     cell_conf = catalogue.cell_by_name(cell_name)
+    if truncation_wavenumber is not None:
+        if cell_conf["datum"] != "bernoulli_bandlimited":
+            raise ValueError(
+                f"--truncation-wavenumber applies to band-limited data only; cell "
+                f"{cell_name!r} has datum {cell_conf['datum']!r}"
+            )
+        if int(truncation_wavenumber) < 1:
+            raise ValueError(
+                f"truncation_wavenumber must be a positive integer, received "
+                f"{truncation_wavenumber!r}"
+            )
+        cell_conf = dict(cell_conf, truncation_wavenumber=int(truncation_wavenumber))
     if cell_conf.get("variable_coefficients", False):
         return _build_variable_coefficient_problem(cell_name, cell_conf)
     from learning_option_pricing.pde import symmetric_wavenumber_band
@@ -1450,6 +1468,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write the run directory under data/<script>/<SUBFOLDER>/ (one "
              "subfolder per model series; aggregate it with --data-root).",
     )
+    parser.add_argument(
+        "--truncation-wavenumber", type=int, default=None,
+        help="Override the band edge K of the band-limited datum (truncation "
+             "study); default: the catalogue value of the cell (128).",
+    )
     parser.add_argument("--n-validation", type=int, default=None,
                         help="Size of the fixed validation set.")
     parser.add_argument("--validation-every", type=int, default=None,
@@ -1498,6 +1521,8 @@ def resolve_hparams(args) -> dict:
         hparams["net_layers_per_block"] = args.net_layers_per_block
     if getattr(args, "no_residual", False):
         hparams["residual"] = False
+    if getattr(args, "truncation_wavenumber", None) is not None:
+        hparams["truncation_wavenumber"] = int(args.truncation_wavenumber)
     return hparams
 
 
@@ -1679,7 +1704,10 @@ def main(argv=None) -> int:
     logger.info("  output:    %s", ablation_dir)
     logger.info("  log:       %s", log_path)
 
-    problem = build_problem(args.cell)
+    problem = build_problem(args.cell, hparams.get("truncation_wavenumber"))
+    logger.info("  datum band edge K: %d%s", problem["band_edge"],
+                " (override of the catalogue value)"
+                if hparams.get("truncation_wavenumber") is not None else "")
 
     variants_to_run = (
         [catalogue.variant_by_name(args.cell, args.variant)]
