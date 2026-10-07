@@ -653,7 +653,7 @@ def build_autograd_figure(arrays: dict, figure_path: Path) -> None:
     axis.set_ylabel(r"Estimate of $f''(x)$")
     axis.set_title(r"Near $x^\star=0$: a peak of mass $1$, or nothing (autograd of relu)", fontsize=9)
     axis.grid(True, alpha=0.3)
-    axis.legend(loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=1, fontsize=7.5)
+    axis.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=1, fontsize=7.5)
     axes.append(axis)
 
     # (0, 0) discrete Dirac mass.
@@ -673,7 +673,7 @@ def build_autograd_figure(arrays: dict, figure_path: Path) -> None:
     axis.set_title(r"$\max(x-x^\star,0)$, $x^\star=0.3\Delta$: values $\frac{0.7}{\Delta}$ and $\frac{0.3}{\Delta}$",
                    fontsize=9)
     axis.grid(True, alpha=0.3)
-    axis.legend(loc="upper center", bbox_to_anchor=(0.5, -0.17), ncol=1, fontsize=7.5)
+    axis.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=1, fontsize=7.5)
 
     # (b) autograd profiles of relu.
     axis = axes[1]
@@ -687,14 +687,18 @@ def build_autograd_figure(arrays: dict, figure_path: Path) -> None:
     axis.set_ylabel(r"Derivative")
     axis.set_title(r"Autograd of $\mathrm{relu}$: no value of order $\frac{1}{h}$ anywhere", fontsize=9)
     axis.grid(True, alpha=0.3)
-    axis.legend(loc="upper center", bbox_to_anchor=(0.5, -0.17), ncol=3, fontsize=7.5)
+    axis.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=3, fontsize=7.5)
 
     # (c) estimates of the integral of f''.
     axis = axes[2]
     estimates = np.asarray(arrays["integral_estimates"])
     labels = ["Autograd,\nMonte Carlo", "Grid sum,\n$x^\\star$ on a node",
               "Grid sum,\n$x^\\star$ off the grid"]
-    axis.bar(np.arange(3), estimates[:3], color=["#d62728", "#1f77b4", "#2ca02c"], width=0.6)
+    bars = axis.bar(np.arange(3), estimates[:3], color=["#d62728", "#1f77b4", "#2ca02c"], width=0.6)
+    for bar, estimate in zip(bars, estimates[:3]):
+        axis.text(bar.get_x() + 0.5 * bar.get_width(), estimate + 0.03, f"{estimate:.6g}",
+                  ha="center", va="bottom", fontsize=8)
+    axis.set_ylim(0.0, 1.15)
     axis.axhline(estimates[3], ls="--", color="black", lw=1.0,
                  label=r"Distributional value $f'(1)-f'(-1)=1$")
     axis.set_xticks(np.arange(3))
@@ -704,7 +708,7 @@ def build_autograd_figure(arrays: dict, figure_path: Path) -> None:
     axis.grid(True, axis="y", alpha=0.3)
     axis.legend(loc="upper center", bbox_to_anchor=(0.5, -0.24), fontsize=7.5)
 
-    figure.tight_layout(rect=[0, 0.09, 1, 1], h_pad=6.0)
+    figure.tight_layout(rect=[0, 0.1, 1, 1], h_pad=1.5)
     finalize_figure(figure, figure_path, legends=[a.get_legend() for a in axes],
                     formula=AUTOGRAD_FORMULA, axes=list(axes))
 
@@ -733,9 +737,9 @@ def build_bandlimited_figure(arrays: dict, figure_path: Path) -> None:
         axis.grid(True, alpha=0.3)
 
     handles, labels = axes[0].get_legend_handles_labels()
-    legend = figure.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.22),
+    legend = figure.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.27),
                            ncol=4, fontsize=8)
-    figure.tight_layout(rect=[0, 0.24, 1, 1])
+    figure.tight_layout(rect=[0, 0.29, 1, 1])
     finalize_figure(figure, figure_path, legends=[legend], formula=BANDLIMITED_FORMULA,
                     axes=list(axes))
 
