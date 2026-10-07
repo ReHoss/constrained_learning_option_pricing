@@ -968,3 +968,20 @@ The truncation study (`2026-10-08_preregistration_truncation_study.md`) trains t
 - **Run directories.** Their names are unchanged. Each band edge is written to its own series subfolder (`--series-subfolder truncation_study_2026-10-08/K<K>`), so the aggregator's discovery pattern applies as before.
 - **Aggregator.** `split_extension_cross_seed_summary.py` recomputes its closed forms at `--band-edge`. The function `assert_run_band_edges_match` raises when a run's recorded band edge differs from that value. A run without the key used the catalogue value.
 - **Tests.** `test/experiments/test_split_extension_truncation_override.py` covers the default band edge, the override, the rejection for the control cell, and the command line. `test/experiments/test_split_extension_cross_seed_summary.py` covers the band-edge check.
+
+## 12. Addendum (2026-10-08) — full-datum cells
+
+The full-datum experiment (`2026-10-08_preregistration_full_datum_sampling.md`) adds two cells.
+
+- **Cells.** `g2_bernoulli_full` and `g3_bernoulli_full` have the generators of $G_2$ and $G_3$ and the datum kind `bernoulli_full`.
+- **Spectral objects.** The exact reference, the split fields and the closed forms use the Bernoulli coefficients up to `FULL_DATUM_REFERENCE_BAND_EDGE` $=4096$.
+- **The raw variant.** `problem_for_variant` gives the datum-path variant (`constant_in_time`) the unprojected datum `full_bernoulli_datum_values`. Its terminal identity and its autograd residual therefore use $g$ itself, whose pointwise derivatives omit the Dirac part at $x=0$.
+- **Metrics of the raw variant.**
+  - The closed-form forcing floor is recorded as NaN (`null` in YAML).
+  - `line_source_correction_relative_l2` is the closed-form relative norm of $w$, where $Pw=f$ (the singular part of the forcing) and $w(\cdot,T)=0$, computed by `line_source_correction_values`.
+  - `relative_l2_to_line_source_limit` is the measured distance of the trained field to $u^\star+w$.
+- **Spectra.** The residual spectra clip the forcing band to the resolution of the spectra grid ($n/2=512$).
+- **Tests.** In `test/experiments/test_split_extension_full_datum.py`:
+  - the datum against its Fourier series, its periodicity, and its autograd derivatives;
+  - the variant problems;
+  - the equation of $w$, mode by mode, and its terminal value.
