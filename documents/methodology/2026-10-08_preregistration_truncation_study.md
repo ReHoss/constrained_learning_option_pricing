@@ -65,3 +65,35 @@ Before the array, one `qos_gpu-dev` job runs:
 - two `--debug` runs of $300$ iterations at $K=512$: raw constant on $G_3$, which has the largest forcing, and the highest-order split on $G_2$.
 
 The job checks that the code runs and gives the time per iteration, from which the array time limit is set.
+
+## 7. Outcome (added 2026-10-08, after the runs)
+
+**Runs.** All 54 tasks of Jean Zay job 754879 completed, at revision 258695d. No task had a non-finite gradient norm or a safeguard activation.
+
+**Aggregates.** They were computed on `prepost` by job 757898, one per band edge (`--band-edge K`):
+- `data/split_extension_cross_seed_summary/2026-10-08-03-33-29Z_truncation_study_K{32,128,512}_statistics/` (statistics);
+- `data/split_extension_cross_seed_summary/2026-10-08-03-33-29Z_truncation_study_K{32,128,512}/` (closed forms, tables, figures).
+
+Median $\delta_\Gamma$ over seeds $\{0,1,2\}$ (measured):
+
+| Cell | Extension | $K=32$ | $K=128$ | $K=512$ |
+|---|---|---|---|---|
+| $G_2$ | Raw constant | $1.32\times10^{-3}$ | $1.29\times10^{-3}$ | $2.76\times10^{-3}$ |
+| $G_2$ | Raw linear | $1.04\times10^{-3}$ | $1.21\times10^{-3}$ | $2.53\times10^{-3}$ |
+| $G_2$ | Highest-order split | $4.94\times10^{-4}$ | $4.93\times10^{-4}$ | $4.94\times10^{-4}$ |
+| $G_3$ | Raw constant | $0.129$ | $9.29$ | $48.2$ |
+| $G_3$ | Raw linear | $0.114$ | $3.80$ | $11.3$ |
+| $G_3$ | Highest-order split | $6.24\times10^{-4}$ | $4.91\times10^{-4}$ | $4.90\times10^{-4}$ |
+
+The test of each prediction:
+- **P1 holds** for the four (cell, raw variant) pairs. From $K=32$ to $K=512$ the median grows by a factor $2.1$ (raw constant, $G_2$), $2.4$ (raw linear, $G_2$), $372$ (raw constant, $G_3$) and $99$ (raw linear, $G_3$). On $G_2$ the raw-constant median is not monotone: at $K=128$ it is slightly below its value at $K=32$, and P1 compares only $K=32$ with $K=512$.
+- **P2 holds.** The largest-to-smallest ratio of the split medians is $1.003$ on $G_2$ and $1.27$ on $G_3$.
+- **P3 holds** for the four pairs. The ratio of the raw median to the split median goes:
+  - from $2.7$ to $5.6$ (raw constant, $G_2$);
+  - from $2.1$ to $5.1$ (raw linear, $G_2$);
+  - from $2.1\times10^{2}$ to $9.8\times10^{4}$ (raw constant, $G_3$);
+  - from $1.8\times10^{2}$ to $2.3\times10^{4}$ (raw linear, $G_3$).
+
+Further observations:
+- **Retained states of the raw extensions on $G_3$.** At $K=128$ and $512$, the retained iterations are early (medians $400$ to $5700$). The validation residual at the retained state is between $2.9\times10^{4}$ and $8.2\times10^{7}$. The network does not cancel the forcing.
+- **Reproducibility check.** At $K=128$, the medians of $\delta_\Gamma$ and of the validation residual are equal, to the seven digits printed, to those of the validation-selected series (`2026-09-29-14-47-30Z_series_validation_selected_8cell_3seed`). This holds for all six (cell, variant) pairs. As stated in Section 5, the two are not pooled.

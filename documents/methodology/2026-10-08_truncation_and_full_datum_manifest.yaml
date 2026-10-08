@@ -1,0 +1,34 @@
+# Manifest of the two studies of 2026-10-08 (pre-registrations
+# documents/methodology/2026-10-08_preregistration_truncation_study.md and
+# documents/methodology/2026-10-08_preregistration_full_datum_sampling.md).
+truncation_study:
+  cells: [g2_bernoulli_bandlimited, g3_bernoulli_bandlimited]
+  variants: {g2_bernoulli_bandlimited: [constant_in_time, convex_raw, split_diffusion], g3_bernoulli_bandlimited: [constant_in_time, convex_raw, split_principal]}
+  band_edges: [32, 128, 512]
+  seeds: [0, 1, 2]
+  tasks: 54
+  cluster: Jean Zay (IDRIS), NVIDIA V100 (gpu_p13), akz@v100, qos_gpu-t3
+  slurm_jobs: {smoke_test: 754826, array: 754879}
+  code_revision: 258695d   # recorded in every metadata.yaml; all tasks started before the cluster pull of 25680ed
+  run_directories: data/ablation_split_extension_trained/truncation_study_2026-10-08/K<K>/ (Jean Zay; not yet copied to the laptop)
+  task_list: Jean Zay, $WORK/oym_migration/work/logs/constrained_learning_option_pricing/truncation_study_2026-10-08/tasks_jeanzay.txt
+  forcing_energies: data/measure_variable_coefficient_forcing_energy/2026-09-29-11-37-05-597447Z_Kmax1024_N512 (epsilon = 0; revision c3e6051)
+  status: completed; predictions P1-P3 hold (pre-registration section 7)
+full_datum_study:
+  cells: [g2_bernoulli_full, g3_bernoulli_full]
+  variants: {g2_bernoulli_full: [constant_in_time, split_diffusion], g3_bernoulli_full: [constant_in_time, split_principal]}
+  reference_band_edge: 4096
+  seeds: [0, 1, 2]
+  tasks: 12
+  cluster: Jean Zay (IDRIS), NVIDIA V100 (gpu_p13), akz@v100, qos_gpu-t3
+  slurm_jobs: {smoke_test: 754987, array: 755019}
+  code_revision: 4b9b4b5
+  run_directories: data/ablation_split_extension_trained/full_datum_sampling_2026-10-08/ (Jean Zay; not yet copied to the laptop)
+  closed_form_line_source_correction_relative_l2: {g2_bernoulli_full: 0.1384, g3_bernoulli_full: 0.1504}
+  status: completed; predictions Q1-Q4 hold (pre-registration section 6)
+aggregation:
+  cluster: Jean Zay prepost (CPU), job 757898, revision 40cc5d0 (statistics-only mode added)
+  outputs: data/split_extension_cross_seed_summary/2026-10-08-03-33-29Z_{truncation_study_K32,_K128,_K512}[_statistics], 2026-10-08-03-33-29Z_full_datum_sampling_statistics
+  copied_to_laptop: aggregation folders only (no run directory, no checkpoint)
+reproducibility_check:
+  the K = 128 runs reproduce the validation-selected series (2026-09-29-14-47-30Z_series_validation_selected_8cell_3seed) to seven printed digits for the medians of rel_l2 and of the validation residual, for the six (cell, variant) pairs

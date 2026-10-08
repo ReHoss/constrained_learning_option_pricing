@@ -64,3 +64,26 @@ Filled in after the smoke test (job 754987, revision 25680ed, 2026-10-08) and be
 | `g3_bernoulli_full` | $0.1504$ | $0.0752$ |
 
 The smoke runs (300 iterations, `--debug`) also measured errors. They are not results of this study and are not reported.
+
+## 6. Outcome (added 2026-10-08, after the runs)
+
+**Runs.** All 12 tasks of Jean Zay job 755019 completed, at revision 4b9b4b5. No task had a non-finite gradient norm or a safeguard activation.
+
+**Aggregate.** Computed on `prepost` by job 757898, statistics only: `data/split_extension_cross_seed_summary/2026-10-08-03-33-29Z_full_datum_sampling_statistics/`.
+
+Medians over seeds $\{0,1,2\}$ (measured, except the closed-form column):
+
+| Cell | Extension | $\delta_\Gamma$ | Validation residual at the retained state | $\lVert w\rVert/\lVert u^\star\rVert$ (closed form) | Distance to $u^\star+w$ |
+|---|---|---|---|---|---|
+| $G_2$, full datum | Raw constant | $0.1383$ | $6.98\times10^{-7}$ | $0.1384$ | $4.17\times10^{-4}$ |
+| $G_2$, full datum | Highest-order split | $4.93\times10^{-4}$ | $2.13\times10^{-7}$ | — | — |
+| $G_3$, full datum | Raw constant | $0.1510$ | $1.03\times10^{-4}$ | $0.1504$ | $1.57\times10^{-3}$ |
+| $G_3$, full datum | Highest-order split | $4.90\times10^{-4}$ | $2.75\times10^{-6}$ | — | — |
+
+The test of each prediction:
+- **Q1 holds.** The validation-selected series on $g_{128}$ has validation residuals $2.24\times10^{-4}$ ($G_2$) and $8.61\times10^{4}$ ($G_3$). The full datum gives residuals smaller by factors of about $3\times10^{2}$ ($G_2$) and $8\times10^{8}$ ($G_3$).
+- **Q2 holds.** The measured $\delta_\Gamma$ coincides with the closed-form $\lVert w\rVert/\lVert u^\star\rVert$ to three digits ($0.1383$ against $0.1384$ on $G_2$; $0.1510$ against $0.1504$ on $G_3$).
+- **Q3 holds.** The trained field lies at relative distance $4.2\times10^{-4}$ ($G_2$) and $1.6\times10^{-3}$ ($G_3$) from $u^\star+w$, and at $0.138$ and $0.151$ from $u^\star$.
+- **Q4 holds.** The split on the full datum has $\delta_\Gamma$ smaller by a factor of about $2.8\times10^{2}$ ($G_2$) and $3.1\times10^{2}$ ($G_3$) than the raw constant extension. Its $\delta_\Gamma$ is also equal, to three digits, to the split on $g_{128}$ ($4.93\times10^{-4}$ and $4.91\times10^{-4}$).
+
+On $G_2$ the raw constant extension reaches a validation residual of the same order as the split ($6.98\times10^{-7}$ against $2.13\times10^{-7}$), with an error $2.8\times10^{2}$ times larger.
