@@ -2200,6 +2200,45 @@ def build_yaml_payload(
 # ---------------------------------------------------------------------------
 
 
+def plain_yaml_value(value):
+    """Convert numpy scalars and containers to plain Python for YAML output."""
+    if isinstance(value, dict):
+        return {str(key): plain_yaml_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain_yaml_value(item) for item in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def write_statistics_only(records: list, data_root: Path, args) -> int:
+    """Write the medians and quartiles of every recorded metric, per (cell, variant).
+
+    No closed form is recomputed, so the mode applies to any cell of the
+    catalogue, including the full-datum cells.  The output folder is
+    ``--out-dir`` or a timestamped folder under the script's data directory.
+    """
+    statistics = collect_statistics(records)
+    summarised = summarise_statistics(statistics)
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+    else:
+        debug_prefix = "_debug_" if args.debug else ""
+        out_dir = script_data_dir(__file__) / f"{debug_prefix}{utc_timestamp()}_statistics_only"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_by": Path(__file__).name,
+        "mode": "statistics_only",
+        "data_root": str(data_root),
+        "run_directories": [str(record.path) for record in records],
+        "cells": plain_yaml_value(summarised),
+    }
+    with open(out_dir / "statistics_across_seeds.yaml", "w") as handle:
+        yaml.dump(payload, handle, default_flow_style=False, sort_keys=False, width=float("inf"))
+    print(f"Statistics of {len(records)} run directories over cells {sorted(summarised)} written to {out_dir}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -2240,6 +2279,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Mark this aggregation as exploratory (prefixes the output "
             "folder with _debug_)."
+        ),
+    )
+    parser.add_argument(
+        "--statistics-only",
+        action="store_true",
+        help=(
+            "Write only the per-(cell, variant) medians and quartiles of every "
+            "recorded metric (statistics_across_seeds.yaml), without closed "
+            "forms, tables or figures; accepts cells outside the specification "
+            "list, such as the full-datum cells."
         ),
     )
     parser.add_argument(
@@ -2292,10 +2341,12 @@ def main(argv=None) -> int:
     records = [r for r in records if r.variant_summaries]
     if args.cells is not None:
         unknown_cells = sorted(set(args.cells) - set(CELL_NAMES))
-        if unknown_cells:
+        if unknown_cells and not args.statistics_only:
             raise ValueError(f"--cells names unknown cells: {unknown_cells}")
         records = [r for r in records if r.cell in args.cells]
         CELL_NAMES = tuple(c for c in CELL_NAMES if c in args.cells)
+    if args.statistics_only:
+        return write_statistics_only(records, data_root, args)
     if not records:
         print(
             f"NOTICE: no (non-debug) run directory with summaries found "

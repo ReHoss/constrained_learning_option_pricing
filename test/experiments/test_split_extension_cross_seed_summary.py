@@ -779,3 +779,23 @@ def test_band_edge_check_raises_on_a_run_trained_at_another_band_edge(tmp_path):
     )
     with pytest.raises(ValueError, match="band edge 32"):
         aggregator.assert_run_band_edges_match([run_directory], 128)
+
+
+def test_statistics_only_mode_accepts_full_datum_cells(tmp_path):
+    data_root = tmp_path / "full_datum_sampling"
+    for seed, error in ((0, 0.14), (1, 0.15), (2, 0.16)):
+        run_directory = _write_run_metadata(
+            data_root / f"2026-10-08-00-00-0{seed}-000000Z_g2_bernoulli_full_iters20000_seed{seed}",
+            "g2_bernoulli_full", seed, {"num_iterations": 20000},
+        )
+        with open(run_directory / "summary_constant_in_time.yaml", "w") as handle:
+            yaml.safe_dump({"constant_in_time": {"rel_l2": error,
+                                                 "line_source_correction_relative_l2": 0.1384}}, handle)
+    out_dir = tmp_path / "statistics"
+    assert aggregator.main(["--data-root", str(data_root), "--out-dir", str(out_dir),
+                            "--statistics-only", "--cells", "g2_bernoulli_full"]) == 0
+    with open(out_dir / "statistics_across_seeds.yaml") as handle:
+        payload = yaml.safe_load(handle)
+    slot = payload["cells"]["g2_bernoulli_full"]["constant_in_time"]
+    assert slot["seeds"] == [0, 1, 2]
+    assert slot["metrics"]["rel_l2"]["median"] == pytest.approx(0.15)
