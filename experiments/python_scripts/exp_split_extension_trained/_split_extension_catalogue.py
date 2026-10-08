@@ -329,6 +329,51 @@ FULL_DATUM_FOURTH_ORDER_CELL_VARIANTS: list[dict] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Butterfly cell on the real line (pre-registration
+# documents/methodology/2026-10-09_preregistration_butterfly_real_line.md)
+# ---------------------------------------------------------------------------
+# The datum is the butterfly g(x) = (1 - |x|)^+ of Example 3.1 of the boundary
+# paper, on R, with no lateral condition: the collocation points are uniform on
+# the window BUTTERFLY_SPATIAL_WINDOW, which contains the support of the exact
+# solution up to a Gaussian tail, and the network sees the affine image of
+# (x, t) in [-1, 1]^2.  Every extension is a closed form of
+# learning_option_pricing.pde.real_line_butterfly_fields.
+
+BUTTERFLY_SPATIAL_WINDOW = (-4.8, 4.2)
+# Errors are also reported on the interior window, at this distance from the
+# window edges, where no lateral condition is imposed.
+BUTTERFLY_INTERIOR_WINDOW_MARGIN = 1.2
+
+TRANSPORTED_DATUM_VARIANT: dict = {
+    # Case (ii) of Example 4.1 of the boundary paper: h = e^{r_0 (T-t)} g(x + mu (T-t)),
+    # the evolution of the retained operator mu d_x + r_0.  Its pointwise forcing
+    # vanishes off the lines {x + mu (T-t) = a_k}; the Dirac part nu d_xx h on these
+    # lines is invisible to pointwise sampling (Proposition 4.4 of the paper).
+    "name": "transported_datum",
+    "form": "hard_constant",
+    "interpolation": "linear",
+    "extension": "transported_datum",
+    "comparison_diffusivity_ratio": None,
+    "smoothing_scale_ratio": None,
+    "exponential_rate_gamma": None,
+    "color": "#17becf",  # cyan
+    "label": r"transported datum $\{\partial_x,1\}$: $P\Psi=0$ off the kink lines",
+}
+
+BUTTERFLY_REAL_LINE_CELL_VARIANTS: list[dict] = [
+    _generator_variant("convex_raw"),
+    _generator_variant("constant_in_time"),
+    TRANSPORTED_DATUM_VARIANT,
+    _generator_variant("split_diffusion"),
+    _generator_variant("split_diffusion_advection"),
+    _generator_variant("graded_gaussian_mismatched"),
+    _generator_variant("graded_chen_mangasarian"),
+    _generator_variant("graded_chen_mangasarian_narrow"),
+    _generator_variant("exact_solution"),
+]
+
+
 def _amplitude_tag(amplitude_ratio: float) -> str:
     return f"eps{amplitude_ratio:.2f}".replace(".", "p")
 
@@ -426,7 +471,8 @@ METHOD_VARIANTS: list[dict] = GENERATOR_CELL_VARIANTS + [
     GRADED_GAUSSIAN_WIDTH_MATCHED_VARIANT,
     SPLIT_FROZEN_SINGULAR_VARIANT,
     SPLIT_FROZEN_MEAN_VARIANT,
-    MATCHED_EXPONENTIAL_FACTOR_VARIANT
+    MATCHED_EXPONENTIAL_FACTOR_VARIANT,
+    TRANSPORTED_DATUM_VARIANT,
 ]
 
 
@@ -529,6 +575,29 @@ CELL_CONFIGS: dict[str, dict] = {
             r"$A=-0.05\,\partial_x^4+1.3\,\partial_x-0.4$,  $T=1$"
         ),
     },
+    "butterfly_real_line": {
+        # Example 3.1 of the boundary paper in the runner's backward convention:
+        # P u = d_t u + A u with A = nu d_xx + mu d_x - rho, nu = 0.125, mu = 0.6,
+        # rho = 0.3, terminal datum g(x) = (1 - |x|)^+ at T = 1.  The values of
+        # Figures 1 and 2 of the paper.
+        "generator_coefficients": {2: 0.125, 1: 0.6, 0: -0.3},
+        "datum": "butterfly",
+        "spatial_domain": "real_line",
+        "butterfly_half_width": 1.0,
+        "spatial_window": BUTTERFLY_SPATIAL_WINDOW,
+        "interior_window_margin": BUTTERFLY_INTERIOR_WINDOW_MARGIN,
+        "terminal_time": 1.0,
+        # The centre x* of the butterfly; the corner windows are centred at the
+        # three kink points x* - 1, x*, x* + 1.
+        "corner_point": 0.0,
+        "variant_set": "real_line_butterfly",
+        "short_label": r"butterfly on $\mathbb{R}$",
+        "label": (
+            r"$g(x)=(1-|x|)^+$ on $\mathbb{R}$,  "
+            r"$A=0.125\,\partial_{xx}+0.6\,\partial_x-0.3$,  "
+            r"$Pu=\partial_t u+Au$,  $T=1$, window $[-4.8,4.2]$"
+        ),
+    },
     "heat_sine_single_component": {
         # Control cell: pure heat at the G2 diffusivity with the
         # single-spectral-component datum g(x) = sin x (k_0 = 1); exact
@@ -623,6 +692,8 @@ def variants_for_cell(cell_name: str) -> list[dict]:
         return list(FULL_DATUM_SECOND_ORDER_CELL_VARIANTS)
     if cell_conf["variant_set"] == "full_datum_fourth_order":
         return list(FULL_DATUM_FOURTH_ORDER_CELL_VARIANTS)
+    if cell_conf["variant_set"] == "real_line_butterfly":
+        return list(BUTTERFLY_REAL_LINE_CELL_VARIANTS)
     return list(CONTROL_CELL_VARIANTS)
 
 

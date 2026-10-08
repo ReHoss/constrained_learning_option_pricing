@@ -1,4 +1,4 @@
-r"""Stage-2 trained ablation: split terminal-data extensions on the circle.
+r"""Stage-2 trained ablation: split terminal-data extensions on the circle and on the line.
 
 Trains the hard-constrained trial solution
 ``u_hat = (1 - lambda(t)) Phi_theta + Psi`` on the backward evolution problem
@@ -10,6 +10,15 @@ terminal-data extensions ``Psi`` of the stage-2 catalogue
 ``P u_hat = R_theta + P Psi`` with the theta-independent forcing ``P Psi``
 controlled by the extension; the specification is
 ``documents/methodology/stage2_trained_ablation_specification.md``.
+
+Real-line cell (pre-registration 2026-10-09).  The cell ``butterfly_real_line``
+replaces the circle by the real line, with the butterfly datum of the boundary
+paper and no lateral condition: the collocation, validation and evaluation points
+are uniform on a spatial window, the network receives the affine image of
+``(x, t)`` in ``[-1, 1]^2``, and the extensions are the closed forms of
+``learning_option_pricing.pde.real_line_butterfly_fields``.  The periodic spectra
+are not defined there and are recorded as absent.  Every circle cell runs the
+same arithmetic as before this cell was added.
 
 Analytic-derivative bypass (specification Section 1.4 items 3 and 5).  For
 the registry-built extensions the closed-form derivatives are supplied to
@@ -208,6 +217,8 @@ def build_problem(cell_name: str, truncation_wavenumber: int | None = None) -> d
         cell_conf = dict(cell_conf, truncation_wavenumber=int(truncation_wavenumber))
     if cell_conf.get("variable_coefficients", False):
         return _build_variable_coefficient_problem(cell_name, cell_conf)
+    if cell_conf.get("spatial_domain") == "real_line":
+        return _build_real_line_butterfly_problem(cell_name, cell_conf)
     from learning_option_pricing.pde import symmetric_wavenumber_band
 
     generator_coefficients = {
@@ -411,6 +422,256 @@ def compute_line_source_metrics(model, problem: dict) -> dict:
     }
 
 
+def compute_real_line_limit_metrics(model, problem: dict, variant: dict, extension_field) -> dict:
+    r"""Distance of the trained field to the limit that the theory predicts for a
+    field whose pointwise residual vanishes almost everywhere (real-line cell,
+    variants whose forcing has a singular part), on the evaluation grid.
+
+    Returns ``line_source_correction_relative_l2`` =
+    :math:`\lVert v - u^\star\rVert / \lVert u^\star\rVert`, with :math:`v` the
+    limit of :func:`real_line_limit_field_values` (a closed form, independent of
+    training), and ``relative_l2_to_line_source_limit`` =
+    :math:`\lVert \hat u - v\rVert / \lVert v\rVert` (measured).
+    """
+    import numpy as np
+    import torch
+
+    device = next(model.parameters()).device
+    terminal_time = problem["terminal_time"]
+    x64 = _evaluation_grid(problem)
+    x32 = torch.as_tensor(x64, dtype=torch.float32, device=device)
+    time_slices = np.linspace(0.0, terminal_time, EVALUATION_TIME_SLICE_COUNT)
+    predicted = np.empty((len(time_slices), len(x64)), dtype=np.float64)
+    reference = np.empty_like(predicted)
+    limit = np.empty_like(predicted)
+    for slice_index, time_value in enumerate(time_slices):
+        t32 = torch.full_like(x32, float(time_value))
+        with torch.no_grad():
+            predicted[slice_index] = (
+                model(torch.stack([x32, t32], dim=1)).squeeze(-1).cpu().numpy().astype(np.float64)
+            )
+        time_array = np.full_like(x64, float(time_value))
+        reference[slice_index] = problem["exact_field"].field(x64, time_array)
+        limit[slice_index] = real_line_limit_field_values(
+            variant, problem, extension_field, x64, time_array
+        )
+    return {
+        "line_source_correction_relative_l2": float(
+            np.linalg.norm(limit - reference) / np.linalg.norm(reference)
+        ),
+        "relative_l2_to_line_source_limit": float(
+            np.linalg.norm(predicted - limit) / np.linalg.norm(limit)
+        ),
+    }
+
+
+def _build_real_line_butterfly_problem(cell_name: str, cell_conf: dict) -> dict:
+    r"""Problem dictionary of the butterfly cell on the real line (pre-registration
+    2026-10-09).
+
+    The datum is :math:`g(x) = (\ell - |x - x^\star|)^+` and ``exact_field`` is the
+    closed-form exact solution
+    :math:`u^\star(x, t) = e^{r_0 s} V(x + \mu s, s)`, :math:`s = T - t`.  The
+    spectral keys of the circle cells are ``None``: the datum has no band edge and
+    the forcing has no Fourier band.
+    """
+    from learning_option_pricing.pde.real_line_butterfly_fields import (
+        ButterflyDatum,
+        RealLineButterflyField,
+    )
+
+    generator_coefficients = {
+        int(order): float(value)
+        for order, value in cell_conf["generator_coefficients"].items()
+    }
+    terminal_time = float(cell_conf["terminal_time"])
+    datum = ButterflyDatum(
+        half_width=float(cell_conf["butterfly_half_width"]),
+        singular_point=float(cell_conf["corner_point"]),
+    )
+    exact_field = RealLineButterflyField(
+        generator_coefficients, datum, extension_kind="exact_solution",
+        terminal_time=terminal_time,
+    )
+    window_lower, window_upper = (float(value) for value in cell_conf["spatial_window"])
+    margin = float(cell_conf["interior_window_margin"])
+    if not (window_lower < datum.kink_points[0] and datum.kink_points[-1] < window_upper):
+        raise ValueError(
+            f"the spatial window {cell_conf['spatial_window']} must contain the kink points "
+            f"{datum.kink_points}"
+        )
+    if not window_lower + margin < window_upper - margin:
+        raise ValueError(f"the interior margin {margin} leaves an empty interior window")
+    return {
+        "cell_name": cell_name,
+        "generator_coefficients": generator_coefficients,
+        "terminal_time": terminal_time,
+        "datum_kind": cell_conf["datum"],
+        "spatial_domain": "real_line",
+        "spatial_window": (window_lower, window_upper),
+        "interior_window": (window_lower + margin, window_upper - margin),
+        "butterfly_datum": datum,
+        "full_terminal_datum": None,
+        "band_edge": None,
+        "cosine_coefficients": None,
+        "sine_coefficients": None,
+        "sine_wavenumber": None,
+        "sine_amplitude": None,
+        "terminal_datum": datum.values,
+        "exact_field": exact_field,
+        "matched_exponential_rate": None,
+        "corner_point": float(cell_conf["corner_point"]),
+        "label": cell_conf["label"],
+        "forcing_band_edge": None,
+        "forcing_wavenumber_band": None,
+        "variable_generator": None,
+    }
+
+
+def is_real_line_problem(problem: dict) -> bool:
+    """Whether the cell is posed on the real line (otherwise on the circle)."""
+    return problem.get("spatial_domain") == "real_line"
+
+
+def scale_unit_samples_to_space(unit_samples, problem: dict):
+    """Map uniform samples of ``[0, 1)`` to the spatial domain of the cell.
+
+    The circle keeps the expression ``TWO_PI * u`` of the earlier series, so that
+    its sample streams are unchanged; the real line maps to the spatial window.
+    """
+    if is_real_line_problem(problem):
+        window_lower, window_upper = problem["spatial_window"]
+        return window_lower + (window_upper - window_lower) * unit_samples
+    return TWO_PI * unit_samples
+
+
+def spatial_domain_measure(problem: dict) -> float:
+    """Lebesgue measure of the spatial domain: :math:`2\pi`, or the window length."""
+    if is_real_line_problem(problem):
+        window_lower, window_upper = problem["spatial_window"]
+        return window_upper - window_lower
+    return TWO_PI
+
+
+def build_real_line_extension_field(variant: dict, problem: dict):
+    """The closed-form real-line field of a registry variant (``None`` on the datum path)."""
+    from learning_option_pricing.pde.real_line_butterfly_fields import RealLineButterflyField
+
+    if variant["extension"] is None:
+        return None
+    extra_arguments = {}
+    if variant["comparison_diffusivity_ratio"] is not None:
+        extra_arguments["comparison_diffusivity"] = (
+            float(variant["comparison_diffusivity_ratio"]) * reference_diffusivity(problem)
+        )
+    if variant.get("smoothing_scale_ratio") is not None:
+        extra_arguments["initial_smoothing_scale"] = chen_mangasarian_initial_smoothing_scale(
+            variant, problem
+        )
+    return RealLineButterflyField(
+        problem["generator_coefficients"],
+        problem["butterfly_datum"],
+        extension_kind=variant["extension"],
+        terminal_time=problem["terminal_time"],
+        **extra_arguments,
+    )
+
+
+def real_line_pointwise_forcing_function(variant: dict, problem: dict, extension_field):
+    """Pointwise (almost-everywhere) forcing :math:`P\Psi` of a real-line variant.
+
+    Registry variants use the analytic assembly of the field.  The datum-path
+    variants use :math:`P g = \mu g' + r_0 g` almost everywhere (``constant_in_time``)
+    and :math:`P(\lambda g) = g/T + (t/T)(\mu g' + r_0 g)` (``convex_raw``, linear
+    factor); the Dirac part :math:`\nu g''` is absent from these values, as it is
+    from the sampled training residual.
+    """
+    if extension_field is not None:
+        return extension_field.forcing_values
+    datum = problem["butterfly_datum"]
+    coefficients = problem["generator_coefficients"]
+    terminal_time = problem["terminal_time"]
+
+    def generator_applied_almost_everywhere(x):
+        return (coefficients.get(1, 0.0) * datum.first_derivative_values(x)
+                + coefficients.get(0, 0.0) * datum.values(x))
+
+    if variant["form"] == "hard_constant":
+        return lambda x, t: generator_applied_almost_everywhere(x)
+    if variant["form"] == "hard_convex" and variant["interpolation"] == "linear":
+        return lambda x, t: (datum.values(x) / terminal_time
+                             + (t / terminal_time) * generator_applied_almost_everywhere(x))
+    raise ValueError(f"no pointwise forcing for variant {variant['name']!r}")
+
+
+def real_line_closed_form_forcing_floor(variant: dict, problem: dict) -> float:
+    r"""Mean square of the pointwise forcing under the uniform law on the
+    window times :math:`(0, T)`, the quantity the training channel
+    ``forcing_floor`` estimates.
+
+    It is ``NaN`` for the graded Chen--Mangasarian extension: its second
+    derivative has squared spatial norm proportional to :math:`1/\varepsilon(t)`
+    with :math:`\varepsilon(t) = \varepsilon_0 (T - t)/T`, whose time integral
+    diverges logarithmically at the terminal slice, so the mean square is infinite.
+    """
+    import numpy as np
+
+    from learning_option_pricing.pde.real_line_butterfly_fields import (
+        window_mean_square_of_pointwise_values,
+    )
+
+    if variant["extension"] == "graded_chen_mangasarian":
+        return float("nan")
+    extension_field = build_real_line_extension_field(variant, problem)
+    kink_points = np.asarray(problem["butterfly_datum"].kink_points)
+    drift = problem["generator_coefficients"].get(1, 0.0)
+    return window_mean_square_of_pointwise_values(
+        real_line_pointwise_forcing_function(variant, problem, extension_field),
+        spatial_window=problem["spatial_window"],
+        terminal_time=problem["terminal_time"],
+        refinement_centres=lambda s: np.concatenate([kink_points, kink_points - drift * s]),
+    )
+
+
+def real_line_limit_field_values(variant: dict, problem: dict, extension_field, x, t):
+    r"""Field that the theory predicts for a model whose pointwise residual vanishes
+    almost everywhere, for the variants whose forcing has a singular part.
+
+    * ``transported_datum``: the pointwise forcing vanishes, so the zero correction
+      is a minimiser and the limit is :math:`h_A` itself;
+    * ``constant_in_time`` and ``convex_raw``: :math:`u^\star + w`, with :math:`w`
+      the line-source correction of
+      :func:`learning_option_pricing.pde.real_line_butterfly_fields.datum_line_source_correction_values`.
+
+    Returns ``None`` for every other variant.
+    """
+    import numpy as np
+
+    from learning_option_pricing.pde.real_line_butterfly_fields import (
+        datum_line_source_correction_values,
+    )
+
+    if variant["extension"] == "transported_datum":
+        return extension_field.field(x, t)
+    if variant["extension"] is not None:
+        return None
+    terminal_time = problem["terminal_time"]
+    if variant["form"] == "hard_constant":
+        temporal_factor = np.ones_like
+    elif variant["form"] == "hard_convex" and variant["interpolation"] == "linear":
+        temporal_factor = lambda times: times / terminal_time  # noqa: E731
+    else:
+        return None
+    correction = datum_line_source_correction_values(
+        x, t,
+        generator_coefficients=problem["generator_coefficients"],
+        datum=problem["butterfly_datum"],
+        terminal_time=terminal_time,
+        temporal_factor=temporal_factor,
+    )
+    return problem["exact_field"].field(x, t) + correction
+
+
 def _build_variable_coefficient_problem(cell_name: str, cell_conf: dict) -> dict:
     r"""Problem dictionary of a variable-coefficient cell (pre-registration
     2026-09-29).
@@ -504,6 +765,9 @@ class SingleSineWavenumberDatum:
 
 
 def build_closed_form_extension(variant: dict, problem: dict):
+    if is_real_line_problem(problem):
+        # No Fourier band on the real line: the spectral counterpart is undefined.
+        return None
     if problem.get("variable_generator") is not None:
         from learning_option_pricing.pde.variable_coefficient_periodic import (
             build_variable_coefficient_extension,
@@ -635,6 +899,8 @@ def closed_form_forcing_floor(variant: dict, problem: dict) -> float:
     :math:`\mathbb{E}[(P\Psi)^2] = \|Lh\|^2_{\mathrm{strip}} / (2\pi T)
     = \tfrac{1}{T} \sum_{0<|k|\le K_g} I_k` at the cell's band edge.
     """
+    if is_real_line_problem(problem):
+        return real_line_closed_form_forcing_floor(variant, problem)
     from learning_option_pricing.pde import (
         symmetric_wavenumber_band,
         total_strip_forcing_squared,
@@ -716,8 +982,11 @@ def build_ansatz(variant: dict, problem: dict, hparams: dict, *, model_seed: int
     from learning_option_pricing.pde import EXTENSION_FIELD_REGISTRY
 
     torch.manual_seed(model_seed)
+    real_line = is_real_line_problem(problem)
     network = ResNet(
-        d_in=3,  # periodic feature map (cos x, sin x, 2 t / T - 1); decision D5
+        # Circle: periodic feature map (cos x, sin x, 2 t / T - 1), decision D5.
+        # Real line: affine image of (x, t) in [-1, 1]^2.
+        d_in=2 if real_line else 3,
         d_out=1,
         n=int(hparams["net_width"]),
         M=int(hparams["net_blocks"]),
@@ -761,10 +1030,28 @@ def build_ansatz(variant: dict, problem: dict, hparams: dict, *, model_seed: int
             [torch.cos(x), torch.sin(x), 2.0 * t / terminal_time - 1.0], dim=1
         )
 
+    def window_affine_map(xt: torch.Tensor) -> torch.Tensor:
+        """Affine image of (x, t) in [-1, 1]^2, over the spatial window and (0, T)."""
+        window_lower, window_upper = problem["spatial_window"]
+        x = xt[:, 0:1]
+        t = xt[:, 1:2]
+        return torch.cat(
+            [
+                (2.0 * x - (window_lower + window_upper)) / (window_upper - window_lower),
+                2.0 * t / terminal_time - 1.0,
+            ],
+            dim=1,
+        )
+
     extension_field = None
     extension_fn = None
     extension_derivative_fns = None
-    if variant["extension"] in ("split_frozen_singular", "split_frozen_mean"):
+    if real_line:
+        extension_field = build_real_line_extension_field(variant, problem)
+        if extension_field is not None:
+            extension_fn = extension_field.field
+            extension_derivative_fns = extension_field.derivative_callables()
+    elif variant["extension"] in ("split_frozen_singular", "split_frozen_mean"):
         # Variable-coefficient cells: h = e^{(T-t)A} g for the constant-
         # coefficient operator A obtained by freezing the principal coefficient
         # at the datum's singular point or at its mean -- the exact-solution
@@ -815,7 +1102,7 @@ def build_ansatz(variant: dict, problem: dict, hparams: dict, *, model_seed: int
         problem["terminal_datum"],
         interp_coeff,
         form=variant["form"],
-        normalizer=periodic_feature_map,
+        normalizer=window_affine_map if real_line else periodic_feature_map,
         extension_fn=extension_fn,
         extension_derivative_fns=extension_derivative_fns,
     )
@@ -840,12 +1127,12 @@ def make_samplers(problem: dict, hparams: dict, *, sampler_seed: int, device):
         return torch.rand(n, generator=generator)
 
     def sample_interior():
-        x = (TWO_PI * _uniform(n_interior)).to(device).requires_grad_(True)
+        x = scale_unit_samples_to_space(_uniform(n_interior), problem).to(device).requires_grad_(True)
         t = (terminal_time * _uniform(n_interior)).to(device).requires_grad_(True)
         return x, t
 
     def sample_terminal():
-        x = (TWO_PI * _uniform(n_terminal)).to(device)
+        x = scale_unit_samples_to_space(_uniform(n_terminal), problem).to(device)
         t = torch.full((n_terminal,), terminal_time, device=device)
         return x, t
 
@@ -900,7 +1187,9 @@ def train_variant(
     validation_generator.manual_seed(validation_seed)
     n_validation = int(hparams["n_validation"])
     validation_every = int(hparams["validation_every"])
-    x_validation = TWO_PI * torch.rand(n_validation, generator=validation_generator)
+    x_validation = scale_unit_samples_to_space(
+        torch.rand(n_validation, generator=validation_generator), problem
+    )
     t_validation = problem["terminal_time"] * torch.rand(
         n_validation, generator=validation_generator
     )
@@ -1130,9 +1419,9 @@ def evaluate_best_state_channels(model, problem, hparams, *, evaluation_seed, de
     generator.manual_seed(evaluation_seed)
     n_interior = int(hparams["n_interior"])
     terminal_time = problem["terminal_time"]
-    x = (TWO_PI * torch.rand(n_interior, generator=generator)).to(
-        device
-    ).requires_grad_(True)
+    x = scale_unit_samples_to_space(
+        torch.rand(n_interior, generator=generator), problem
+    ).to(device).requires_grad_(True)
     t = (terminal_time * torch.rand(n_interior, generator=generator)).to(
         device
     ).requires_grad_(True)
@@ -1150,10 +1439,24 @@ def evaluate_best_state_channels(model, problem, hparams, *, evaluation_seed, de
 # Metrics (vs the exact finite component sum, specification Section 3)
 # ===========================================================================
 
-def _evaluation_grid():
+def _evaluation_grid(problem: dict | None = None):
+    """Uniform spatial grid: ``[0, 2 pi)`` on the circle, the closed window on the line."""
     import numpy as np
 
+    if problem is not None and is_real_line_problem(problem):
+        window_lower, window_upper = problem["spatial_window"]
+        return np.linspace(window_lower, window_upper, EVALUATION_GRID_SIZE)
     return np.linspace(0.0, TWO_PI, EVALUATION_GRID_SIZE, endpoint=False)
+
+
+def _real_line_corner_mask(x_grid, problem):
+    """Boolean mask of the union of the windows |x - a_k| <= pi/16 around the kink points."""
+    import numpy as np
+
+    kink_points = np.asarray(problem["butterfly_datum"].kink_points)
+    return np.any(
+        np.abs(x_grid[:, None] - kink_points[None, :]) <= CORNER_WINDOW_HALF_WIDTH, axis=1
+    )
 
 
 def _circle_corner_mask(x_grid, corner_point):
@@ -1180,7 +1483,7 @@ def compute_error_metrics(model, problem) -> dict:
     device = next(model.parameters()).device
     terminal_time = problem["terminal_time"]
     exact_field = problem["exact_field"]
-    x64 = _evaluation_grid()
+    x64 = _evaluation_grid(problem)
     x32 = torch.as_tensor(x64, dtype=torch.float32, device=device)
     time_slices = np.linspace(0.0, terminal_time, EVALUATION_TIME_SLICE_COUNT)
 
@@ -1203,7 +1506,10 @@ def compute_error_metrics(model, problem) -> dict:
         np.linalg.norm(error[0]) / np.linalg.norm(reference[0])
     )
 
-    corner_mask = _circle_corner_mask(x64, problem["corner_point"])
+    if is_real_line_problem(problem):
+        corner_mask = _real_line_corner_mask(x64, problem)
+    else:
+        corner_mask = _circle_corner_mask(x64, problem["corner_point"])
     corner_rel_l2_per_slice = [
         float(
             np.linalg.norm(error[j, corner_mask])
@@ -1232,13 +1538,25 @@ def compute_error_metrics(model, problem) -> dict:
         )
     tc_l2 = 0.0  # asserted exact equality above
 
-    return {
+    error_metrics = {
         "rel_l2": rel_l2,
         "rel_l2_t0": rel_l2_t0,
         "rel_l2_corner_t0": rel_l2_corner_t0,
         "rel_l2_corner_max": rel_l2_corner_max,
         "tc_l2": tc_l2,
     }
+    if is_real_line_problem(problem):
+        # No lateral condition is imposed: the error is also reported on the
+        # interior window, away from the window edges.
+        interior_lower, interior_upper = problem["interior_window"]
+        interior_mask = (x64 >= interior_lower) & (x64 <= interior_upper)
+        error_metrics["rel_l2_interior"] = float(
+            np.linalg.norm(error[:, interior_mask]) / np.linalg.norm(reference[:, interior_mask])
+        )
+        error_metrics["rel_l2_interior_t0"] = float(
+            np.linalg.norm(error[0, interior_mask]) / np.linalg.norm(reference[0, interior_mask])
+        )
+    return error_metrics
 
 
 def _generator_applied_to_datum(problem, x64):
@@ -1300,14 +1618,17 @@ def compute_terminal_target(model, problem, variant, extension_field) -> dict:
       distance.
 
     Norms use the continuous convention
-    :math:`\|f\|_{L^2(0,2\pi)} = (2\pi\,\mathrm{mean}(f^2))^{1/2}`.
+    :math:`\|f\|_{L^2(0,2\pi)} = (2\pi\,\mathrm{mean}(f^2))^{1/2}`, with the
+    window length in place of :math:`2\pi` on the real line.  On the real line the
+    profiles are the almost-everywhere values, without the Dirac masses of
+    :math:`g''`.
     """
     import numpy as np
     import torch
 
     device = next(model.parameters()).device
     terminal_time = problem["terminal_time"]
-    x64 = _evaluation_grid()
+    x64 = _evaluation_grid(problem)
     x32 = torch.as_tensor(x64, dtype=torch.float32, device=device)
     tT = torch.full_like(x32, terminal_time)
     with torch.no_grad():
@@ -1322,7 +1643,7 @@ def compute_terminal_target(model, problem, variant, extension_field) -> dict:
     if is_zero_target:
         phi_star = np.zeros_like(x64)
         target_distance = float(
-            math.sqrt(TWO_PI * float(np.mean(phi_terminal**2)))
+            math.sqrt(spatial_domain_measure(problem) * float(np.mean(phi_terminal**2)))
         )
     else:
         if variant["extension"] is not None and problem.get("variable_generator") is not None:
@@ -1371,7 +1692,7 @@ def compute_slices(model, problem, terminal_target: dict) -> dict:
     device = next(model.parameters()).device
     terminal_time = problem["terminal_time"]
     exact_field = problem["exact_field"]
-    x64 = _evaluation_grid()
+    x64 = _evaluation_grid(problem)
     x32 = torch.as_tensor(x64, dtype=torch.float32, device=device)
 
     out = {"x": x64}
@@ -1420,6 +1741,23 @@ def compute_spectra(
     from learning_option_pricing.models.terminal_ansatz import (
         residual_decomposition,
     )
+
+    if is_real_line_problem(problem):
+        # The periodic Fourier decomposition is not defined on the real line; the
+        # archive keeps the circle's keys with empty arrays and an absent cutoff.
+        return {
+            "wavenumber_bins": np.zeros(0),
+            "residual_power": np.zeros(0),
+            "residual_power_per_slice": np.zeros((0, 0)),
+            "forcing_power": np.zeros(0),
+            "cancellation_ratio": np.zeros(0),
+            "cancellation_ratio_running_mean": np.zeros(0),
+            "in_band_mask": np.zeros(0, dtype=bool),
+            "slice_fractions": np.zeros(0),
+            "forcing_defined": np.asarray([False]),
+            "k_star": np.asarray([-1]),
+            "k_star_defined": np.asarray([False]),
+        }
 
     device = next(model.parameters()).device
     terminal_time = problem["terminal_time"]
@@ -1825,7 +2163,10 @@ def main(argv=None) -> int:
     evaluation_seed = derive_seed(args.seed, "evaluation")
 
     logger.info("=" * 72)
-    logger.info("STAGE-2 SPLIT-EXTENSION ABLATION (trained, circle)")
+    logger.info(
+        "STAGE-2 SPLIT-EXTENSION ABLATION (trained, %s)",
+        "real line" if cell_conf.get("spatial_domain") == "real_line" else "circle",
+    )
     logger.info("=" * 72)
     logger.info("  command:   %s", " ".join(sys.argv))
     logger.info("  git:       commit %s (branch %s, tracked modifications %s)",
@@ -1850,9 +2191,13 @@ def main(argv=None) -> int:
     logger.info("  log:       %s", log_path)
 
     problem = build_problem(args.cell, hparams.get("truncation_wavenumber"))
-    logger.info("  datum band edge K: %d%s", problem["band_edge"],
-                " (override of the catalogue value)"
-                if hparams.get("truncation_wavenumber") is not None else "")
+    if is_real_line_problem(problem):
+        logger.info("  spatial window: %s (no lateral condition); interior window: %s",
+                    problem["spatial_window"], problem["interior_window"])
+    else:
+        logger.info("  datum band edge K: %d%s", problem["band_edge"],
+                    " (override of the catalogue value)"
+                    if hparams.get("truncation_wavenumber") is not None else "")
 
     variants_to_run = (
         [catalogue.variant_by_name(args.cell, args.variant)]
@@ -1900,7 +2245,22 @@ def main(argv=None) -> int:
         full_datum_path = (
             problem.get("full_terminal_datum") is not None and variant["extension"] is None
         )
-        if full_datum_path:
+        real_line_limit_path = is_real_line_problem(problem) and (
+            variant["extension"] in (None, "transported_datum")
+        )
+        if real_line_limit_path:
+            forcing_floor_closed_form = closed_form_forcing_floor(variant, problem)
+            line_source_metrics = compute_real_line_limit_metrics(
+                model, problem, variant, extension_field
+            )
+            logger.info(
+                "[%s] limit of a field with zero pointwise residual: predicted relative L2 "
+                "distance to u* %.3e (closed form); measured relative L2 distance of the "
+                "trained field to that limit %.3e", variant["name"],
+                line_source_metrics["line_source_correction_relative_l2"],
+                line_source_metrics["relative_l2_to_line_source_limit"],
+            )
+        elif full_datum_path:
             # The forcing of the unprojected datum has a Dirac part: its energy
             # is infinite and no band-limited closed form represents it.
             forcing_floor_closed_form = float("nan")
@@ -1919,6 +2279,12 @@ def main(argv=None) -> int:
         else:
             forcing_floor_closed_form = closed_form_forcing_floor(variant, problem)
             line_source_metrics = {}
+        if math.isnan(forcing_floor_closed_form) and is_real_line_problem(problem):
+            logger.info(
+                "[%s] closed-form forcing floor not defined: the mean square of the "
+                "pointwise forcing diverges at the terminal slice (recorded as NaN)",
+                variant["name"],
+            )
 
         elapsed = time.time() - start_time
         seconds_per_iteration = elapsed / max(1, hparams["num_iterations"])
