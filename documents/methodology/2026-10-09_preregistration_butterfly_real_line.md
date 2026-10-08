@@ -95,4 +95,32 @@ The predictions rest on different grounds:
 
 ## 5. Closed-form values from the smoke test
 
-To be filled in after the smoke test and before the arrays.
+Filled in after the smoke test (Jean Zay job 804755, revision efadce1, 2026-10-09) and before the arrays. These values are closed forms, independent of training. The smoke log prints three digits. The digits below are recomputed at the same revision with the same functions.
+
+**Limits of the extensions with singular forcing.** Relative distance $\lVert v-u^\star\rVert/\lVert u^\star\rVert$ on the evaluation grid:
+
+| Variant | Limit $v$ | `line_source_correction_relative_l2` | Threshold of B1 and B2 (half of it) |
+|---|---|---|---|
+| `convex_raw` | $u^\star+w$, $c(t)=t/T$ | $0.139849$ | $0.069924$ |
+| `constant_in_time` | $u^\star+w$, $c=1$ | $0.234605$ | $0.117303$ |
+| `transported_datum` | $h_A$ | $0.220874$ | $0.110437$ |
+
+**Closed-form forcing floors.** Mean square of the pointwise forcing on $W\times(0,T)$:
+
+| Variant | Closed-form floor |
+|---|---|
+| `convex_raw` | $8.074\times10^{-2}$ |
+| `constant_in_time` | $8.667\times10^{-2}$ (exact value $0.78/9$) |
+| `transported_datum` | $5\times10^{-34}$ (round-off of zero) |
+| `split_diffusion` | $4.246\times10^{-2}$ (times $\lvert W\rvert T=9$: $0.3821$, the energy $E_V$ of Figure 1 of the paper) |
+| `split_diffusion_advection` | $5.264\times10^{-3}$ |
+| `graded_gaussian_mismatched` | $6.327\times10^{-2}$ |
+| `graded_chen_mangasarian`, `graded_chen_mangasarian_narrow` | not defined (infinite) |
+| `exact_solution` | $6\times10^{-34}$ (round-off of zero) |
+
+**Smoke-test checks.**
+- On the compute node, 98 tests pass (`test/pde/test_real_line_butterfly_fields.py` and `test/experiments`).
+- Every analytic-versus-autograd deviation is at most $1.6\times10^{-15}$.
+- The gradient-norm safeguard does not activate in any run.
+- The cost is about $0.024$ s per iteration on a V100.
+- The smoke runs (300 iterations, `--debug`) also measured errors. They are not results of this study and are not reported.
