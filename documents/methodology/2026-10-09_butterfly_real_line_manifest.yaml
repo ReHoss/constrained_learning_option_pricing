@@ -1,0 +1,17 @@
+# Manifest of the butterfly study on the real line (pre-registration
+# documents/methodology/2026-10-09_preregistration_butterfly_real_line.md).
+butterfly_real_line_study:
+  cell: butterfly_real_line
+  variants: [convex_raw, constant_in_time, transported_datum, split_diffusion, split_diffusion_advection, graded_gaussian_mismatched, graded_chen_mangasarian, graded_chen_mangasarian_narrow, exact_solution]
+  spatial_window: [-4.8, 4.2]   # no lateral condition
+  interior_window: [-3.6, 3.0]
+  seeds: [0, 1, 2]
+  tasks: 27
+  cluster: Jean Zay (IDRIS), NVIDIA V100 (gpu_p13), akz@v100, qos_gpu-t3
+  slurm_jobs: {smoke_test: 804755, array: 804861, aggregation: 804862}
+  aggregation: prepost (akz@cpu), split_extension_cross_seed_summary.py --statistics-only, after the array (afterok)
+  code_revision: 8e397c8   # recorded in every metadata.yaml at the --init-only phase
+  run_directories: data/ablation_split_extension_trained/butterfly_real_line_2026-10-09/ (Jean Zay)
+  slurm_logs: data/ablation_split_extension_trained/butterfly_real_line_2026-10-09/slurm/ (Jean Zay)
+  launch_scripts: Jean Zay, $WORK/oym_migration/work/logs/constrained_learning_option_pricing/butterfly_real_line_2026-10-09/
+  status: launched 2026-10-09
