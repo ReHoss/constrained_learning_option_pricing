@@ -124,3 +124,36 @@ Filled in after the smoke test (Jean Zay job 804755, revision efadce1, 2026-10-0
 - The gradient-norm safeguard does not activate in any run.
 - The cost is about $0.024$ s per iteration on a V100.
 - The smoke runs (300 iterations, `--debug`) also measured errors. They are not results of this study and are not reported.
+
+## 6. Outcome (added 2026-10-09, after the runs)
+
+**Runs.** All 27 tasks of Jean Zay job 804861 completed at revision 8e397c8. No task had a non-finite gradient norm or a safeguard activation.
+
+**Aggregation.** The first aggregation (job 804862) failed before reading any value. The closed-form floor had been written to 21 of the 27 summaries as a numpy scalar, which the aggregator's safe loader rejects. The fix is revision 2273e1e. The 21 summaries were rewritten with plain floats, every value was checked unchanged, and the originals were kept as `summary_*.yaml.orig`. The aggregation then ran on `prepost` (job 812533, statistics only): `data/split_extension_cross_seed_summary/2026-10-09-07-33-45Z_butterfly_real_line_statistics/`.
+
+Medians over the seeds $\{0,1,2\}$, with quartiles for $\delta$. All values are measured, except the closed-form column.
+
+| Variant | $\delta$ (`rel_l2`) | $\delta$ on $W_{\mathrm{int}}$ | Validation residual at the retained state | Distance of the limit to $u^\star$ (closed form) | Distance of the trained field to the limit |
+|---|---|---|---|---|---|
+| `convex_raw` | $0.1399$ $[0.1397,0.1401]$ | $0.1399$ | $1.43\times10^{-4}$ | $0.1398$ | $1.18\times10^{-3}$ |
+| `constant_in_time` | $0.2347$ $[0.2337,0.2347]$ | $0.2347$ | $3.14\times10^{-4}$ | $0.2346$ | $1.61\times10^{-3}$ |
+| `transported_datum` | $0.2209$ $[0.2209,0.2209]$ | $0.2209$ | $7.80\times10^{-10}$ | $0.2209$ | $2.98\times10^{-5}$ |
+| `split_diffusion` | $5.72\times10^{-4}$ $[4.82,5.84]\times10^{-4}$ | $4.78\times10^{-4}$ | $5.34\times10^{-6}$ | — | — |
+| `split_diffusion_advection` | $4.30\times10^{-4}$ $[3.67,4.37]\times10^{-4}$ | $3.77\times10^{-4}$ | $8.67\times10^{-7}$ | — | — |
+| `graded_gaussian_mismatched` | $8.52\times10^{-4}$ $[7.45,9.13]\times10^{-4}$ | $7.88\times10^{-4}$ | $4.26\times10^{-5}$ | — | — |
+| `graded_chen_mangasarian` | $5.09\times10^{-3}$ $[4.47,8.23]\times10^{-3}$ | $4.63\times10^{-3}$ | $4.38\times10^{-4}$ | — | — |
+| `graded_chen_mangasarian_narrow` | $8.59\times10^{-3}$ $[7.06,9.84]\times10^{-3}$ | $8.41\times10^{-3}$ | $1.37\times10^{-3}$ | — | — |
+| `exact_solution` | $3.25\times10^{-5}$ $[2.41,4.14]\times10^{-5}$ | $2.50\times10^{-5}$ | $7.60\times10^{-10}$ | — | — |
+
+The test of each prediction:
+- **B1 holds.** For `transported_datum`, $\delta\simeq0.2209$, above the threshold $0.1104$. The trained field lies at relative distance $3.0\times10^{-5}$ from $h_A$. Its validation residual, $7.80\times10^{-10}$, is that of the exact-solution control, $7.60\times10^{-10}$, with an error larger by a factor of about $6.8\times10^{3}$.
+- **B2 holds.**
+  - For `constant_in_time`, $\delta\simeq0.2347$, above $0.1173$. For `convex_raw`, $\delta\simeq0.1399$, above $0.0699$.
+  - The measured $\delta$ coincides with the closed-form distance of the limit to $u^\star$ to three digits for both.
+  - The trained fields lie at $1.6\times10^{-3}$ and $1.2\times10^{-3}$ from $u^\star+w$.
+- **B3 holds.** $\delta$ of `split_diffusion` is smaller by factors of about $2.4\times10^{2}$ (`convex_raw`), $4.1\times10^{2}$ (`constant_in_time`) and $3.9\times10^{2}$ (`transported_datum`).
+- **B4 holds.** $\delta$ of `split_diffusion` is smaller by factors of about $1.5$ (`graded_gaussian_mismatched`), $8.9$ (`graded_chen_mangasarian`) and $15$ (`graded_chen_mangasarian_narrow`). Against the graded Gaussian, the interquartile ranges over the three seeds are disjoint.
+
+**On the interior window.** Every inequality of B1–B4 also holds with $\delta$ evaluated on $W_{\mathrm{int}}$, which was reported without being a prediction.
+
+**Without a prediction.** `split_diffusion_advection` (remainder of order zero) has a smaller $\delta$ than `split_diffusion`, $4.30\times10^{-4}$ against $5.72\times10^{-4}$. The exact-solution control gives the optimiser-noise floor $\delta\simeq3.2\times10^{-5}$.

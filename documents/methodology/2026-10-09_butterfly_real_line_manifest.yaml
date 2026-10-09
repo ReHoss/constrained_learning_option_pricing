@@ -8,10 +8,12 @@ butterfly_real_line_study:
   seeds: [0, 1, 2]
   tasks: 27
   cluster: Jean Zay (IDRIS), NVIDIA V100 (gpu_p13), akz@v100, qos_gpu-t3
-  slurm_jobs: {smoke_test: 804755, array: 804861, aggregation: 804862}
+  slurm_jobs: {smoke_test: 804755, array: 804861, aggregation_failed: 804862, aggregation: 812533}
   aggregation: prepost (akz@cpu), split_extension_cross_seed_summary.py --statistics-only, after the array (afterok)
   code_revision: 8e397c8   # recorded in every metadata.yaml at the --init-only phase
   run_directories: data/ablation_split_extension_trained/butterfly_real_line_2026-10-09/ (Jean Zay)
   slurm_logs: data/ablation_split_extension_trained/butterfly_real_line_2026-10-09/slurm/ (Jean Zay)
   launch_scripts: Jean Zay, $WORK/oym_migration/work/logs/constrained_learning_option_pricing/butterfly_real_line_2026-10-09/
-  status: launched 2026-10-09
+  summary_repair: 21 summaries rewritten with plain floats after revision 2273e1e (values checked unchanged; originals kept as summary_*.yaml.orig)
+  aggregation_output: data/split_extension_cross_seed_summary/2026-10-09-07-33-45Z_butterfly_real_line_statistics (copied to the laptop; no run directory copied)
+  status: completed 2026-10-09; predictions B1-B4 hold (pre-registration section 6)
