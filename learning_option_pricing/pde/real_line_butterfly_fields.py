@@ -588,4 +588,4 @@ def window_mean_square_of_pointwise_values(
         )
         spatial_integral = float(_trapezoidal_rule(values * values, grid))
         integral += weight * 2.0 * tau * spatial_integral
-    return integral / ((upper - lower) * terminal_time)
+    return float(integral / ((upper - lower) * terminal_time))

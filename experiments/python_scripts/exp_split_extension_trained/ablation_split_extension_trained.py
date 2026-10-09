@@ -1884,12 +1884,32 @@ def save_variant(variant_dir: Path, model, history, metrics, slices, spectra):
     np.savez_compressed(variant_dir / "spectra.npz", **spectra)
 
 
+def plain_python_value(value):
+    """Convert numpy scalars and arrays, recursively, to plain Python values.
+
+    ``yaml.dump`` writes a numpy scalar with a ``!!python/object/apply`` tag,
+    which ``yaml.safe_load`` (the aggregator's loader) rejects; the summary must
+    therefore hold plain floats, integers, booleans, strings and ``None`` only.
+    """
+    import numpy as np
+
+    if isinstance(value, dict):
+        return {key: plain_python_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain_python_value(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return plain_python_value(value.tolist())
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
 def write_summary(path: Path, payload: dict):
     import yaml
 
     with open(path, "w") as f:
         yaml.dump(
-            payload, f, default_flow_style=False, sort_keys=False,
+            plain_python_value(payload), f, default_flow_style=False, sort_keys=False,
             width=float("inf"),
         )
 

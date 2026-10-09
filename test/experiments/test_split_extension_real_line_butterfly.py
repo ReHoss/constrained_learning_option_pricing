@@ -133,3 +133,18 @@ def test_spectra_are_recorded_as_absent(problem):
     assert not bool(spectra["forcing_defined"][0])
     assert int(spectra["k_star"][0]) == -1
     assert runner.build_closed_form_extension(variant, problem) is None
+
+
+def test_summary_holds_plain_values_that_the_safe_loader_reads(problem, tmp_path):
+    import yaml
+
+    floor = runner.closed_form_forcing_floor(catalogue.variant_by_name(CELL, "split_diffusion"), problem)
+    assert type(floor) is float
+    payload = {"split_diffusion": {"forcing_floor_closed_form": np.float64(0.5),
+                                   "n_parameters": np.int64(3), "flag": np.bool_(True),
+                                   "values": np.array([1.0, 2.0])}}
+    summary_path = tmp_path / "summary_split_diffusion.yaml"
+    runner.write_summary(summary_path, payload)
+    loaded = yaml.safe_load(summary_path.read_text())
+    assert loaded == {"split_diffusion": {"forcing_floor_closed_form": 0.5, "n_parameters": 3,
+                                          "flag": True, "values": [1.0, 2.0]}}
