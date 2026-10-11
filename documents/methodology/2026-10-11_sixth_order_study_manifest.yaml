@@ -1,0 +1,16 @@
+# Manifest of the sixth-order study (pre-registration
+# documents/methodology/2026-10-11_preregistration_sixth_order_study.md).
+sixth_order_study:
+  cell: sixth_order_bernoulli_bandlimited   # A = 0.01 d^6/dx^6 - 0.05 d^4_xxxx, g_128, T = 1
+  variants: [convex_raw, constant_in_time, split_principal, exact_solution]
+  seeds: [0, 1, 2]
+  tasks: 12
+  cluster: Jean Zay (IDRIS), NVIDIA V100 (gpu_p13), akz@v100, qos_gpu-t3, time limit 07:00:00 per task
+  slurm_jobs: {smoke_test: 893740, array: 893851}
+  smoke_test: qos_gpu-dev, 300 iterations per variant with --debug; code paths, startup cross-check and closed-form floors checked; 0.61-0.74 s per update on V100; values not reported
+  code_revision: dd09265   # recorded in every metadata.yaml at the --init-only phase
+  run_directories: data/ablation_split_extension_trained/sixth_order_study_2026-10-11/ (Jean Zay)
+  slurm_logs: data/ablation_split_extension_trained/sixth_order_study_2026-10-11/slurm/ (Jean Zay)
+  launch_scripts: Jean Zay, $WORK/oym_migration/work/logs/constrained_learning_option_pricing/sixth_order_study_2026-10-11/
+  aggregation: not chained; the aggregator has cell-specific code, so the summary_*.yaml files are read directly
+  status: launched 2026-10-11, 12 tasks running
