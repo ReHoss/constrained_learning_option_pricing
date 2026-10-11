@@ -13,4 +13,5 @@ sixth_order_study:
   slurm_logs: data/ablation_split_extension_trained/sixth_order_study_2026-10-11/slurm/ (Jean Zay)
   launch_scripts: Jean Zay, $WORK/oym_migration/work/logs/constrained_learning_option_pricing/sixth_order_study_2026-10-11/
   aggregation: not chained; the aggregator has cell-specific code, so the summary_*.yaml files are read directly
-  status: launched 2026-10-11, 12 tasks running
+  run_directories_local: data/ablation_split_extension_trained/sixth_order_study_2026-10-11/ (copied 2026-10-11, no checkpoint files exist, _debug_ excluded)
+  status: completed 2026-10-11, 12 admissible runs; predictions S1-S4 hold (pre-registration section 5)
