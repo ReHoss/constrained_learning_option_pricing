@@ -111,7 +111,11 @@ EXTENSION_FIELD_KINDS = (
 # Orders 0, 1, 2 (stage-2 cells) and 4 (fourth-order cell, added 2026-09-29).
 # Order 3 is excluded: its symbol -i c_3 k^3 is a cubic phase, which the
 # linear phase-advection form of the component sum does not represent.
-SUPPORTED_GENERATOR_ORDERS = (0, 1, 2, 4)
+# Order 6 added 2026-10-11 for the sixth-order cell (even orders above 2 are
+# summed into the decay rates and the forcing; odd orders above 1 are not used).
+SUPPORTED_GENERATOR_ORDERS = (0, 1, 2, 4, 6)
+# Even orders above 2 whose terms enter the exact decay rates and the forcing.
+HIGHER_EVEN_GENERATOR_ORDERS = (4, 6)
 
 
 def principal_order(generator_coefficients: dict[int, float]) -> int:
@@ -123,7 +127,8 @@ def even_order_decay_rate(order: int, coefficient: float, wavenumbers):
     r"""Decay rate :math:`-c_j (-1)^{j/2} k^j` of the even-order term
     :math:`c_j\,\partial_x^j` (its symbol on :math:`e^{ikx}` is
     :math:`c_j (ik)^j = c_j (-1)^{j/2} k^j`); for :math:`j = 2` it is
-    :math:`c_2 k^2`, for :math:`j = 4` it is :math:`-c_4 k^4`."""
+    :math:`c_2 k^2`, for :math:`j = 4` it is :math:`-c_4 k^4`, for :math:`j = 6`
+    it is :math:`c_6 k^6`."""
     return -coefficient * (-1.0) ** (order // 2) * np.asarray(wavenumbers, dtype=np.float64) ** order
 
 
@@ -227,8 +232,9 @@ def _validated_generator_coefficients(
     The mapping must use the orders of :data:`SUPPORTED_GENERATOR_ORDERS`,
     must contain an even order at least 2, and its principal (highest even)
     term must be dissipative: :math:`c_2 > 0` for a second-order generator,
-    :math:`c_4 < 0` for a fourth-order one (the standing assumption of the
-    stage-2 specification, Section 0, extended to order 4).
+    :math:`c_4 < 0` for a fourth-order one, :math:`c_6 > 0` for a sixth-order
+    one (the standing assumption of the stage-2 specification, Section 0,
+    extended to orders 4 and 6).
 
     Raises:
         ValueError: On an empty mapping, an unsupported order, a missing
@@ -244,16 +250,16 @@ def _validated_generator_coefficients(
                 f"{SUPPORTED_GENERATOR_ORDERS}, received order {order!r}"
             )
         normalised[int(order)] = float(coefficient)
-    if not any(order in normalised for order in (2, 4)):
+    if not any(order in normalised for order in (2, 4, 6)):
         raise ValueError(
-            "generator_coefficients must contain an even order 2 or 4 "
+            "generator_coefficients must contain an even order 2, 4 or 6 "
             f"(the principal part), received orders {sorted(generator_coefficients)}"
         )
     top = principal_order(normalised)
     if even_order_decay_rate(top, normalised[top], 1.0) <= 0.0:
         raise ValueError(
             f"the principal order-{top} coefficient {normalised[top]!r} is not "
-            "dissipative (need c_2 > 0 or c_4 < 0)"
+            "dissipative (need c_2 > 0, c_4 < 0 or c_6 > 0)"
         )
     return normalised
 
@@ -380,6 +386,7 @@ class PeriodicExtensionField:
         self.diffusivity = normalised_coefficients.get(2, 0.0)
         self.principal_order = principal_order(normalised_coefficients)
         self.fourth_order_coefficient = normalised_coefficients.get(4, 0.0)
+        self.sixth_order_coefficient = normalised_coefficients.get(6, 0.0)
         self.advection_coefficient = normalised_coefficients.get(1, 0.0)
         self.reaction_coefficient = normalised_coefficients.get(0, 0.0)
         self.comparison_diffusivity = (
@@ -416,8 +423,12 @@ class PeriodicExtensionField:
             decay_rates = (
                 self.diffusivity * wavenumbers**2
                 + even_order_decay_rate(4, self.fourth_order_coefficient, wavenumbers)
-                - self.reaction_coefficient
             )
+            if 6 in normalised_coefficients:
+                decay_rates = decay_rates + even_order_decay_rate(
+                    6, self.sixth_order_coefficient, wavenumbers
+                )
+            decay_rates = decay_rates - self.reaction_coefficient
             worst_index = int(np.argmin(decay_rates))
             if decay_rates[worst_index] < -DISSIPATIVITY_TOLERANCE:
                 raise ValueError(
@@ -672,11 +683,41 @@ class PeriodicExtensionField:
         )
         return self._cast_back(component_values.sum(-1), is_torch, dtype)
 
+    def fifth_space_derivative(self, x, t):
+        r"""Analytic :math:`\partial_x^5 h(x, t)`; for a component
+        :math:`a\cos\theta + b\sin\theta` it is :math:`k^5 (-a\sin\theta + b\cos\theta)`."""
+        decay, cos_theta, sin_theta, arrays, is_torch, dtype, _ = (
+            self._component_terms(x, t)
+        )
+        component_values = decay * (
+            arrays["wavenumbers"] ** 5
+            * (
+                -arrays["cosine_amplitudes"] * sin_theta
+                + arrays["sine_amplitudes"] * cos_theta
+            )
+        )
+        return self._cast_back(component_values.sum(-1), is_torch, dtype)
+
+    def sixth_space_derivative(self, x, t):
+        r"""Analytic :math:`\partial_x^6 h(x, t)`; for a component
+        :math:`a\cos\theta + b\sin\theta` it is :math:`-k^6 (a\cos\theta + b\sin\theta)`."""
+        decay, cos_theta, sin_theta, arrays, is_torch, dtype, _ = (
+            self._component_terms(x, t)
+        )
+        component_values = -decay * (
+            arrays["wavenumbers"] ** 6
+            * (
+                arrays["cosine_amplitudes"] * cos_theta
+                + arrays["sine_amplitudes"] * sin_theta
+            )
+        )
+        return self._cast_back(component_values.sum(-1), is_torch, dtype)
+
     def forcing_values(self, x, t):
-        r"""Forcing :math:`(P h)(x, t) = \partial_t h + c_4\,\partial_x^4 h
-        + \nu\,\partial_{xx} h + \mu\,\partial_x h + r_0 h`, assembled from the
-        analytic derivatives (the order-4 term only for a fourth-order generator,
-        so the order-2 assembly is unchanged).
+        r"""Forcing :math:`(P h)(x, t) = \partial_t h + c_6\,\partial_x^6 h
+        + c_4\,\partial_x^4 h + \nu\,\partial_{xx} h + \mu\,\partial_x h + r_0 h`,
+        assembled from the analytic derivatives (the order-4 and order-6 terms
+        only when present, so the order-2 assembly is unchanged).
         """
         forcing = (
             self.time_derivative(x, t)
@@ -686,6 +727,8 @@ class PeriodicExtensionField:
         )
         if 4 in self.generator_coefficients:
             forcing = forcing + self.fourth_order_coefficient * self.fourth_space_derivative(x, t)
+        if 6 in self.generator_coefficients:
+            forcing = forcing + self.sixth_order_coefficient * self.sixth_space_derivative(x, t)
         return forcing
 
     def terminal_datum_values(self, x):
@@ -726,9 +769,12 @@ class PeriodicExtensionField:
             "dx": self.space_derivative,
             "dxx": self.second_space_derivative,
         }
-        if 4 in self.generator_coefficients:
+        if 4 in self.generator_coefficients or 6 in self.generator_coefficients:
             callables["dxxx"] = self.third_space_derivative
             callables["dxxxx"] = self.fourth_space_derivative
+        if 6 in self.generator_coefficients:
+            callables["dxxxxx"] = self.fifth_space_derivative
+            callables["dxxxxxx"] = self.sixth_space_derivative
         return callables
 
 

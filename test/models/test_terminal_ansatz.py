@@ -388,6 +388,36 @@ def test_cross_check_passes_for_fourth_order_split_extension():
         )
 
 
+def test_cross_check_passes_for_sixth_order_split_extension():
+    """The analytic bypass with the optional derivatives up to order 6 equals the
+    autograd route on the sixth-order generator (added 2026-10-11)."""
+    from learning_option_pricing.pde import build_split_principal_extension_field
+
+    generator_sixth_order = {6: 0.01, 4: -0.05}
+    torch.manual_seed(0)
+    net = ResNet(d_in=2, d_out=1, n=16, M=2, L=2).double()
+    extension_field = build_split_principal_extension_field(
+        generator_sixth_order,
+        bandlimited_bernoulli_cosine_coefficients(6),
+        terminal_time=CIRCLE_TERMINAL_TIME,
+    )
+    callables = extension_field.derivative_callables()
+    assert set(callables) == {"dt", "dx", "dxx", "dxxx", "dxxxx", "dxxxxx", "dxxxxxx"}
+    ansatz = TerminalAnsatz(
+        net,
+        None,
+        make_interpolation_coefficient("linear", T=CIRCLE_TERMINAL_TIME),
+        form="hard_constant",
+        extension_fn=extension_field.field,
+        extension_derivative_fns=callables,
+    )
+    x, t = _circle_batch()
+    measured_deviation = cross_check_extension_forcing_analytic_versus_autograd(
+        ansatz, x, t, generator_coefficients=generator_sixth_order
+    )
+    assert measured_deviation <= 1e-10
+
+
 def test_residual_loss_in_chunks_equals_the_unchunked_mean():
     """The chunked validation criterion is the plain mean squared residual."""
     from learning_option_pricing.models.terminal_ansatz import residual_loss_in_chunks

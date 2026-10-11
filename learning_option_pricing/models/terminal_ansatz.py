@@ -57,10 +57,13 @@ INTERPOLATION_KINDS = ("linear", "exponential")
 # Exact key set of the analytic-derivative bypass mapping accepted by
 # TerminalAnsatz(extension_derivative_fns=...).
 EXTENSION_DERIVATIVE_KEYS = ("dt", "dx", "dxx")
-# Optional third and fourth space derivatives of the extension, required only
-# when the generator has an order-3 or order-4 coefficient (added 2026-09-29
-# for the fourth-order cell).
-OPTIONAL_EXTENSION_DERIVATIVE_KEYS = ("dxxx", "dxxxx")
+# Optional space derivatives of orders 3 to 6 of the extension, each required
+# only when the generator has a coefficient of that order (orders 3 and 4
+# added 2026-09-29 for the fourth-order cell, orders 5 and 6 added 2026-10-11
+# for the sixth-order cell).
+OPTIONAL_EXTENSION_DERIVATIVE_KEYS = ("dxxx", "dxxxx", "dxxxxx", "dxxxxxx")
+# Differential order of each optional derivative key.
+HIGHER_ORDER_EXTENSION_DERIVATIVE_KEYS = ((3, "dxxx"), (4, "dxxxx"), (5, "dxxxxx"), (6, "dxxxxxx"))
 
 
 # ---------------------------------------------------------------------------
@@ -300,16 +303,16 @@ def _resolve_generator_coefficients(
 def _analytic_higher_order_forcing(
     derivative_fns, coefficients, coord_col, t_col, output_shape
 ):
-    r"""Analytic :math:`c_3\,\partial_x^3\Psi + c_4\,\partial_x^4\Psi` from the
-    optional closed-form derivatives ``dxxx`` / ``dxxxx``.
+    r"""Analytic :math:`\sum_{3 \le j \le 6} c_j\,\partial_x^j\Psi` from the
+    optional closed-form derivatives ``dxxx`` to ``dxxxxxx``.
 
-    Returns a zero tensor when the generator has no order-3 or order-4
-    coefficient.  Raises :class:`ValueError` when such a coefficient is present
+    Returns a zero tensor when the generator has no coefficient of order 3 or
+    higher.  Raises :class:`ValueError` when such a coefficient is present
     but the matching derivative callable was not supplied (never silently
     dropped).
     """
     channel = torch.zeros(output_shape, dtype=coord_col.dtype, device=coord_col.device)
-    for order, key in ((3, "dxxx"), (4, "dxxxx")):
+    for order, key in HIGHER_ORDER_EXTENSION_DERIVATIVE_KEYS:
         if order not in coefficients:
             continue
         if key not in derivative_fns:

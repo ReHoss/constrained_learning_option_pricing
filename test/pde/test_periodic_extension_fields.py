@@ -619,3 +619,98 @@ def test_g3_field_matches_spectral_forcing(extension_kind):
 def test_split_diffusion_kinds_refuse_a_fourth_order_generator():
     with pytest.raises(ValueError):
         _build_g3_field("split_diffusion")
+
+
+# ---------------------------------------------------------------------------
+# Sixth-order generator (added 2026-10-11)
+# ---------------------------------------------------------------------------
+
+GENERATOR_SIXTH_ORDER = {6: 0.01, 4: -0.05}
+
+
+def _build_sixth_order_field(extension_kind, truncation_wavenumber=10):
+    return PeriodicExtensionField(
+        GENERATOR_SIXTH_ORDER,
+        bandlimited_bernoulli_cosine_coefficients(truncation_wavenumber),
+        extension_kind=extension_kind,
+        terminal_time=TERMINAL_TIME,
+    )
+
+
+@pytest.mark.parametrize("extension_kind", ["split_principal", "exact_solution"])
+def test_sixth_order_higher_derivatives_match_autograd(extension_kind):
+    field = _build_sixth_order_field(extension_kind)
+    generator = torch.Generator().manual_seed(2)
+    x = (TWO_PI * torch.rand(128, generator=generator, dtype=torch.float64)).requires_grad_(True)
+    t = TERMINAL_TIME * torch.rand(128, generator=generator, dtype=torch.float64)
+    derivative = field.field(x, t)
+    autograd_derivatives = []
+    for _ in range(6):
+        (derivative,) = torch.autograd.grad(derivative.sum(), (x,), create_graph=True)
+        autograd_derivatives.append(derivative)
+    for analytic, reference in (
+        (field.fourth_space_derivative(x, t), autograd_derivatives[3]),
+        (field.fifth_space_derivative(x, t), autograd_derivatives[4]),
+        (field.sixth_space_derivative(x, t), autograd_derivatives[5]),
+    ):
+        deviation = (
+            torch.linalg.vector_norm(analytic.detach() - reference.detach())
+            / torch.linalg.vector_norm(reference.detach())
+        ).item()
+        assert deviation <= 1.0e-10, (extension_kind, deviation)
+
+
+def test_sixth_order_split_principal_forcing_is_remainder_applied():
+    """The split retaining d^6/dx^6 has forcing P h = -0.05 d^4_xxxx h."""
+    split = _build_sixth_order_field("split_principal")
+    x = np.linspace(0.0, TWO_PI, 97)
+    for time in (0.0, 0.5, 0.95):
+        t = np.full_like(x, time)
+        np.testing.assert_allclose(
+            split.forcing_values(x, t),
+            -0.05 * split.fourth_space_derivative(x, t),
+            rtol=1e-11,
+            atol=1e-13,
+        )
+
+
+def test_sixth_order_exact_solution_forcing_vanishes():
+    field = _build_sixth_order_field("exact_solution")
+    x = np.linspace(0.0, TWO_PI, 97)
+    t = np.full_like(x, 0.3)
+    scale = float(np.max(np.abs(field.field(x, t))))
+    assert float(np.max(np.abs(field.forcing_values(x, t)))) <= 1.0e-12 * max(scale, 1.0)
+
+
+def test_sixth_order_split_field_matches_spectral_forcing():
+    from learning_option_pricing.pde import ConstantCoefficientGenerator
+
+    truncation_wavenumber = 10
+    field = _build_sixth_order_field("split_principal", truncation_wavenumber)
+    generator = ConstantCoefficientGenerator(GENERATOR_SIXTH_ORDER, name="sixth order")
+    spectral = SplitSemigroupExtension(
+        PeriodisedBernoulliDatum(1), generator, [6], TERMINAL_TIME
+    )
+    x = np.linspace(0.0, TWO_PI, 64, endpoint=False)
+    band = symmetric_wavenumber_band(truncation_wavenumber)
+    for time in (0.0, 0.4, 0.9):
+        coefficients = spectral.forcing_coefficient(band, time)
+        synthesised = np.real(
+            np.sum(coefficients[None, :] * np.exp(1j * x[:, None] * band[None, :]), axis=1)
+        )
+        np.testing.assert_allclose(
+            field.forcing_values(x, np.full_like(x, time)), synthesised, rtol=1e-10, atol=1e-10
+        )
+
+
+def test_sixth_order_derivative_callables_and_validation():
+    callables = _build_sixth_order_field("split_principal").derivative_callables()
+    assert set(callables) == {"dt", "dx", "dxx", "dxxx", "dxxxx", "dxxxxx", "dxxxxxx"}
+    # A sixth-order coefficient of the wrong sign is antidissipative.
+    with pytest.raises(ValueError):
+        PeriodicExtensionField(
+            {6: -0.01, 4: -0.05},
+            bandlimited_bernoulli_cosine_coefficients(4),
+            extension_kind="split_principal",
+            terminal_time=TERMINAL_TIME,
+        )

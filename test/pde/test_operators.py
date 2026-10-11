@@ -124,10 +124,11 @@ def test_fields_independent_of_one_coordinate_give_zero_channels():
 def test_unsupported_differential_order_raises():
     x, t = _collocation_batch()
     u = _smooth_test_field(x, t)
+    # Orders 5 and 6 are supported since 2026-10-11 (sixth-order cell).
     with pytest.raises(ValueError):
-        constant_coefficient_operator(u, x, t, {5: 1.0, 1: 1.3})
+        constant_coefficient_operator(u, x, t, {7: 1.0, 1: 1.3})
     with pytest.raises(ValueError):
-        constant_coefficient_operator_parts(u, x, t, {6: 1.0})
+        constant_coefficient_operator_parts(u, x, t, {8: 1.0})
 
 
 def test_fourth_order_channel_matches_closed_form():
@@ -154,3 +155,23 @@ def test_fourth_order_channel_matches_closed_form():
     # An order <= 2 generator has an identically zero higher-order channel.
     parts_second_order = constant_coefficient_operator_parts(u, x, t, {2: 0.3, 0: 0.1})
     assert torch.all(parts_second_order["higher_order"] == 0.0)
+
+
+def test_sixth_order_channel_matches_closed_form():
+    """u = e^{-t} sin(3x): d^5 u/dx^5 = 243 e^{-t} cos(3x), d^6 u/dx^6 = -729 e^{-t} sin(3x)
+    (sixth-order cell, added 2026-10-11)."""
+    x, t = _collocation_batch()
+    u = torch.exp(-t) * torch.sin(3.0 * x)
+    coefficients = {6: 0.01, 5: 0.02, 4: -0.05}
+    parts = constant_coefficient_operator_parts(u, x, t, coefficients)
+    expected_higher_order = (
+        0.01 * (-729.0) * torch.exp(-t) * torch.sin(3.0 * x)
+        + 0.02 * 243.0 * torch.exp(-t) * torch.cos(3.0 * x)
+        - 0.05 * 81.0 * torch.exp(-t) * torch.sin(3.0 * x)
+    )
+    torch.testing.assert_close(
+        parts["higher_order"].detach(), expected_higher_order.detach(), rtol=1e-10, atol=1e-10
+    )
+    total = constant_coefficient_operator(u, x, t, coefficients)
+    expected_total = -torch.exp(-t) * torch.sin(3.0 * x) + expected_higher_order
+    torch.testing.assert_close(total.detach(), expected_total.detach(), rtol=1e-10, atol=1e-10)
