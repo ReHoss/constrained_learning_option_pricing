@@ -107,4 +107,36 @@ The tolerances reflect the slowest predicted convergence, which occurs in the ce
 
 ## 4. Outcome
 
-To be written after the run.
+Written 2026-10-11 after Jean Zay job 913797 (`prepost`, account `akz@cpu`, revision `0ece300`, clean tree).
+- The job ran the unit tests of the prediction functions (65 passed), a smoke run with `--debug` at $K\le2^{12}$, then the pre-registered run.
+- The smoke run gave R2 in 11 of its 12 growing cells. It is not a result of the study.
+- The pre-registered run took $110$ s.
+- Run directory: `data/measure_forcing_energy_threshold_grid/2026-10-11-12-32-38-947956Z_log2K22/`, copied to the laptop. Its figures `forcing_energy_against_band_edge.png` and `threshold_table.png` were rebuilt from the saved artefacts with `--replot` after a correction of the position of the threshold marker in the table.
+
+**Checks.** Every energy value is finite. The largest relative discrepancy between the chunked accumulation and `total_strip_forcing_squared` at $K=2^4$ is $\simeq2.5\times10^{-16}$.
+
+**R1 holds in the 45 cells.**
+- In the 33 cells with $e<0$, the largest relative increment over the last dyadic step is $\iota\simeq5.8\times10^{-8}$ ($\alpha=2$, $p=2$, $m_B=3$, $e=-1$). In 26 of these cells, $\iota=0$ in double precision: the summands with $2^{21}<|k|\le2^{22}$ fall below the rounding resolution of the accumulated sum.
+- In the 12 cells with $e>0$, the smallest increment is $\iota\simeq0.292$ ($\alpha=5/4$, $p=3$, $m_B=4$, $e=1/2$), against the predicted $1-2^{-1/2}\simeq0.293$.
+
+**R2 holds in the 12 cells with $e>0$.** The largest deviation of the fitted slope from $e$ is $\simeq2.5\times10^{-3}$, and the largest deviation of $E(K_{\max})/(C\,K_{\max}^{e})$ from $1$ is $\simeq1.6\times10^{-3}$. Both occur at $\alpha=5/4$, $p=3$, $m_B=4$, the cell with the slowest predicted convergence.
+
+| $\alpha$ | $p$ | $m_B$ | Extension | $e$ | Fitted slope | $E(K_{\max})/(C\,K_{\max}^e)$ |
+|---|---|---|---|---|---|---|
+| $5/4$ | $1$ | $2$ | $h=g$ | $2.5$ | $\simeq2.5000$ | $\simeq1.0000$ |
+| $5/4$ | $2$ | $3$ | truncation | $0.5$ | $\simeq0.4997$ | $\simeq1.0002$ |
+| $5/4$ | $2$ | $4$ | $h=g$ | $6.5$ | $\simeq6.5000$ | $\simeq1.0000$ |
+| $5/4$ | $3$ | $4$ | truncation | $0.5$ | $\simeq0.4975$ | $\simeq1.0016$ |
+| $5/4$ | $3$ | $5$ | truncation | $2.5$ | $\simeq2.5000$ | $\simeq1.0000$ |
+| $5/4$ | $3$ | $6$ | $h=g$ | $10.5$ | $\simeq10.5000$ | $\simeq1.0000$ |
+| $2$ | $1$ | $2$ | $h=g$ | $1$ | $\simeq1.0000$ | $\simeq1.0000$ |
+| $2$ | $2$ | $4$ | $h=g$ | $5$ | $\simeq5.0000$ | $\simeq1.0000$ |
+| $2$ | $3$ | $5$ | truncation | $1$ | $\simeq1.0000$ | $\simeq1.0000$ |
+| $2$ | $3$ | $6$ | $h=g$ | $9$ | $\simeq9.0000$ | $\simeq1.0000$ |
+| $3$ | $2$ | $4$ | $h=g$ | $3$ | $\simeq3.0000$ | $\simeq1.0000$ |
+| $3$ | $3$ | $6$ | $h=g$ | $7$ | $\simeq7.0000$ | $\simeq1.0000$ |
+
+**Pattern of the truncations** (measured, and identical to the predicted pattern of Section 3):
+- with the datum of the paper ($\alpha=2$), every truncation gives a bounded $E(K)$ at $p\in\{1,2\}$. At $p=3$ the truncations with $m_B\le4$ are bounded, and the truncation retaining only the term of order six ($m_B=5$, $s_B=2$) grows linearly in $K$;
+- with $\alpha=5/4$, a continuous datum outside $H^1(\mathbb T)$, the bounded truncations are exactly those with $m_B\le p$, the case of Proposition 4.3(ii), at every $p\in\{1,2,3\}$;
+- with $\alpha=3$, every truncation is bounded at $p\le3$, and the constant-in-time extension is bounded at $p=1$.
