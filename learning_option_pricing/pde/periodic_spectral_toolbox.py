@@ -27,7 +27,9 @@ Contents.
   :class:`PeriodisedBernoulliDatum` (single break point, regularity index
   :math:`\rho \in \{0, 1, 2\}`) and :class:`SquareWaveDatum` (two break
   points; the single-break-point floor prediction does not apply verbatim, so
-  that case is measured only).
+  that case is measured only), and :class:`PowerLawCosineDatum` (continuous
+  cosine series with coefficients :math:`|k|^{-\alpha}`, Sobolev critical
+  index :math:`\alpha - 1/2`).
 * :class:`ConstantCoefficientGenerator` — a constant-coefficient spatial
   generator through its Fourier symbol
   :math:`a(k) = \sum_j a_j (ik)^j`, with symbol splitting, dissipativity
@@ -274,6 +276,79 @@ class SquareWaveDatum:
         values = np.where(reduced_points < math.pi, 1.0, -1.0)
         on_break_point = (reduced_points == 0.0) | (reduced_points == math.pi)
         return np.where(on_break_point, 0.0, values)
+
+
+# Amplitude of the cosine series of PowerLawCosineDatum: with it, the decay
+# exponent 2 reproduces the paper's datum sum_k cos(kx) / (pi^2 k^2) exactly.
+POWER_LAW_COSINE_SERIES_AMPLITUDE = 1.0 / math.pi**2
+
+
+class PowerLawCosineDatum:
+    r"""Cosine series :math:`g_\alpha(x) = \sum_{k \ge 1} \cos(kx) / (\pi^2 k^\alpha)` on the circle.
+
+    For a decay exponent :math:`\alpha \in (1, +\infty)` the series converges
+    absolutely and uniformly, so :math:`g_\alpha \in C(\mathbb{T}; \mathbb{R})`.
+    Its exact Fourier coefficients are
+
+    .. math::
+
+        c_0 = 0,
+        \qquad
+        c_k = \frac{1}{2\pi^2 |k|^{\alpha}} \quad (k \ne 0),
+
+    and, with the Sobolev norm
+    :math:`\|g\|_{H^s}^2 = 2\pi \sum_k (1 + |k|)^{2s} |c_k|^2`, the datum
+    belongs to :math:`H^s(\mathbb{T})` exactly for :math:`s < \alpha - 1/2`
+    (attribute :attr:`sobolev_critical_index`).  The exponent
+    :math:`\alpha = 2` gives the datum of the paper (the periodised
+    Bernoulli polynomial of degree two, :class:`PeriodisedBernoulliDatum`
+    with :math:`\rho = 1`, whose coefficients have the same modulus); a
+    non-integer exponent gives a continuous datum whose Sobolev critical
+    index is not of the form :math:`\rho + 1/2`.
+
+    Args:
+        decay_exponent: The exponent :math:`\alpha`, in :math:`(1, +\infty)`.
+
+    Attributes:
+        decay_exponent: The exponent :math:`\alpha`.
+        coefficient_amplitude: The constant :math:`1/(2\pi^2)` such that
+            :math:`|c_k| = \text{amplitude} \cdot |k|^{-\alpha}` for
+            :math:`k \ne 0`.
+        sobolev_critical_index: :math:`\alpha - 1/2`.
+
+    Raises:
+        ValueError: If the exponent does not exceed 1 (the series would not
+            define a continuous datum).
+    """
+
+    def __init__(self, decay_exponent: float) -> None:
+        if not decay_exponent > 1.0:
+            raise ValueError(
+                "decay_exponent must exceed 1 for the cosine series to define a "
+                f"continuous datum, received {decay_exponent!r}"
+            )
+        self.decay_exponent = float(decay_exponent)
+        self.coefficient_amplitude = 0.5 * POWER_LAW_COSINE_SERIES_AMPLITUDE
+        self.sobolev_critical_index = self.decay_exponent - 0.5
+
+    def fourier_coefficients(self, wavenumbers: np.ndarray) -> np.ndarray:
+        r"""Exact Fourier coefficients :math:`c_k` at the given integer wavenumbers.
+
+        Args:
+            wavenumbers: Array of integer wavenumbers (any shape); cast to
+                ``float64`` before exponentiation.
+
+        Returns:
+            ``complex128`` array of the same shape, with :math:`c_0 = 0` and
+            :math:`c_k = 1/(2\pi^2 |k|^\alpha)` for :math:`k \ne 0`.
+        """
+        wavenumber_array = np.asarray(wavenumbers, dtype=np.float64)
+        coefficient_values = np.zeros(wavenumber_array.shape, dtype=np.complex128)
+        nonzero_mask = wavenumber_array != 0.0
+        coefficient_values[nonzero_mask] = self.coefficient_amplitude * np.abs(
+            wavenumber_array[nonzero_mask]
+        ) ** (-self.decay_exponent)
+        return coefficient_values
 
 
 def synthesise_datum_on_grid(

@@ -586,3 +586,181 @@ def total_strip_forcing_squared(
     return float(
         TWO_PI * np.sum(extension.squared_forcing_time_integral(wavenumbers))
     )
+
+
+# ---------------------------------------------------------------------------
+# Predicted growth of the band-truncated forcing energy under refinement
+# ---------------------------------------------------------------------------
+
+
+def _split_forcing_energy_asymptotic_ingredients(
+    generator: ConstantCoefficientGenerator, subset_orders, datum
+) -> tuple[float, float, float]:
+    r"""Exponent, remainder coefficient and smoothing order of the split asymptotics.
+
+    Returns the growth exponent :math:`e`, the coefficient :math:`\gamma_m`
+    of the remainder order :math:`m`, and the smoothing order :math:`s_A`
+    (:math:`p` for a subset containing the maximal order, :math:`0` for the
+    empty subset), see :func:`predicted_split_forcing_energy_exponent`.
+
+    Raises:
+        ValueError: If the subset is neither empty nor contains the maximal
+            order, if it exhausts every order, if the order-:math:`2p`
+            coefficient is not dissipative, or if the datum does not expose
+            ``decay_exponent`` and ``coefficient_amplitude``.
+    """
+    generator_split = generator.split(subset_orders)
+    subset_order_tuple = generator_split.subset_orders
+    if not generator_split.defect_orders:
+        raise ValueError(
+            f"generator '{generator.name}': the subset {subset_order_tuple} "
+            "exhausts every order, so the remainder vanishes and the forcing "
+            "energy is zero; no growth exponent is defined"
+        )
+    if subset_order_tuple and generator.max_order not in subset_order_tuple:
+        raise ValueError(
+            f"generator '{generator.name}': the prediction covers the empty "
+            "subset and the subsets containing the maximal order "
+            f"{generator.max_order}; received {subset_order_tuple}"
+        )
+    if not (hasattr(datum, "decay_exponent") and hasattr(datum, "coefficient_amplitude")):
+        raise ValueError(
+            "the prediction requires a datum with coefficients "
+            "amplitude * |k|^(-decay_exponent), exposing the attributes "
+            "'decay_exponent' and 'coefficient_amplitude'"
+        )
+    remainder_order = int(generator_split.defect_order)
+    smoothing_order = generator.half_order if subset_order_tuple else 0
+    if subset_order_tuple:
+        # Re of gamma_{2p} (ik)^{2p} = gamma_{2p} (-1)^p k^{2p} must be negative.
+        principal_real_part_sign = generator.coefficients[generator.max_order] * (
+            -1.0
+        ) ** generator.half_order
+        if not principal_real_part_sign < 0.0:
+            raise ValueError(
+                f"generator '{generator.name}': the order-{generator.max_order} "
+                "coefficient is not dissipative, so the retained operator is "
+                "not parabolic"
+            )
+    growth_exponent = (
+        2.0 * remainder_order
+        - 2.0 * smoothing_order
+        - 2.0 * float(datum.decay_exponent)
+        + 1.0
+    )
+    remainder_coefficient = float(generator.coefficients[remainder_order])
+    return growth_exponent, remainder_coefficient, float(smoothing_order)
+
+
+def predicted_split_forcing_energy_exponent(
+    generator: ConstantCoefficientGenerator, subset_orders, datum
+) -> float:
+    r"""Predicted growth exponent of the band-truncated forcing energy of a split.
+
+    Setting.  For a datum with Fourier coefficients
+    :math:`|c_k| = A\,|k|^{-\alpha}` (:math:`k \ne 0`, e.g.
+    :class:`~learning_option_pricing.pde.periodic_spectral_toolbox.PowerLawCosineDatum`)
+    and the split extension of a subset of the generator orders that is
+    either empty (constant-in-time extension) or contains the maximal order
+    :math:`2p` (parabolic retained operator), with remainder of order
+    :math:`m` and leading coefficient :math:`\gamma_m`, the band-truncated
+    forcing energy is
+
+    .. math::
+
+        E(K) = 2\pi \sum_{0 < |k| \le K} |b(k)|^2 |c_k|^2\,
+        \varphi(2 \operatorname{Re} a_A(k)).
+
+    As :math:`|k| \to \infty`, :math:`|b(k)|^2 = \gamma_m^2 k^{2m}(1 + O(k^{-2}))`
+    (the cross term of two consecutive orders is purely imaginary), and
+    :math:`\varphi(2\operatorname{Re} a_A(k)) = (2 a_0 k^{2p})^{-1}(1 + O(k^{-2}))`
+    for a parabolic subset with principal constant :math:`a_0 = |\gamma_{2p}|`,
+    or :math:`\varphi = T` for the empty subset.  The summand of the pair
+    :math:`\pm k` is therefore :math:`\gamma_m^2 A^2 \tau\, k^{e - 1}(1 + O(k^{-2}))`
+    with :math:`\tau = 1/a_0` (parabolic) or :math:`\tau = 2T` (empty), and
+
+    .. math::
+
+        e = 2m - 2 s_A - 2\alpha + 1,
+        \qquad
+        s_A = p \text{ (parabolic subset)}, \quad s_A = 0 \text{ (empty subset)}.
+
+    Hence :math:`E(K)` is bounded uniformly in :math:`K` if and only if
+    :math:`e < 0`, that is :math:`m - s_A < \alpha - 1/2`: for a parabolic
+    subset, :math:`s_B = \max(m - p, 0)` is below the Sobolev critical index
+    :math:`\alpha - 1/2` of the datum, as Propositions 4.2(iii) and 4.3(i) of
+    the paper state.  For :math:`e > 0`,
+    :math:`E(K) = C K^e (1 + o(1))` as :math:`K \to \infty`
+    (:func:`predicted_split_forcing_energy_constant`).
+
+    Args:
+        generator: The constant-coefficient generator.
+        subset_orders: The orders retained in the subset (empty, or
+            containing the maximal order).
+        datum: Datum exposing ``decay_exponent`` and ``coefficient_amplitude``.
+
+    Returns:
+        The exponent :math:`e` as a float.
+
+    Raises:
+        ValueError: See :func:`_split_forcing_energy_asymptotic_ingredients`.
+    """
+    growth_exponent, _, _ = _split_forcing_energy_asymptotic_ingredients(
+        generator, subset_orders, datum
+    )
+    return growth_exponent
+
+
+def predicted_split_forcing_energy_constant(
+    generator: ConstantCoefficientGenerator,
+    subset_orders,
+    datum,
+    terminal_time: float = 1.0,
+) -> float:
+    r"""Predicted constant :math:`C` of :math:`E(K) = C K^e (1 + o(1))` for :math:`e > 0`.
+
+    With the notation of :func:`predicted_split_forcing_energy_exponent`,
+    summing :math:`\gamma_m^2 A^2 \tau\, k^{e-1}` over :math:`1 \le k \le K`
+    gives :math:`K^e / e` to leading order, so
+
+    .. math::
+
+        C = \frac{2\pi\, \gamma_m^2 A^2 \tau}{e},
+        \qquad
+        \tau = 1/a_0 \text{ (parabolic subset)}, \quad \tau = 2T \text{ (empty subset)}.
+
+    Args:
+        generator: The constant-coefficient generator.
+        subset_orders: The orders retained in the subset.
+        datum: Datum exposing ``decay_exponent`` and ``coefficient_amplitude``.
+        terminal_time: The horizon :math:`T`, used for the empty subset.
+
+    Returns:
+        The constant :math:`C` as a float.
+
+    Raises:
+        ValueError: If the predicted exponent is not positive (the energy is
+            then bounded, or grows logarithmically when :math:`e = 0`, and no
+            power law holds), or for the reasons of
+            :func:`_split_forcing_energy_asymptotic_ingredients`.
+    """
+    growth_exponent, remainder_coefficient, smoothing_order = (
+        _split_forcing_energy_asymptotic_ingredients(generator, subset_orders, datum)
+    )
+    if not growth_exponent > 0.0:
+        raise ValueError(
+            "the power-law prediction requires a positive growth exponent, "
+            f"received e = {growth_exponent} for generator '{generator.name}' "
+            f"and subset {tuple(subset_orders)}"
+        )
+    if smoothing_order > 0.0:
+        time_factor = 1.0 / generator.principal_constant
+    else:
+        time_factor = 2.0 * float(terminal_time)
+    return float(
+        TWO_PI
+        * remainder_coefficient**2
+        * float(datum.coefficient_amplitude) ** 2
+        * time_factor
+        / growth_exponent
+    )

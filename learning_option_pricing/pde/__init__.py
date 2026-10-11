@@ -34,6 +34,7 @@ from learning_option_pricing.pde.periodic_spectral_toolbox import (
     ConstantCoefficientGenerator,
     GeneratorSplit,
     PeriodisedBernoulliDatum,
+    PowerLawCosineDatum,
     SquareWaveDatum,
     advection_diffusion_reaction,
     biharmonic_advection_reaction,
@@ -55,6 +56,8 @@ from learning_option_pricing.pde.terminal_data_extensions import (
     chen_mangasarian_multiplier,
     chen_mangasarian_multiplier_derivative,
     exponential_time_integral_factor,
+    predicted_split_forcing_energy_constant,
+    predicted_split_forcing_energy_exponent,
     total_strip_forcing_squared,
 )
 from learning_option_pricing.pde.heat_references import (
@@ -124,6 +127,7 @@ __all__ = [
     "GeneratorSplit",
     "PeriodisedBernoulliDatum",
     "SquareWaveDatum",
+    "PowerLawCosineDatum",
     "advection_diffusion_reaction",
     "biharmonic_advection_reaction",
     "black_scholes_log_price",
@@ -143,6 +147,8 @@ __all__ = [
     "chen_mangasarian_multiplier_derivative",
     "exponential_time_integral_factor",
     "total_strip_forcing_squared",
+    "predicted_split_forcing_energy_exponent",
+    "predicted_split_forcing_energy_constant",
     "bermudan_put_value_exact",
     "chen_mangasarian_max",
     "heat_call_exact",
