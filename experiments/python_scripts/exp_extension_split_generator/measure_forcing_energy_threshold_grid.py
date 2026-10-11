@@ -559,13 +559,15 @@ def render_threshold_table_figure(run_directory: Path) -> Path:
                 va="center",
                 fontsize=7,
             )
-        # Dotted stroke: predicted boundary m_B - p = sigma between the last
-        # bounded and the first growing truncation of each row, drawn only
-        # when a growing truncation exists (truncations have m_B <= 2p - 1).
+        # Dotted stroke: predicted threshold, on the cell edge between the last
+        # truncation with m_B - p < sigma and the first one with m_B - p > sigma
+        # (sigma is not an integer), drawn only when a growing truncation exists
+        # (truncations have m_B <= 2p - 1).
         sobolev_critical_index = decay_exponent - 0.5
         for half_order in half_orders:
-            boundary_position = half_order + sobolev_critical_index
-            if boundary_position < 2 * half_order - 1:
+            first_growing_remainder_order = math.ceil(half_order + sobolev_critical_index)
+            boundary_position = first_growing_remainder_order - 0.5
+            if first_growing_remainder_order <= 2 * half_order - 1:
                 ax.plot(
                     [boundary_position, boundary_position],
                     [half_order - 0.5, half_order + 0.5],
@@ -590,7 +592,7 @@ def render_threshold_table_figure(run_directory: Path) -> Path:
             Patch(facecolor=bounded_colour, label=r"Measured: $E(K)$ bounded"),
             Patch(facecolor=growing_colour, label=r"Measured: $E(K)$ grows (fitted slope)"),
             Patch(facecolor="white", edgecolor="black", hatch="//", label=r"Constant in time $h=g$ ($m_B=2p$)"),
-            Line2D([0], [0], color="black", linestyle=":", linewidth=1.6, label=r"Predicted boundary $m_B-p=\alpha-1/2$"),
+            Line2D([0], [0], color="black", linestyle=":", linewidth=1.6, label=r"Predicted threshold: $m_B-p<\alpha-1/2$ on its left"),
         ],
         loc="lower center",
         bbox_to_anchor=(0.5, 0.13),
@@ -606,7 +608,7 @@ def render_threshold_table_figure(run_directory: Path) -> Path:
         legends=[legend],
         axes=list(axes.ravel()),
         formula=(
-            r"measured bounded: $(E(K_{\max})-E(K_{\max}/2))/E(K_{\max})<10^{-3}$; "
+            r"Measured bounded: $(E(K_{\max})-E(K_{\max}/2))/E(K_{\max})<10^{-3}$; "
             r"$e=2(m_B-s_A-\alpha+1/2)$ predicted exponent, $s_A=p$ (truncation) or $0$ ($h=g$)"
             "\n"
             r"Propositions 4.2(iii) and 4.3: for a truncation, $E_h<+\infty$ iff "
