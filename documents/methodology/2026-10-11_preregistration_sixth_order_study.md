@@ -62,7 +62,7 @@ A raw extension may produce non-finite values or activate the gradient-norm safe
 
 Written 2026-10-11 after array 893851 completed. The values are read from the `summary_*.yaml` files of the three run directories (`rel_l2` is $\delta_\Gamma$, `loss_best_state_eval` the evaluation residual), copied to `data/ablation_split_extension_trained/sixth_order_study_2026-10-11/`.
 
-**Admissibility.** The 12 runs are admissible: finite validation and evaluation quantities, exact initial-value check ($\mathrm{tc}_{l^2}=0$ in every run), no activation of the gradient-norm safeguard over the 20000 recorded updates of each run, and no non-finite gradient norm. Wall times range from $11708$ to $14333$ s.
+**Admissibility.** The 12 runs are admissible: finite validation and evaluation quantities, exact initial-value check ($\mathrm{tc}_{l^2}=0$ in every run), no activation of the gradient-norm safeguard over the 20000 recorded updates of each run, and no non-finite gradient norm. Wall times range from $11708$ to $14332$ s.
 
 **Relative error $\delta_\Gamma$** (measured, 3 seeds):
 
@@ -73,7 +73,7 @@ Written 2026-10-11 after array 893851 completed. The values are read from the `s
 | `split_principal` | $\simeq2.135\times10^{-3}$ | $\simeq1.079\times10^{-3}$ | $\simeq6.768\times10^{-4}$ | $\simeq1.079\times10^{-3}$ |
 | `exact_solution` | $\simeq1.105\times10^{-5}$ | $\simeq2.620\times10^{-5}$ | $\simeq2.056\times10^{-5}$ | $\simeq2.056\times10^{-5}$ |
 
-**Median evaluation residual** (measured, 3 seeds): raw linear $\simeq2.08\times10^{11}$, raw constant $\simeq5.87\times10^{11}$, split $\simeq1.61\times10^{-5}$, control $\simeq1.32\times10^{-9}$. The median training floors equal the closed-form floors of Section 3 to within $3\%$ for the raw extensions; for the split the median training floor is $\simeq2.9\times10^{-4}$ against the closed form $3.77\times10^{-4}$.
+**Median evaluation residual** (measured, 3 seeds): raw linear $\simeq2.08\times10^{11}$, raw constant $\simeq5.87\times10^{11}$, split $\simeq1.61\times10^{-5}$, control $\simeq1.32\times10^{-9}$. The median training floors equal the closed-form floors of Section 3 to within $3\%$ for the raw extensions; for the split the median training floor is $\simeq2.8\times10^{-4}$ against the closed form $3.77\times10^{-4}$.
 
 **Predictions.**
 - **S1 holds.** The split median $\simeq1.079\times10^{-3}$ is below both raw medians, $\simeq33.18$ and $\simeq50.31$.
