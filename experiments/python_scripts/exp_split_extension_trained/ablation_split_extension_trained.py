@@ -1560,8 +1560,8 @@ def compute_error_metrics(model, problem) -> dict:
 
 
 def _generator_applied_to_datum(problem, x64):
-    r"""Closed-form :math:`(A g)(x) = c_4 g^{(4)} + \nu g^{(2)} + \mu g^{(1)} + r_0 g`
-    on the grid (the order-4 term only for a fourth-order generator).
+    r"""Closed-form :math:`(A g)(x) = c_6 g^{(6)} + c_4 g^{(4)} + \nu g^{(2)} + \mu g^{(1)} + r_0 g`
+    on the grid (the order-4 and order-6 terms only when present).
 
     Assembled from the analytic spatial derivatives of the exact-solution
     field at :math:`t = T` (where every extension field coincides with the
@@ -1597,6 +1597,10 @@ def _generator_applied_to_datum(problem, x64):
     if 4 in coefficients:
         generator_applied = generator_applied + coefficients[4] * (
             exact_field.fourth_space_derivative(x64, tT)
+        )
+    if 6 in coefficients:
+        generator_applied = generator_applied + coefficients[6] * (
+            exact_field.sixth_space_derivative(x64, tT)
         )
     return generator_applied
 

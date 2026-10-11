@@ -330,6 +330,29 @@ FULL_DATUM_FOURTH_ORDER_CELL_VARIANTS: list[dict] = [
 
 
 # ---------------------------------------------------------------------------
+# Variants of the sixth-order cell (added 2026-10-11, pre-registration
+# documents/methodology/2026-10-11_preregistration_sixth_order_study.md)
+# ---------------------------------------------------------------------------
+# The generator A = 0.01 d^6/dx^6 - 0.05 d^4_xxxx has no term of order below 4,
+# so the highest-order split retains d^6/dx^6 and leaves the remainder
+# B = -0.05 d^4_xxxx of order m_B = 4 > p = 3, with Sobolev index s_B = 1:
+# finite forcing energy for a datum in H^1 (Proposition 4.2 of the paper).
+# Retaining both terms gives the exact solution (the control).
+
+SIXTH_ORDER_SPLIT_PRINCIPAL_VARIANT: dict = dict(
+    SPLIT_PRINCIPAL_VARIANT,
+    label=r"highest-order split $\{\partial^6/\partial x^6\}$: $P\Psi=-0.05\,\partial^4_{xxxx}\Psi$",
+)
+
+SIXTH_ORDER_CELL_VARIANTS: list[dict] = [
+    _generator_variant("convex_raw"),
+    _generator_variant("constant_in_time"),
+    SIXTH_ORDER_SPLIT_PRINCIPAL_VARIANT,
+    _generator_variant("exact_solution"),
+]
+
+
+# ---------------------------------------------------------------------------
 # Butterfly cell on the real line (pre-registration
 # documents/methodology/2026-10-09_preregistration_butterfly_real_line.md)
 # ---------------------------------------------------------------------------
@@ -575,6 +598,24 @@ CELL_CONFIGS: dict[str, dict] = {
             r"$A=-0.05\,\partial_x^4+1.3\,\partial_x-0.4$,  $T=1$"
         ),
     },
+    "sixth_order_bernoulli_bandlimited": {
+        # Sixth-order generator (added 2026-10-11, pre-registration
+        # 2026-10-11_preregistration_sixth_order_study.md):
+        # A = 0.01 d^6/dx^6 - 0.05 d^4_xxxx, symbol a(k) = -0.01 k^6 - 0.05 k^4,
+        # dissipative at every wavenumber.  Same band-limited datum as G1-G3.
+        "generator_coefficients": {6: 0.01, 4: -0.05},
+        "datum": "bernoulli_bandlimited",
+        "truncation_wavenumber": 128,
+        "terminal_time": 1.0,
+        "corner_point": 0.0,
+        "variant_set": "sixth_order",
+        "short_label": r"sixth order",
+        "label": (
+            r"$g(x)=\sum_{k=1}^{128}\frac{\cos(kx)}{\pi^2k^2}$,  "
+            r"$A=0.01\,\partial^6/\partial x^6-0.05\,\partial^4_{xxxx}$ (sixth order),  "
+            r"$Pu=\partial_t u+Au$,  $T=1$"
+        ),
+    },
     "butterfly_real_line": {
         # Example 3.1 of the boundary paper in the runner's backward convention:
         # P u = d_t u + A u with A = nu d_xx + mu d_x - rho, nu = 0.125, mu = 0.6,
@@ -692,6 +733,8 @@ def variants_for_cell(cell_name: str) -> list[dict]:
         return list(FULL_DATUM_SECOND_ORDER_CELL_VARIANTS)
     if cell_conf["variant_set"] == "full_datum_fourth_order":
         return list(FULL_DATUM_FOURTH_ORDER_CELL_VARIANTS)
+    if cell_conf["variant_set"] == "sixth_order":
+        return list(SIXTH_ORDER_CELL_VARIANTS)
     if cell_conf["variant_set"] == "real_line_butterfly":
         return list(BUTTERFLY_REAL_LINE_CELL_VARIANTS)
     return list(CONTROL_CELL_VARIANTS)
