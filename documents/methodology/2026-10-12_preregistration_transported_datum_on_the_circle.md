@@ -40,4 +40,31 @@ Admissibility follows the paper: finite validation and evaluation quantities, ex
 
 ## 4. Outcome
 
-To be written after the run.
+Written 2026-10-12 after Jean Zay array 961770 (smoke test 961769) completed at revision `7a237a7`. The values are read from the `summary_*.yaml` files of the six run directories (`rel_l2` is $\delta_\Gamma$), copied to `data/ablation_split_extension_trained/transported_circle_study_2026-10-12/`. No checkpoint files exist.
+
+**Smoke test** (values not results):
+- analytic and autograd forcings coincide to $0$ (`g2`) and $3.4\times10^{-10}$ (`g3`);
+- the training floors $9.67\times10^{-3}$ and $6.24\times10^{4}$ match the closed forms $9.96\times10^{-3}$ and $6.19\times10^{4}$.
+
+**Admissibility.** The 12 runs are admissible:
+- finite validation and evaluation quantities;
+- exact initial-value check ($\mathrm{tc}_{l^2}=0$);
+- no gradient-norm safeguard activation and no non-finite norm over the 20000 recorded updates.
+
+Wall times range from $396$ to $433$ s on `g2` and from $1662$ to $2220$ s on `g3`.
+
+**Relative error $\delta_\Gamma$** (measured, 3 seeds):
+
+| Cell | Extension | Seed 0 | Seed 1 | Seed 2 | Median |
+|---|---|---|---|---|---|
+| `g2` | `transported_datum` | $\simeq1.538\times10^{-3}$ | $\simeq1.526\times10^{-3}$ | $\simeq2.081\times10^{-3}$ | $\simeq1.54\times10^{-3}$ |
+| `g2` | `split_diffusion` (control) | $\simeq4.596\times10^{-4}$ | $\simeq4.925\times10^{-4}$ | $\simeq5.657\times10^{-4}$ | $\simeq4.93\times10^{-4}$ |
+| `g3` | `transported_datum` | $\simeq4.565$ | $\simeq4.339$ | $\simeq1.803$ | $\simeq4.34$ |
+| `g3` | `split_principal` (control) | $\simeq4.915\times10^{-4}$ | $\simeq4.381\times10^{-4}$ | $\simeq9.053\times10^{-4}$ | $\simeq4.91\times10^{-4}$ |
+
+**Predictions.**
+- **T1 holds.** The transported datum has a larger median than the highest-order split: $1.54\times10^{-3}$ against $4.93\times10^{-4}$ on `g2`, a factor $\simeq3.1$; $4.34$ against $4.91\times10^{-4}$ on `g3`, a factor $\simeq8.8\times10^{3}$.
+- **T2 holds.** The ratio to the median of $A=0$ in the paper is $\simeq1.19$ on `g2` ($1.54\times10^{-3}$ against $1.29\times10^{-3}$) and $\simeq0.47$ on `g3` ($4.34$ against $9.29$), both within a factor $10$.
+- **R0 holds.** The re-run controls reproduce the paper's values seed by seed to the seven digits recorded in `generated/individual_results.csv`, hence the medians $4.925126\times10^{-4}$ and $4.914822\times10^{-4}$.
+
+**Observation, not predicted.** On `g3` the transported runs retain early iterates for two seeds: retained updates $1500$ and $1900$, against $12000$ for the third. The evaluation residuals ($\simeq6.5\times10^{4}$ to $6.9\times10^{4}$) remain of the order of the closed-form forcing floor.

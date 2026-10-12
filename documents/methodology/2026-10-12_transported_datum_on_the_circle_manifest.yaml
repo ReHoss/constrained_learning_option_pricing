@@ -1,0 +1,19 @@
+# Manifest of the transported-datum study on the circle (pre-registration
+# documents/methodology/2026-10-12_preregistration_transported_datum_on_the_circle.md).
+transported_circle_study:
+  cells: [g2_bernoulli_bandlimited, g3_bernoulli_bandlimited]   # Black-Scholes (paper G_2) and order four (paper G_3), g_128, T = 1
+  variants:
+    g2_bernoulli_bandlimited: [transported_datum, split_diffusion]   # split_diffusion: reproducibility control
+    g3_bernoulli_bandlimited: [transported_datum, split_principal]   # split_principal: reproducibility control
+  seeds: [0, 1, 2]
+  tasks: 12
+  cluster: Jean Zay (IDRIS), NVIDIA V100 (gpu_p13), akz@v100, qos_gpu-t3, time limit 04:00:00 per task
+  slurm_jobs: {smoke_test: 961769, array: 961770}
+  smoke_test: qos_gpu-dev, 300 iterations per cell with --debug; analytic-vs-autograd cross-check 0 (g2) and 3.4e-10 (g3); training floors 9.67e-3 vs closed form 9.96e-3 (g2), 6.24e4 vs 6.19e4 (g3); no safeguard activation; values not reported as results
+  code_revision: 7a237a7   # recorded in every metadata.yaml at the --init-only phase (git is unavailable on compute nodes)
+  hyperparameters: identical to the validation-selected series (checked against series_validation_selected/...g2..._seed0/metadata.yaml at --init-only)
+  run_directories: data/ablation_split_extension_trained/transported_circle_study_2026-10-12/ (Jean Zay)
+  slurm_logs: data/ablation_split_extension_trained/transported_circle_study_2026-10-12/slurm/ (Jean Zay)
+  launch_scripts: Jean Zay, $WORK/oym_migration/work/logs/constrained_learning_option_pricing/transported_circle_study_2026-10-12/
+  run_directories_local: data/ablation_split_extension_trained/transported_circle_study_2026-10-12/ (copied 2026-10-12, no checkpoint files exist, _debug_ excluded)
+  status: completed 2026-10-12, 12 admissible runs; predictions T1, T2 and R0 hold (pre-registration section 4)
