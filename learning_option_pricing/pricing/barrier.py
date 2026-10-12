@@ -2289,6 +2289,8 @@ class LearnedSimilarityProfileCornerEnrichedExtension(CornerEnrichedExtension, t
 
     #: Read by the training script to decide whether the residual of g2 carries gradient.
     similarity_profile_is_learned = True
+    #: Read by the training script: the residual of g2 depends on trained parameters.
+    extension_has_trained_parameters = True
 
     def __init__(
         self, K: float, B: float, r: float, sigma: float, T: float, terminal_profile,
@@ -2436,6 +2438,189 @@ def make_learned_similarity_profile_corner_enriched_extension(
         similarity_profile_hidden_width, similarity_profile_hidden_depth, similarity_profile_initialisation_seed,
     )
     return LearnedSimilarityProfileCornerEnrichedExtension(K, B, r, sigma, T, profile, delta0, delta1, network)
+
+
+# ---------------------------------------------------------------------------
+# Learned barrier location of the similarity profile (exploratory experiment)
+# ---------------------------------------------------------------------------
+
+def shifted_barrier_similarity_profile_value_and_derivatives(
+    s: torch.Tensor, B: float, log_barrier_shift: torch.Tensor, sigma: float, tau: torch.Tensor,
+    caller_name: str = "shifted_barrier_similarity_profile_value_and_derivatives",
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    r"""``(Lambda(xi'), d_s Lambda(xi'), d_ss Lambda(xi'), d_t Lambda(xi'))`` for the
+    error-function profile :math:`\Lambda = \operatorname{erf}` composed with the
+    similarity map centred at a shifted barrier :math:`B' = B e^{\eta}`,
+
+    .. math::
+
+        \xi'(s,t) = \frac{\ln(s/B')}{\sigma\sqrt{2(T-t)}} = \frac{\ln(s/B) - \eta}{\sigma\sqrt{2(T-t)}},
+
+    on the whole half-line :math:`s > 0`: :math:`\operatorname{erf}` is odd and
+    analytic, so :math:`\xi' < 0` (the strip :math:`B < s < B'` when
+    :math:`\eta > 0`) is evaluated by the same formula, with no zeroing below
+    :math:`B'` (contrary to :func:`similarity_profile_composition_value_and_derivatives`,
+    whose profile is only defined on :math:`[0, +\infty)`).  The derivatives in
+    ``s`` and ``t`` are those of :func:`similarity_profile_composition_value_and_derivatives`
+    (:math:`\partial_s\xi'`, :math:`\partial_{ss}\xi'`, :math:`\partial_t\xi'` do not
+    depend on :math:`\eta` except through :math:`\xi'`).  Every returned tensor is
+    differentiable in ``log_barrier_shift`` by automatic differentiation.  At
+    ``tau = 0`` exactly the limit :math:`\operatorname{sign}(s - B')` is returned with
+    zero derivatives.
+
+    Args:
+        s: Underlying asset price tensor, ``s > 0``.
+        B: True knock-out barrier, ``B > 0``.
+        log_barrier_shift: Scalar tensor :math:`\eta = \ln(B'/B)`.
+        sigma: Volatility.
+        tau: Time to maturity, broadcastable with ``s``.
+        caller_name: Name reported if the time-to-maturity floor binds.
+
+    Returns:
+        Four tensors of the broadcast shape of ``s``/``tau``.
+    """
+    if B <= 0.0:
+        raise ValueError(f"the barrier must be positive; got {B=}.")
+    tau_tensor = torch.as_tensor(tau)
+    tau_safe = torch.clamp(tau_tensor, min=_TAU_EPS)
+    scale = sigma * torch.sqrt(2.0 * tau_safe)
+    xi = (torch.log(s / B) - log_barrier_shift) / scale
+    value, lambda_prime, lambda_double_prime = error_function_similarity_profile_value_and_derivatives(xi)
+    d_s_xi = 1.0 / (s * scale)
+    d_ss_xi = -d_s_xi / s
+    d_t_xi = xi / (2.0 * tau_safe)
+    d_s = lambda_prime * d_s_xi
+    d_ss = lambda_double_prime * d_s_xi**2 + lambda_prime * d_ss_xi
+    d_t = lambda_prime * d_t_xi
+    _report_tau_floor_activation(tau_tensor, caller_name)
+
+    positive_tau = tau_tensor > 0
+    zero = torch.zeros_like(value)
+    terminal_limit = torch.sign(torch.log(s / B) - log_barrier_shift).to(value.dtype)
+    return (
+        torch.where(positive_tau, value, terminal_limit),
+        torch.where(positive_tau, d_s, zero),
+        torch.where(positive_tau, d_ss, zero),
+        torch.where(positive_tau, d_t, zero),
+    )
+
+
+class LearnedBarrierLocationCornerEnrichedExtension(CornerEnrichedExtension, torch.nn.Module):
+    r"""Corner enrichment of :class:`CornerEnrichedExtension` whose error-function
+    profile is centred at a trainable barrier location :math:`B' = B e^{\eta}`
+    instead of the contract's barrier :math:`B` (exploratory experiment, section
+    18 of ``documents/methodology/barrier_option.md``):
+
+    .. math::
+
+        g_2(s,t) = \chi(s)\,\Delta\,\operatorname{erf}\big(\xi'(s,t)\big) + \pi(s,t) - \chi(s)\,\pi(B,t),
+        \qquad \xi'(s,t) = \frac{\ln(s/B) - \eta}{\sigma\sqrt{2(T-t)}},
+
+    with :math:`\eta \in \mathbb R` a :class:`torch.nn.Parameter` trained jointly
+    with the price network.  Only the centre of the profile is shifted: the
+    cutoff :math:`\chi`, the jump :math:`\Delta = K - B`, the regular part
+    :math:`h` and the distance factor :math:`d_{\partial_pQ} = (T-t)(s-B)` stay
+    on the contract's barrier.  The parametrisation by :math:`\eta = \ln(B'/B)`
+    keeps :math:`B' > 0` for every value of the parameter.
+
+    **The hard constraints hold only at** :math:`\eta = 0`.  On :math:`\Sigma_B`,
+    :math:`g_2(B,t) = \Delta\operatorname{erf}\big(-\eta/(\sigma\sqrt{2(T-t)})\big)`,
+    nonzero for :math:`\eta \neq 0` and of limit :math:`-\Delta\operatorname{sign}\eta`
+    as :math:`t \to T` (:meth:`barrier_trace`); on :math:`\Sigma_T`, the terminal
+    datum is wrong by :math:`-2\chi\Delta` on :math:`B < s < B'` when
+    :math:`\eta > 0`.  The distance factor vanishes on both faces, so the price
+    network cannot correct these traces: only :math:`\eta` acts on them.
+
+    The interior residual is assembled in closed form exactly as for the
+    analytic enrichment (the profile still solves the heat equation in
+    :math:`\ln s` with the contract's :math:`\sigma`, so the residual of the
+    profile stays of order :math:`\tau^{-1/2}`); it depends on :math:`\eta` and
+    must be recorded in the graph during training
+    (``extension_has_trained_parameters``).
+
+    Args:
+        K, B, r, sigma, T, terminal_profile, delta0, delta1: As in
+            :class:`CornerEnrichedExtension`.
+        initial_learned_barrier: Initial value of :math:`B' > 0`.
+    """
+
+    #: Read by the training script: the residual of g2 depends on trained parameters.
+    extension_has_trained_parameters = True
+    #: Read by the training script to log and plot the trajectory of B'.
+    barrier_location_is_learned = True
+
+    def __init__(
+        self, K: float, B: float, r: float, sigma: float, T: float, terminal_profile,
+        delta0: float, delta1: float, initial_learned_barrier: float,
+    ) -> None:
+        torch.nn.Module.__init__(self)
+        CornerEnrichedExtension.__init__(self, K, B, r, sigma, T, terminal_profile, delta0, delta1)
+        if initial_learned_barrier <= 0.0:
+            raise ValueError(f"the initial learned barrier must be positive; got {initial_learned_barrier=}.")
+        self.initial_learned_barrier = initial_learned_barrier
+        self.log_barrier_shift = torch.nn.Parameter(
+            torch.tensor(math.log(initial_learned_barrier / B), dtype=torch.get_default_dtype()),
+        )
+
+    def forward(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return CornerEnrichedExtension.__call__(self, s, t)
+
+    def learned_barrier(self) -> float:
+        r"""The current :math:`B' = B e^{\eta}`, as a Python float."""
+        return self.B * math.exp(float(self.log_barrier_shift.detach()))
+
+    def _similarity_pieces(self, s: torch.Tensor, t: torch.Tensor):
+        broadcast_shape = torch.broadcast_shapes(s.shape, torch.as_tensor(t).shape)
+        s_b = s.expand(broadcast_shape)
+        value, d_s, d_ss, d_t = shifted_barrier_similarity_profile_value_and_derivatives(
+            s_b, self.B, self.log_barrier_shift.to(dtype=s_b.dtype, device=s_b.device), self.sigma,
+            torch.as_tensor(self.T - t).expand(broadcast_shape),
+            caller_name=f"{type(self).__name__}._similarity_pieces",
+        )
+        chi, d_s_chi, d_ss_chi = self._cutoff_value_and_derivatives(s_b)
+        return s_b, value, d_s, d_ss, d_t, chi, d_s_chi, d_ss_chi
+
+    def barrier_trace(self, t: torch.Tensor) -> torch.Tensor:
+        r""":math:`g_2(B,t)`, equal to :math:`\Phi_\theta(B,t)` for every network (the
+        distance factor vanishes on :math:`\Sigma_B`); zero for every ``t`` iff
+        :math:`\eta = 0`.  Differentiable in :math:`\eta`."""
+        return self(torch.full_like(t, self.B), t)
+
+
+def make_learned_barrier_location_corner_enriched_extension(
+    K: float,
+    B: float,
+    r: float,
+    sigma: float,
+    T: float,
+    initial_learned_barrier: float,
+    terminal_profile: str = "black_scholes",
+    delta0: float = 0.1,
+    delta1: float = 0.3,
+    comparison_volatility: float | None = None,
+    y_lo: float | None = None,
+    y_hi: float | None = None,
+    n_quad: int = 8000,
+    split_profile: str = "closed_form",
+) -> LearnedBarrierLocationCornerEnrichedExtension:
+    r"""Build the extension :math:`g_2 = \chi\Delta\operatorname{erf}(\xi') + \pi - \chi\,\pi(B,\cdot)`
+    of :class:`LearnedBarrierLocationCornerEnrichedExtension`, with the profile
+    centred at the trainable :math:`B'` initialised at ``initial_learned_barrier``.
+
+    Args:
+        K, B, r, sigma, T, terminal_profile, delta0, delta1, comparison_volatility,
+            y_lo, y_hi, n_quad, split_profile: As in :func:`make_corner_enriched_extension`.
+        initial_learned_barrier: Initial :math:`B' > 0`.
+
+    Returns:
+        The extension object (a :class:`torch.nn.Module` holding :math:`\eta`).
+    """
+    profile = _build_terminal_profile(
+        K, r, sigma, T, terminal_profile, comparison_volatility, y_lo, y_hi, n_quad, split_profile,
+    )
+    return LearnedBarrierLocationCornerEnrichedExtension(
+        K, B, r, sigma, T, profile, delta0, delta1, initial_learned_barrier,
+    )
 
 
 def make_subtracted_digital_extension(

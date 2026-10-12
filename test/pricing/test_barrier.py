@@ -48,6 +48,7 @@ from learning_option_pricing.pricing.barrier import (
     error_function_target_of_the_profile_network,
     learned_similarity_profile_base_and_vanishing_factor,
     make_learned_similarity_profile_corner_enriched_extension,
+    make_learned_barrier_location_corner_enriched_extension,
     similarity_profile_diagnostics,
 )
 from learning_option_pricing.pricing.terminal import black_scholes_put, bsm_operator, payoff_put
@@ -1509,3 +1510,74 @@ class TestLearnedSimilarityProfileCornerEnrichedExtension:
         target = error_function_target_of_the_profile_network(xi)
         assert torch.allclose(base + factor * target, torch.erf(xi), atol=1e-12)
         assert float(target.abs().max()) < 2.0
+
+
+class TestLearnedBarrierLocationCornerEnrichedExtension:
+    """g2 = chi Delta erf(xi') + pi - chi pi(B, .), xi' = (ln(s/B) - eta)/(sigma sqrt(2 tau)):
+    at eta = 0 it is the analytic enrichment; for eta != 0 the barrier trace is the closed
+    form Delta erf(-eta/(sigma sqrt(2 tau))); the closed-form residual matches autograd for
+    B' on either side of B; the residual and the barrier trace carry a gradient to eta."""
+    K, B, r, sigma, T = 1.0, 0.6, 0.03, 0.3, 1.0
+    delta0, delta1 = 0.1, 0.3
+
+    def _extension(self, initial_learned_barrier: float, terminal_profile: str = "black_scholes"):
+        return make_learned_barrier_location_corner_enriched_extension(
+            self.K, self.B, self.r, self.sigma, self.T, initial_learned_barrier, terminal_profile,
+            delta0=self.delta0, delta1=self.delta1,
+        ).double()
+
+    def test_reduces_to_the_analytic_enrichment_at_the_true_barrier(self) -> None:
+        learned = self._extension(self.B)
+        analytic = make_corner_enriched_extension(
+            self.K, self.B, self.r, self.sigma, self.T, "black_scholes", delta0=self.delta0, delta1=self.delta1,
+        )
+        s = torch.linspace(self.B + 1e-4, 3.0, 400, dtype=torch.float64)
+        t = torch.linspace(0.0, self.T - 1e-4, 400, dtype=torch.float64)
+        with torch.no_grad():
+            assert torch.allclose(learned(s, t), analytic(s, t), atol=1e-13)
+            assert torch.allclose(learned.black_scholes_residual(s, t, self.r, self.sigma),
+                                  analytic.black_scholes_residual(s, t, self.r, self.sigma), atol=1e-9)
+            assert torch.equal(learned.barrier_trace(t), torch.zeros_like(t))
+
+    @pytest.mark.parametrize("initial_learned_barrier", [0.55, 0.65])
+    def test_barrier_trace_is_the_closed_form_and_nonzero_off_the_true_barrier(self, initial_learned_barrier) -> None:
+        g2 = self._extension(initial_learned_barrier)
+        t = torch.linspace(0.0, self.T - 1e-3, 200, dtype=torch.float64)
+        eta = float(g2.log_barrier_shift.detach())
+        expected = (self.K - self.B) * torch.erf(-eta / (self.sigma * torch.sqrt(2.0 * (self.T - t))))
+        with torch.no_grad():
+            trace = g2.barrier_trace(t)
+        assert torch.allclose(trace, expected, atol=1e-13)
+        assert float(trace.abs().min()) > 0.0
+        # eta is created in the default dtype (float32 here) before .double(): rounding of order 1e-9.
+        assert abs(g2.learned_barrier() - initial_learned_barrier) < 1e-7
+
+    @pytest.mark.parametrize("initial_learned_barrier", [0.55, 0.65])
+    def test_closed_form_residual_matches_autograd(self, initial_learned_barrier) -> None:
+        g2 = self._extension(initial_learned_barrier)
+        s = torch.cat([torch.linspace(self.B + 0.005, self.K - 0.01, 300, dtype=torch.float64),
+                       torch.linspace(self.K + 0.01, 3.0, 300, dtype=torch.float64)]).requires_grad_(True)
+        t = torch.linspace(0.0, self.T - 1e-2, 600, dtype=torch.float64).requires_grad_(True)
+        value = g2(s, t)
+        residual_autograd = bsm_operator(value, s, t, self.r, 0.0, self.sigma)
+        with torch.no_grad():
+            residual = g2.black_scholes_residual(s.detach(), t.detach(), self.r, self.sigma)
+        assert torch.allclose(residual, residual_autograd.detach(), atol=1e-8)
+
+    def test_residual_and_barrier_trace_carry_a_gradient_to_the_barrier_location(self) -> None:
+        g2 = self._extension(0.55)
+        s = torch.linspace(self.B + 0.001, self.B + self.delta1, 200, dtype=torch.float64)
+        t = torch.full_like(s, 0.95)
+        (g2.black_scholes_residual(s, t, self.r, self.sigma) ** 2).mean().backward()
+        assert math.isfinite(float(g2.log_barrier_shift.grad)) and float(g2.log_barrier_shift.grad) != 0.0
+        g2.log_barrier_shift.grad = None
+        (g2.barrier_trace(t) ** 2).mean().backward()
+        # The squared trace decreases as eta -> 0: eta < 0 here, so its gradient is negative.
+        assert float(g2.log_barrier_shift.grad) < 0.0
+
+    def test_barrier_location_is_registered_in_the_price_network(self) -> None:
+        from learning_option_pricing.models.etcnn import ETCNN
+        from learning_option_pricing.models.resnet import ResNet
+        g2 = self._extension(0.65)
+        model = ETCNN(resnet=ResNet(), g1=lambda s, t: barrier_composite_distance(s, t, self.B, self.T), g2=g2)
+        assert "_g2.log_barrier_shift" in [name for name, _ in model.named_parameters()]
