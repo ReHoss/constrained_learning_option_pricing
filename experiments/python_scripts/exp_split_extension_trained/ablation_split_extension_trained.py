@@ -1886,9 +1886,9 @@ def compute_greeks_for_saved_run(run_directory: Path, device_name: str) -> int:
 
     No training: each ansatz is rebuilt from ``metadata.yaml`` (cell, hyperparameters,
     master seed), its saved state is loaded, and the relative error at the runner time
-    0 is recomputed and compared with the recorded ``rel_l2_t0`` (relative tolerance
-    ``1e-4``; a larger deviation raises, since the reloaded model would then not be
-    the trained one).  A summary ``greeks_summary.yaml`` gathers the scalar errors.
+    0 is recomputed and compared with the recorded ``rel_l2_t0`` (absolute tolerance
+    ``max(1e-4 * recorded, 1e-6)``; a larger deviation raises, since the reloaded model
+    would then not be the trained one).  A summary ``greeks_summary.yaml`` gathers the scalar errors.
     """
     import numpy as np
     import torch
@@ -1935,11 +1935,16 @@ def compute_greeks_for_saved_run(run_directory: Path, device_name: str) -> int:
         with open(run_directory / f"summary_{variant_name}.yaml") as summary_file:
             recorded_error = float(yaml.safe_load(summary_file)[variant_name]["rel_l2_t0"])
         recomputed_error = compute_error_metrics(model, variant_problem)["rel_l2_t0"]
+        # rel_l2_t0 is already relative to ||u*||: an absolute floor of 1e-6 covers the
+        # float32 rounding between the training device and this one, which dominates for
+        # errors of order 1e-4; a model that is not the trained one changes it at order 1.
+        reload_tolerance = max(1e-4 * recorded_error, 1e-6)
         reload_deviation = abs(recomputed_error - recorded_error) / recorded_error
-        if reload_deviation > 1e-4:
+        if abs(recomputed_error - recorded_error) > reload_tolerance:
             raise RuntimeError(
                 f"[{variant_name}] the reloaded model gives rel_l2_t0 = {recomputed_error:.6e}, "
-                f"recorded {recorded_error:.6e} (relative deviation {reload_deviation:.2e} > 1e-4)")
+                f"recorded {recorded_error:.6e} (absolute deviation "
+                f"{abs(recomputed_error - recorded_error):.2e} > tolerance {reload_tolerance:.2e})")
 
         greeks = compute_greeks(model, variant_problem)
         output_path = variant_directory / "greeks.npz"
