@@ -2509,7 +2509,7 @@ class LearnedBarrierLocationCornerEnrichedExtension(CornerEnrichedExtension, tor
     r"""Corner enrichment of :class:`CornerEnrichedExtension` whose error-function
     profile is centred at a trainable barrier location :math:`B' = B e^{\eta}`
     instead of the contract's barrier :math:`B` (exploratory experiment, section
-    18 of ``documents/methodology/barrier_option.md``):
+    19 of ``documents/methodology/barrier_option.md``):
 
     .. math::
 

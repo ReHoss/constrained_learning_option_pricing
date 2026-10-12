@@ -56,7 +56,7 @@ barrier-condition loss term) -- Section 4's stated goal in the note.
   and the defect integral I of equation (32) are logged during training,
   recorded in the summary and plotted (figures/learned_similarity_profile.png)
   (:class:`learning_option_pricing.pricing.barrier.LearnedSimilarityProfileCornerEnrichedExtension`).
-- ``learned_barrier_location`` (exploratory, section 18 of the methodology
+- ``learned_barrier_location`` (exploratory, section 19 of the methodology
   document): the analytic enrichment with erf centred at a trained
   B' = B exp(eta), initialised at --initial-learned-barrier; cutoff, jump,
   regular part and distance factor stay on B, so the traces are exact only at
@@ -193,7 +193,7 @@ DEFAULT_SPLIT_PADDING_DIFFUSION_LENGTHS = 6.0
 #: module docstring): smoothing, exact subtraction (Section 5.1), enrichment
 #: (Section 5.2), the learned similarity profile (Section 5.3) and the
 #: exploratory enrichment with a trainable barrier location of the profile
-#: (section 18 of the methodology document).
+#: (section 19 of the methodology document).
 CORNER_TREATMENTS = ("smoothing", "subtraction", "enrichment", "learned_similarity_profile", "learned_barrier_location")
 #: The treatments that resolve the corner without a corner layer (no epsilon).
 ANALYTIC_CORNER_TREATMENTS = ("subtraction", "enrichment", "learned_similarity_profile", "learned_barrier_location")
@@ -1791,7 +1791,7 @@ def main() -> None:
                               "||Lambda_theta' - erf||_Linf and the defect integral I of equation (32) are logged "
                               "at every logged iteration and recorded. Directory tag "
                               "_learnedprofile_<profile>_d0<delta0>_d1<delta1>_w<width>_l<depth>. "
-                              "'learned_barrier_location' (exploratory, section 18 of the methodology document): "
+                              "'learned_barrier_location' (exploratory, section 19 of the methodology document): "
                               "the analytic enrichment with erf centred at a trained B' = B exp(eta) "
                               "(--initial-learned-barrier, --barrier-trace-penalty-weight); exact traces only at B' = B.")
     parser.add_argument("--enrichment-delta0", type=float, default=DEFAULT_ENRICHMENT_DELTA0,
@@ -1809,7 +1809,7 @@ def main() -> None:
     parser.add_argument("--initial-learned-barrier", type=float, default=None,
                          help="Initial value of the trained barrier location B' = B exp(eta) of the error-function "
                               "profile; required with --corner-treatment learned_barrier_location (exploratory "
-                              "experiment, section 18 of the methodology document: erf centred at B' instead of B, "
+                              "experiment, section 19 of the methodology document: erf centred at B' instead of B, "
                               "cutoff, jump, regular part and distance factor on B; exact traces only at B' = B). "
                               "Directory tag _learnedbarrier_<profile>_d0<delta0>_d1<delta1>_Bp0<B'_0>_lambdaB<weight>.")
     parser.add_argument("--barrier-trace-penalty-weight", type=float, default=0.0,
@@ -2324,7 +2324,7 @@ def main() -> None:
         )
     elif args.corner_treatment == "learned_barrier_location":
         logger.info(
-            f"  Ansatz: corner enrichment with a trained barrier location of the profile (exploratory, section 18 of "
+            f"  Ansatz: corner enrichment with a trained barrier location of the profile (exploratory, section 19 of "
             f"the methodology document): Phi = E' + h + g1 u_theta, E' = chi(s) (K-B) erf(xi'), "
             f"xi' = ln(s/B')/(sigma sqrt(2(T-t))), B' = B exp(eta) trained, initial B' = {args.initial_learned_barrier:g} "
             f"(B = {args.B:g}); chi, Delta = K - B = {args.K - args.B:g}, h = pi - chi(s) pi(B, .) and "
