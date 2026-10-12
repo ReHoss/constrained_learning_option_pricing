@@ -389,6 +389,48 @@ def compute_loss(model: ETCNN, s_f: torch.Tensor, t_f: torch.Tensor, r: float, s
 
 
 # ---------------------------------------------------------------------------
+# Best-state selection on a fixed validation set
+# ---------------------------------------------------------------------------
+
+BEST_STATE_SELECTIONS = ("validation", "single_batch")
+#: Default kept at the criterion of every earlier run, so that a run without the flag is unchanged.
+DEFAULT_BEST_STATE_SELECTION = "single_batch"
+DEFAULT_VALIDATION_EVERY = 1000
+DEFAULT_VALIDATION_SET_SIZE = 65_536
+#: Points per forward/backward chunk of the validation loss (memory bound only: the chunks are
+#: of equal size and their means are averaged, so the value is the mean over the whole set).
+VALIDATION_CHUNK_SIZE = 8192
+
+
+def draw_validation_set(sampling: CornerSimilaritySampling, size: int, seed: int) -> dict:
+    r"""Fixed validation set of the best-state selection: one draw of the corner mixture
+    (:class:`CornerSimilaritySampling`) from its own generator, with the importance weights
+    :math:`u/m`. The weighted mean of the squared residual on it is an unbiased estimator of the
+    uniform-measure loss :math:`\int_\Omega u\,(\mathcal{L}^{BS}\Phi_\theta)^2`, and, the set being
+    fixed, the same estimator at every evaluation: its differences between two states are not
+    sampling noise of the batch (contrary to the single-batch training loss). The draw does not
+    touch the training sampler generator, so the training trajectory is unchanged by it."""
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    s, t, weights, statistics = sampling.sample_mixture(size, generator, torch.get_default_dtype())
+    return {"s": s.to(DEVICE), "t": t.to(DEVICE), "weights": weights.to(DEVICE), "statistics": statistics, "seed": seed}
+
+
+def validation_loss(model: ETCNN, validation_set: dict, r: float, sigma: float) -> float:
+    """Weighted interior loss of ``model`` on the fixed validation set (no parameter gradient kept)."""
+    size = validation_set["s"].numel()
+    if size % VALIDATION_CHUNK_SIZE != 0:
+        raise ValueError(f"the validation set size {size} must be a multiple of {VALIDATION_CHUNK_SIZE}")
+    total = 0.0
+    for start in range(0, size, VALIDATION_CHUNK_SIZE):
+        chunk = slice(start, start + VALIDATION_CHUNK_SIZE)
+        s_chunk = validation_set["s"][chunk].clone().requires_grad_(True)
+        t_chunk = validation_set["t"][chunk].clone().requires_grad_(True)
+        total += float(compute_loss(model, s_chunk, t_chunk, r, sigma, validation_set["weights"][chunk]).detach())
+    return total / (size // VALIDATION_CHUNK_SIZE)
+
+
+# ---------------------------------------------------------------------------
 # Optimiser — Adam + two-stage exponential LR decay (identical schedule to
 # experiments/python_scripts/exp1/phase3_training.py::build_lr_lambda).
 # ---------------------------------------------------------------------------
@@ -435,6 +477,7 @@ def _save_checkpoint(
     best_model_state: dict,
     label: str,
     sampler_generator: torch.Generator,
+    best_state_tracking: dict | None = None,
 ) -> None:
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
@@ -457,6 +500,9 @@ def _save_checkpoint(
         "best_loss": best_loss,
         "best_iter": best_iter,
         "best_model_state": best_model_state,
+        # Both selection criteria's running minima; best_loss/best_iter/best_model_state above
+        # are those of the criterion the run selects with (best_state_tracking["selection"]).
+        "best_state_tracking": best_state_tracking,
     }
     torch.save(payload, tmp_path)
     tmp_path.replace(checkpoint_path)
@@ -469,7 +515,7 @@ def _load_checkpoint(
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     sampler_generator: torch.Generator,
-) -> tuple[int, int, dict, float, int, dict]:
+) -> tuple[int, int, dict, float, int, dict, dict | None]:
     payload = torch.load(checkpoint_path, map_location=DEVICE, weights_only=False)
     model.load_state_dict(payload["model_state"])
     optimizer.load_state_dict(payload["optimizer_state"])
@@ -491,6 +537,8 @@ def _load_checkpoint(
         float(payload["best_loss"]),
         int(payload["best_iter"]),
         payload["best_model_state"],
+        # None for checkpoints written before the validation selection existed (single-batch).
+        payload.get("best_state_tracking"),
     )
 
 
@@ -696,9 +744,34 @@ def train_one_epsilon(
     similarity_profile_hidden_width: int = DEFAULT_SIMILARITY_PROFILE_HIDDEN_WIDTH,
     similarity_profile_hidden_depth: int = DEFAULT_SIMILARITY_PROFILE_HIDDEN_DEPTH,
     corner_sampling: CornerSimilaritySampling | None = None,
-) -> tuple[ETCNN, dict, float, int]:
+    best_state_selection: str = DEFAULT_BEST_STATE_SELECTION,
+    validation_sampling: CornerSimilaritySampling | None = None,
+    validation_every: int = DEFAULT_VALIDATION_EVERY,
+    validation_set_size: int = DEFAULT_VALIDATION_SET_SIZE,
+) -> tuple[ETCNN, dict, float, int, dict]:
     """Train one ETCNN for one epsilon (or, in the analytic corner treatments,
-    the single placeholder epsilon). Returns (best_model, history, best_loss, best_iter)."""
+    the single placeholder epsilon).
+
+    The restored state is selected by ``best_state_selection``:
+
+    - ``"validation"``: the state, after the optimiser step of iteration ``it``, that minimises the
+      weighted loss on a fixed validation set (:func:`draw_validation_set`, ``validation_set_size``
+      points of the mixture ``validation_sampling``), evaluated every ``validation_every``
+      iterations and at the last one;
+    - ``"single_batch"``: the criterion of every run before this option existed, the minimum of the
+      single-batch training loss (computed before the step of iteration ``it``, while the copied
+      state is the one after that step -- kept unchanged for comparability with those runs).
+
+    Both running minima are tracked and returned whichever criterion selects.
+
+    Returns:
+        ``(best_model, history, best_loss, best_iter, best_state_tracking)``, with ``best_loss`` and
+        ``best_iter`` those of the selecting criterion.
+    """
+    if best_state_selection not in BEST_STATE_SELECTIONS:
+        raise ValueError(f"best_state_selection must be one of {BEST_STATE_SELECTIONS}; got {best_state_selection!r}")
+    if best_state_selection == "validation" and validation_sampling is None:
+        raise ValueError("best_state_selection='validation' needs validation_sampling")
     label = (f"{corner_treatment}:{subtraction_terminal_profile}" if corner_treatment in ANALYTIC_CORNER_TREATMENTS
              else f"eps={epsilon:g}")
     model_seed = derive_seed(seed, "model_init")
@@ -754,15 +827,47 @@ def train_one_epsilon(
         history.update({"similarity_profile_sup_distance_to_error_function": [],
                         "similarity_profile_defect_integral": [],
                         "similarity_profile_network_grad_norm": []})
+    history.update({"validation_iter": [], "validation_loss": []})
     best_loss = math.inf
     best_iter = 0
     best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
+    best_state_tracking = {"selection": best_state_selection,
+                           "single_batch_loss": math.inf, "single_batch_iter": 0,
+                           "validation_loss": math.inf, "validation_iter": 0}
     start_iter = 1
 
-    if resume and checkpoint_path.exists():
-        (iter_done, total_iters_saved, history, best_loss, best_iter, best_model_state) = _load_checkpoint(
-            checkpoint_path, model, optimizer, scheduler, generator,
+    validation_set = None
+    if best_state_selection == "validation":
+        validation_seed = derive_seed(seed, "validation_set")
+        validation_set = draw_validation_set(validation_sampling, validation_set_size, validation_seed)
+        statistics = validation_set["statistics"]
+        logger.info(
+            f"[{label}] best-state selection: fixed validation set of {validation_set_size} points (seed "
+            f"{validation_seed}, role 'validation_set'): {statistics['number_of_uniform_points']} uniform + "
+            f"{statistics['number_of_corner_points']} corner points (tau log-uniform on "
+            f"[{validation_sampling.smallest_time_to_maturity:g}, {T:g}], xi uniform on "
+            f"[0, {validation_sampling.similarity_variable_max:g}]), weights u/m in "
+            f"[{statistics['minimum_weight']:.3e}, {statistics['maximum_weight']:.4f}], mean {statistics['mean_weight']:.5f}; "
+            f"evaluated every {validation_every} iterations and at the last one; the restored state minimises it."
         )
+    else:
+        logger.info(f"[{label}] best-state selection: single-batch training loss (criterion of the runs before "
+                    f"--best-state-selection existed).")
+
+    if resume and checkpoint_path.exists():
+        (iter_done, total_iters_saved, history, best_loss, best_iter, best_model_state,
+         saved_tracking) = _load_checkpoint(checkpoint_path, model, optimizer, scheduler, generator)
+        if saved_tracking is None:
+            saved_tracking = {"selection": "single_batch", "single_batch_loss": best_loss, "single_batch_iter": best_iter,
+                              "validation_loss": math.inf, "validation_iter": 0}
+            history.setdefault("validation_iter", [])
+            history.setdefault("validation_loss", [])
+        if saved_tracking["selection"] != best_state_selection:
+            raise ValueError(
+                f"[{label}] the checkpoint selects its best state by {saved_tracking['selection']!r}, the resumed run "
+                f"by {best_state_selection!r}: the stored best state would not be the one the new criterion selects. "
+                f"Resume with --best-state-selection {saved_tracking['selection']}.")
+        best_state_tracking = saved_tracking
         if total_iters_saved != total_iters:
             logger.warning(
                 f"[{label}] resume target total_iters={total_iters} differs from "
@@ -801,10 +906,27 @@ def train_one_epsilon(
         scheduler.step()
 
         loss_val = loss.item()
-        if loss_val < best_loss:
-            best_loss = loss_val
-            best_iter = it
-            best_model_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        if loss_val < best_state_tracking["single_batch_loss"]:
+            best_state_tracking["single_batch_loss"] = loss_val
+            best_state_tracking["single_batch_iter"] = it
+            if best_state_selection == "single_batch":
+                best_loss = loss_val
+                best_iter = it
+                best_model_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+        if validation_set is not None and (it % validation_every == 0 or it == total_iters):
+            current_validation_loss = validation_loss(model, validation_set, r, sigma)
+            history["validation_iter"].append(it)
+            history["validation_loss"].append(current_validation_loss)
+            improved = current_validation_loss < best_state_tracking["validation_loss"]
+            if improved:
+                best_state_tracking["validation_loss"] = current_validation_loss
+                best_state_tracking["validation_iter"] = it
+                best_loss = current_validation_loss
+                best_iter = it
+                best_model_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            logger.info(f"[{label}] iter {it:>6d}/{total_iters}  validation loss={current_validation_loss:.6e}"
+                        f"{'  (new best state)' if improved else ''}  best={best_loss:.6e}@{best_iter}")
 
         if it % log_every == 0 or it == 1:
             lr_now = optimizer.param_groups[0]["lr"]
@@ -839,26 +961,36 @@ def train_one_epsilon(
             _save_checkpoint(
                 checkpoint_path, it, total_iters, model, optimizer, scheduler,
                 history, best_loss, best_iter, best_model_state, label, generator,
+                best_state_tracking,
             )
 
     elapsed_total = time.time() - t0
     sec_per_iter = elapsed_total / max(1, total_iters - start_iter + 1)
     logger.info(
         f"[{label}] training done in {elapsed_total:.1f}s "
-        f"({sec_per_iter:.4f}s/iter); best loss {best_loss:.6e} at iter {best_iter}"
+        f"({sec_per_iter:.4f}s/iter); best loss {best_loss:.6e} at iter {best_iter} "
+        f"(selection: {best_state_selection})"
+    )
+    logger.info(
+        f"[{label}] running minima: single-batch training loss {best_state_tracking['single_batch_loss']:.6e} at iter "
+        f"{best_state_tracking['single_batch_iter']}; validation loss "
+        + (f"{best_state_tracking['validation_loss']:.6e} at iter {best_state_tracking['validation_iter']}"
+           if validation_set is not None else "not evaluated (--best-state-selection single_batch)")
     )
 
     if total_iters > 0:
         _save_checkpoint(
             checkpoint_path, total_iters, total_iters, model, optimizer, scheduler,
             history, best_loss, best_iter, best_model_state, label, generator,
+            best_state_tracking,
         )
 
-    # Restore the best-loss state before returning (CLAUDE.md: the last iter
+    # Restore the best state before returning (CLAUDE.md: the last iter
     # is not always the best one).
     model.load_state_dict(best_model_state)
     model.eval()
-    return model, history, best_loss, best_iter
+    logger.info(f"[{label}] restored the state of iteration {best_iter} (selection: {best_state_selection}).")
+    return model, history, best_loss, best_iter, best_state_tracking
 
 
 # ---------------------------------------------------------------------------
@@ -1504,6 +1636,17 @@ def main() -> None:
                          help="Lower end of the log-uniform law of tau (with --corner-sampling).")
     parser.add_argument("--corner-sampling-similarity-variable-max", type=float, default=5.0,
                          help="Upper end of the uniform law of xi (with --corner-sampling).")
+    parser.add_argument("--best-state-selection", type=str, default=DEFAULT_BEST_STATE_SELECTION,
+                         choices=list(BEST_STATE_SELECTIONS),
+                         help="Criterion of the restored state. 'validation': the minimum of the weighted "
+                              "loss on a FIXED validation set drawn once from the corner mixture (parameters "
+                              "--corner-sampling-*, used for the validation set even without --corner-sampling), "
+                              "evaluated every --validation-every iterations. 'single_batch' (default): the minimum of the "
+                              "single-batch training loss, the criterion of every run before this option.")
+    parser.add_argument("--validation-every", type=int, default=DEFAULT_VALIDATION_EVERY,
+                         help="Iterations between two validation-loss evaluations (with --best-state-selection validation).")
+    parser.add_argument("--validation-set-size", type=int, default=DEFAULT_VALIDATION_SET_SIZE,
+                         help=f"Points of the fixed validation set (a multiple of {VALIDATION_CHUNK_SIZE}).")
     parser.add_argument("--analytic-residual", action="store_true",
                          help="With --black-scholes-payoff only: build g2 as BlackScholesCornerExtension, "
                               "which exposes an analytic black_scholes_residual. compute_loss then assembles "
@@ -1700,6 +1843,24 @@ def main() -> None:
             print(f"ERROR: --corner-sampling: {error}", file=sys.stderr)
             sys.exit(2)
 
+    validation_sampling = None
+    if args.best_state_selection == "validation":
+        if args.validation_every < 1 or args.validation_set_size < VALIDATION_CHUNK_SIZE \
+                or args.validation_set_size % VALIDATION_CHUNK_SIZE != 0:
+            print(f"ERROR: need --validation-every >= 1 and --validation-set-size a positive multiple of "
+                  f"{VALIDATION_CHUNK_SIZE}; got {args.validation_every}, {args.validation_set_size}.", file=sys.stderr)
+            sys.exit(2)
+        try:
+            validation_sampling = CornerSimilaritySampling(
+                barrier=args.B, truncation_price=args.s_inf, maturity=args.T, volatility=args.sigma,
+                corner_fraction=args.corner_sampling_fraction,
+                smallest_time_to_maturity=args.corner_sampling_smallest_time_to_maturity,
+                similarity_variable_max=args.corner_sampling_similarity_variable_max,
+            )
+        except ValueError as error:
+            print(f"ERROR: validation set (--corner-sampling-* parameters): {error}", file=sys.stderr)
+            sys.exit(2)
+
     payoff_modes_requested = sum([args.smoothed_payoff, args.black_scholes_payoff, args.split_payoff])
     if payoff_modes_requested > 1:
         print(
@@ -1884,6 +2045,13 @@ def main() -> None:
             f"unbiased estimator of the same uniform-measure L2 norm as without the flag. The corner group is drawn "
             f"from the same sampler generator, after the uniform group."
         )
+    logger.info(
+        "  Best-state selection: "
+        + (f"weighted loss on a fixed validation set of {args.validation_set_size} corner-mixture points "
+           f"(seed {derive_seed(args.seed, 'validation_set')}, role 'validation_set'), every {args.validation_every} "
+           f"iterations" if args.best_state_selection == "validation"
+           else "single-batch training loss (--best-state-selection single_batch)")
+    )
     logger.info(f"  Iterations per epsilon: {args.iters}, n_f={args.n_f}")
     logger.info(f"  Master seed: {args.seed}")
     logger.info(f"    -> model_init seed: {derive_seed(args.seed, 'model_init')}")
@@ -2047,6 +2215,15 @@ def main() -> None:
                 "similarity_variable_max": corner_sampling.similarity_variable_max,
                 "acceptance_probability": corner_sampling.acceptance_probability(),
             }),
+            "best_state_selection": args.best_state_selection,
+            "validation_set": (None if validation_sampling is None else {
+                "size": args.validation_set_size,
+                "every": args.validation_every,
+                "seed": derive_seed(args.seed, "validation_set"),
+                "corner_fraction": validation_sampling.corner_fraction,
+                "smallest_time_to_maturity": validation_sampling.smallest_time_to_maturity,
+                "similarity_variable_max": validation_sampling.similarity_variable_max,
+            }),
             "far_field_dirichlet": args.far_field_dirichlet,
             "split_payoff": args.split_payoff,
             "comparison_volatility": comparison_volatility,
@@ -2100,7 +2277,7 @@ def main() -> None:
         checkpoint_path = out_dir / "models" / f"checkpoint_eps{epsilon:g}.pt"
         log_every = args.log_every or _adaptive_log_every(args.iters)
 
-        model, history, best_loss, best_iter = train_one_epsilon(
+        model, history, best_loss, best_iter, best_state_tracking = train_one_epsilon(
             epsilon=epsilon, K=args.K, B=args.B, r=args.r, sigma=args.sigma, T=args.T,
             s_inf=args.s_inf, total_iters=args.iters, n_f=args.n_f, log_every=log_every,
             seed=args.seed, checkpoint_path=checkpoint_path,
@@ -2119,6 +2296,10 @@ def main() -> None:
             similarity_profile_hidden_width=args.similarity_profile_hidden_width,
             similarity_profile_hidden_depth=args.similarity_profile_hidden_depth,
             corner_sampling=corner_sampling,
+            best_state_selection=args.best_state_selection,
+            validation_sampling=validation_sampling,
+            validation_every=args.validation_every,
+            validation_set_size=args.validation_set_size,
         )
         # The per-iteration history (loss, gradient norms and, for the learned
         # profile, the profile error) is saved so trajectory figures can be
@@ -2155,8 +2336,17 @@ def main() -> None:
 
         summary = {
             "epsilon": epsilon,
+            # best_loss / best_iter: value and iteration of the SELECTING criterion (best_state_selection);
+            # summaries written before the option have single-batch values and no best_state_selection key.
             "best_loss": best_loss,
             "best_iter": best_iter,
+            "best_state_selection": args.best_state_selection,
+            "best_single_batch_loss": best_state_tracking["single_batch_loss"],
+            "best_single_batch_iter": best_state_tracking["single_batch_iter"],
+            "best_validation_loss": (best_state_tracking["validation_loss"]
+                                     if args.best_state_selection == "validation" else None),
+            "best_validation_iter": (best_state_tracking["validation_iter"]
+                                     if args.best_state_selection == "validation" else None),
             **_evaluation_metrics(eval_result),
             "final_history_loss": history["loss"][-1] if history["loss"] else None,
             **({"far_field_truncation_error_bound": truncation_bound["bound"]} if truncation_bound else {}),
