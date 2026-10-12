@@ -106,6 +106,9 @@ EXTENSION_FIELD_KINDS = (
     "graded_chen_mangasarian",
     "split_principal",
     "split_principal_advection",
+    # Retained operator of orders 1 and 0 (added 2026-10-12, pre-registration
+    # 2026-10-12_preregistration_transported_datum_on_the_circle.md).
+    "transported_datum",
 )
 
 # Orders 0, 1, 2 (stage-2 cells) and 4 (fourth-order cell, added 2026-09-29).
@@ -413,6 +416,17 @@ class PeriodicExtensionField:
                 normalised_coefficients[self.principal_order],
                 wavenumbers,
             )
+        elif extension_kind == "transported_datum":
+            # Retained operator A = mu d_x + r_0 (orders 1 and 0): the field is
+            # e^{r_0 s} g(x + mu s) with s = T - t, that is a rate -r_0 equal at
+            # every wavenumber and the phase velocity mu; the semigroup is
+            # dissipative exactly when r_0 <= 0, validated here (never clamped).
+            decay_rates = np.full_like(wavenumbers, -self.reaction_coefficient)
+            if decay_rates[0] < -DISSIPATIVITY_TOLERANCE:
+                raise ValueError(
+                    "dissipativity violated for the transported field: the rate "
+                    f"-r0 = {decay_rates[0]:.6e} < -{DISSIPATIVITY_TOLERANCE:.0e}"
+                )
         elif extension_kind == "graded_gaussian":
             decay_rates = self.comparison_diffusivity * wavenumbers**2
         elif extension_kind == "graded_chen_mangasarian":
@@ -438,7 +452,10 @@ class PeriodicExtensionField:
                     f"k = {worst_index + 1}"
                 )
         if extension_kind in (
-            "split_diffusion_advection", "split_principal_advection", "exact_solution"
+            "split_diffusion_advection",
+            "split_principal_advection",
+            "exact_solution",
+            "transported_datum",
         ):
             phase_advection_velocity = self.advection_coefficient
         else:
@@ -906,6 +923,33 @@ def build_split_principal_advection_extension_field(
     )
 
 
+def build_transported_datum_extension_field(
+    generator_coefficients: dict[int, float],
+    cosine_coefficients,
+    *,
+    sine_coefficients=None,
+    comparison_diffusivity: float | None = None,
+    terminal_time: float = 1.0,
+) -> PeriodicExtensionField:
+    r"""Evolution of the retained operator :math:`A = \mu\,\partial_x + r_0` of
+    orders 1 and 0: :math:`h(x, t) = e^{r_0 (T - t)} g(x + \mu (T - t))` in the
+    backward convention, the periodic counterpart of the transported datum of
+    the butterfly cell; its forcing is the remainder of order :math:`2p`
+    applied to the field."""
+    if comparison_diffusivity is not None:
+        raise ValueError(
+            "comparison_diffusivity applies to the graded Gaussian extension "
+            f"only, received {comparison_diffusivity!r}"
+        )
+    return PeriodicExtensionField(
+        generator_coefficients,
+        cosine_coefficients,
+        extension_kind="transported_datum",
+        sine_coefficients=sine_coefficients,
+        terminal_time=terminal_time,
+    )
+
+
 def build_graded_chen_mangasarian_extension_field(
     generator_coefficients: dict[int, float],
     cosine_coefficients,
@@ -970,6 +1014,7 @@ EXTENSION_FIELD_REGISTRY = {
     "graded_chen_mangasarian": build_graded_chen_mangasarian_extension_field,
     "split_principal": build_split_principal_extension_field,
     "split_principal_advection": build_split_principal_advection_extension_field,
+    "transported_datum": build_transported_datum_extension_field,
 }
 
 

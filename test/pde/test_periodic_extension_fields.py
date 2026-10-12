@@ -260,6 +260,8 @@ def _spectral_reference_extension(extension_kind, generator):
         return SplitSemigroupExtension(datum, generator, [2], TERMINAL_TIME)
     if extension_kind == "split_diffusion_advection":
         return SplitSemigroupExtension(datum, generator, [2, 1], TERMINAL_TIME)
+    if extension_kind == "transported_datum":
+        return SplitSemigroupExtension(datum, generator, [1, 0], TERMINAL_TIME)
     if extension_kind == "graded_chen_mangasarian":
         return GradedChenMangasarianExtension(
             datum, generator, TEST_INITIAL_SMOOTHING_SCALE, TERMINAL_TIME
@@ -277,6 +279,7 @@ def _spectral_reference_extension(extension_kind, generator):
         "split_diffusion_advection",
         "graded_gaussian",
         "graded_chen_mangasarian",
+        "transported_datum",
     ],
 )
 def test_t5_trapezoidal_strip_integral_matches_closed_form(extension_kind):
@@ -714,3 +717,60 @@ def test_sixth_order_derivative_callables_and_validation():
             extension_kind="split_principal",
             terminal_time=TERMINAL_TIME,
         )
+
+
+# ---------------------------------------------------------------------------
+# Transported datum on the circle: retained operator of orders 1 and 0
+# (added 2026-10-12)
+# ---------------------------------------------------------------------------
+
+
+def _build_transported_field(generator_coefficients, truncation_wavenumber=16):
+    return PeriodicExtensionField(
+        generator_coefficients,
+        bandlimited_bernoulli_cosine_coefficients(truncation_wavenumber),
+        extension_kind="transported_datum",
+        terminal_time=TERMINAL_TIME,
+    )
+
+
+@pytest.mark.parametrize("generator_coefficients", [GENERATOR_G2, GENERATOR_G3])
+def test_transported_datum_is_the_damped_translate_of_the_datum(generator_coefficients):
+    """h(x, t) = e^{r0 s} g(x + mu s) with s = T - t."""
+    field = _build_transported_field(generator_coefficients)
+    x = np.linspace(0.0, TWO_PI, 97)
+    for time in (0.0, 0.4, 1.0):
+        time_to_terminal = TERMINAL_TIME - time
+        expected = math.exp(generator_coefficients[0] * time_to_terminal) * (
+            field.terminal_datum_values(x + generator_coefficients[1] * time_to_terminal)
+        )
+        np.testing.assert_allclose(
+            field.field(x, np.full_like(x, time)), expected, rtol=1e-12, atol=1e-14
+        )
+
+
+@pytest.mark.parametrize(
+    "generator_coefficients, remainder_order",
+    [(GENERATOR_G2, 2), (GENERATOR_G3, 4)],
+)
+def test_transported_datum_forcing_is_the_remainder_of_highest_order(
+    generator_coefficients, remainder_order
+):
+    """P h = c_{2p} d_x^{2p} h: only the term of order 2p is left."""
+    field = _build_transported_field(generator_coefficients)
+    x = np.linspace(0.0, TWO_PI, 97)
+    for time in (0.0, 0.5, 0.95):
+        t = np.full_like(x, time)
+        if remainder_order == 2:
+            remainder = generator_coefficients[2] * field.second_space_derivative(x, t)
+        else:
+            remainder = generator_coefficients[4] * field.fourth_space_derivative(x, t)
+        np.testing.assert_allclose(
+            field.forcing_values(x, t), remainder, rtol=1e-11, atol=1e-13
+        )
+
+
+def test_transported_datum_refuses_a_positive_reaction_coefficient():
+    with pytest.raises(ValueError, match="dissipativity violated for the transported field"):
+        _build_transported_field({2: 0.125, 1: -0.095, 0: 0.03})
+
