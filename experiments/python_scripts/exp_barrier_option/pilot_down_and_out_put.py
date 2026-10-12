@@ -748,6 +748,7 @@ def train_one_epsilon(
     validation_sampling: CornerSimilaritySampling | None = None,
     validation_every: int = DEFAULT_VALIDATION_EVERY,
     validation_set_size: int = DEFAULT_VALIDATION_SET_SIZE,
+    model_snapshot_every: int = 0,
 ) -> tuple[ETCNN, dict, float, int, dict]:
     """Train one ETCNN for one epsilon (or, in the analytic corner treatments,
     the single placeholder epsilon).
@@ -763,6 +764,12 @@ def train_one_epsilon(
       state is the one after that step -- kept unchanged for comparability with those runs).
 
     Both running minima are tracked and returned whichever criterion selects.
+
+    With ``model_snapshot_every = N > 0``, the model state after the optimiser step of every
+    iteration multiple of ``N`` (and of the last one) is also written to
+    ``<checkpoint directory>/snapshots_eps<EPSILON>/model_iter<IT>.pt``, so that the restored state
+    can be chosen again afterwards on any criterion (the periodic checkpoint holds only the latest
+    state and the best state of the run's own criterion).
 
     Returns:
         ``(best_model, history, best_loss, best_iter, best_state_tracking)``, with ``best_loss`` and
@@ -854,6 +861,12 @@ def train_one_epsilon(
         logger.info(f"[{label}] best-state selection: single-batch training loss (criterion of the runs before "
                     f"--best-state-selection existed).")
 
+    snapshot_directory = checkpoint_path.parent / f"snapshots_eps{epsilon:g}"
+    if model_snapshot_every > 0:
+        snapshot_directory.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[{label}] model snapshots every {model_snapshot_every} iterations (and at the last one) -> "
+                    f"{snapshot_directory}")
+
     if resume and checkpoint_path.exists():
         (iter_done, total_iters_saved, history, best_loss, best_iter, best_model_state,
          saved_tracking) = _load_checkpoint(checkpoint_path, model, optimizer, scheduler, generator)
@@ -927,6 +940,11 @@ def train_one_epsilon(
                 best_model_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
             logger.info(f"[{label}] iter {it:>6d}/{total_iters}  validation loss={current_validation_loss:.6e}"
                         f"{'  (new best state)' if improved else ''}  best={best_loss:.6e}@{best_iter}")
+
+        if model_snapshot_every > 0 and (it % model_snapshot_every == 0 or it == total_iters):
+            snapshot_path = snapshot_directory / f"model_iter{it:06d}.pt"
+            torch.save(model.state_dict(), snapshot_path)
+            logger.info(f"[{label}] model snapshot saved at iter {it}/{total_iters} -> {snapshot_path}")
 
         if it % log_every == 0 or it == 1:
             lr_now = optimizer.param_groups[0]["lr"]
@@ -1647,6 +1665,11 @@ def main() -> None:
                          help="Iterations between two validation-loss evaluations (with --best-state-selection validation).")
     parser.add_argument("--validation-set-size", type=int, default=DEFAULT_VALIDATION_SET_SIZE,
                          help=f"Points of the fixed validation set (a multiple of {VALIDATION_CHUNK_SIZE}).")
+    parser.add_argument("--save-model-snapshot-every", type=int, default=0,
+                         help="Write the model state after the step of every iteration multiple of N (and of the "
+                              "last one) to models/snapshots_eps<EPSILON>/model_iter<IT>.pt, so the restored state "
+                              "can be chosen again afterwards (e.g. on a fixed validation set). 0 (default) disables "
+                              "it; the periodic checkpoint (--checkpoint-every) keeps only the latest state.")
     parser.add_argument("--analytic-residual", action="store_true",
                          help="With --black-scholes-payoff only: build g2 as BlackScholesCornerExtension, "
                               "which exposes an analytic black_scholes_residual. compute_loss then assembles "
@@ -1860,6 +1883,10 @@ def main() -> None:
         except ValueError as error:
             print(f"ERROR: validation set (--corner-sampling-* parameters): {error}", file=sys.stderr)
             sys.exit(2)
+
+    if args.save_model_snapshot_every < 0:
+        print(f"ERROR: --save-model-snapshot-every must be >= 0; got {args.save_model_snapshot_every}.", file=sys.stderr)
+        sys.exit(2)
 
     payoff_modes_requested = sum([args.smoothed_payoff, args.black_scholes_payoff, args.split_payoff])
     if payoff_modes_requested > 1:
@@ -2215,6 +2242,7 @@ def main() -> None:
                 "similarity_variable_max": corner_sampling.similarity_variable_max,
                 "acceptance_probability": corner_sampling.acceptance_probability(),
             }),
+            "model_snapshot_every": args.save_model_snapshot_every,
             "best_state_selection": args.best_state_selection,
             "validation_set": (None if validation_sampling is None else {
                 "size": args.validation_set_size,
@@ -2300,6 +2328,7 @@ def main() -> None:
             validation_sampling=validation_sampling,
             validation_every=args.validation_every,
             validation_set_size=args.validation_set_size,
+            model_snapshot_every=args.save_model_snapshot_every,
         )
         # The per-iteration history (loss, gradient norms and, for the learned
         # profile, the profile error) is saved so trajectory figures can be
