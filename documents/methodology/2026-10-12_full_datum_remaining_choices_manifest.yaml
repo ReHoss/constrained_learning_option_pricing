@@ -1,0 +1,20 @@
+# Manifest of the full-datum study of the remaining choices of h (pre-registration
+# documents/methodology/2026-10-12_preregistration_full_datum_remaining_choices.md).
+full_datum_remaining_choices:
+  cells: [g2_bernoulli_full, g3_bernoulli_full]   # Black-Scholes (paper G_2) and order four (paper G_3), full datum g, T = 1, reference band 4096
+  variants:
+    g2_bernoulli_full: [split_diffusion_advection, graded_chen_mangasarian, exact_solution, transported_datum]
+    g3_bernoulli_full: [split_principal_advection, graded_chen_mangasarian, exact_solution, transported_datum]
+    # split_diffusion_advection / split_principal_advection: A = L^X - gamma_{L^X,0}, m_B = 0 (the paper's highest- and first-order split)
+  seeds: [0, 1, 2]
+  tasks: 24
+  cluster: Jean Zay (IDRIS), NVIDIA V100 (gpu_p13), akz@v100, qos_gpu-t3, time limit 08:00:00 per task
+  slurm_jobs: {smoke_test: 991839, array: 991840}
+  smoke_test: qos_gpu-dev, 300 iterations per variant and cell with --debug; analytic-vs-autograd cross-checks <= 4.9e-9 (not applicable to the transported full datum, autograd only); no safeguard activation; values not reported as results
+  code_revision: 1d5e982   # recorded in every metadata.yaml at the --init-only phase (git is unavailable on compute nodes)
+  hyperparameters: identical to the full-datum runs of 2026-10-08 (checked against full_datum_sampling_2026-10-08/2026-10-07-23-30-00-299898Z_g2_bernoulli_full_iters20000_seed0 and ...-23-30-10-735660Z_g3_bernoulli_full_iters20000_seed0 at --init-only)
+  run_directories: data/ablation_split_extension_trained/full_datum_remaining_choices_2026-10-12/ (Jean Zay)
+  slurm_logs: data/ablation_split_extension_trained/full_datum_remaining_choices_2026-10-12/slurm/ (Jean Zay)
+  launch_scripts: Jean Zay, $WORK/oym_migration/work/logs/constrained_learning_option_pricing/full_datum_remaining_choices_2026-10-12/
+  run_directories_local: data/ablation_split_extension_trained/full_datum_remaining_choices_2026-10-12/ (copied 2026-10-12, no checkpoint files exist, _debug_ excluded)
+  status: completed 2026-10-12, 24 admissible runs; predictions F1, F2, F3 and F4 hold (pre-registration section 4)

@@ -43,4 +43,37 @@ Admissibility follows the paper: finite validation and evaluation quantities, ex
 
 ## 4. Outcome
 
-To be written after the run.
+Written 2026-10-12 after Jean Zay array 991840 (smoke test 991839) completed at revision `1d5e982`. The values are read from the `summary_*.yaml` files of the six run directories (`rel_l2` is $\delta_\Gamma$), copied to `data/ablation_split_extension_trained/full_datum_remaining_choices_2026-10-12/`. No checkpoint files exist. The reference values on $g_{128}$ are read from `RHB_notes/paper/generated/individual_results.csv`.
+
+**Naming.** The variant designated "the split $\{2p,1\}$" in Sections 1 and 3 retains every term of $\mathcal L^X$ except the term of order zero: $A=\mathcal L^X-\gamma_{\mathcal L^X,0}$, hence $m_B=0$. On the two cells $\mathcal L^X$ has the orders $2p$, $1$ and $0$ only, so this is the paper's highest- and first-order split. Since $\gamma_{\mathcal L^X,0}$ is a constant, $A$ and $\gamma_{\mathcal L^X,0}$ commute and the retained evolution is $h=e^{-\gamma_{\mathcal L^X,0}t}u^\star$ in the forward time of the paper. The label $\{2p,1\}$ is withdrawn (author ruling, 2026-10-12). Sections 1 to 3 are kept as written before the run.
+
+**Admissibility.** The 24 runs are admissible:
+- finite validation and evaluation quantities;
+- exact initial-value check ($\mathrm{tc}_{l^2}=0$);
+- no gradient-norm safeguard activation and no non-finite norm over the 20000 recorded updates.
+
+Wall times range from $417$ to $901$ s on `g2` and from $1674$ to $2176$ s on `g3`.
+
+**Relative error $\delta_\Gamma$ on the full datum** (measured, 3 seeds):
+
+| Cell | Choice of $h$ | Seed 0 | Seed 1 | Seed 2 | Median | Median validation residual |
+|---|---|---|---|---|---|---|
+| `g2` | $A=\mathcal L^X-\gamma_{\mathcal L^X,0}$ | $\simeq1.070\times10^{-4}$ | $\simeq1.449\times10^{-4}$ | $\simeq9.194\times10^{-5}$ | $\simeq1.070\times10^{-4}$ | $\simeq2.81\times10^{-9}$ |
+| `g2` | Chen–Mangasarian, $\alpha=1$ | $\simeq6.592\times10^{-3}$ | $\simeq3.104\times10^{-3}$ | $\simeq7.587\times10^{-3}$ | $\simeq6.59\times10^{-3}$ | $\simeq8.28\times10^{-6}$ |
+| `g2` | Control $A=\mathcal L^X$ | $\simeq7.706\times10^{-5}$ | $\simeq7.942\times10^{-5}$ | $\simeq7.747\times10^{-5}$ | $\simeq7.75\times10^{-5}$ | $\simeq1.72\times10^{-9}$ |
+| `g2` | Transported datum | $\simeq0.13684$ | $\simeq0.13685$ | $\simeq0.13683$ | $\simeq0.1368$ | $\simeq1.73\times10^{-9}$ |
+| `g3` | $A=\mathcal L^X-\gamma_{\mathcal L^X,0}$ | $\simeq2.696\times10^{-4}$ | $\simeq4.659\times10^{-4}$ | $\simeq4.451\times10^{-4}$ | $\simeq4.451\times10^{-4}$ | $\simeq2.06\times10^{-7}$ |
+| `g3` | Chen–Mangasarian, $\alpha=1$ | $\simeq33.94$ | $\simeq48.94$ | $\simeq13.38$ | $\simeq33.9$ | $\simeq1.03\times10^{7}$ |
+| `g3` | Control $A=\mathcal L^X$ | $\simeq3.481\times10^{-5}$ | $\simeq4.403\times10^{-5}$ | $\simeq5.650\times10^{-5}$ | $\simeq4.40\times10^{-5}$ | $\simeq2.33\times10^{-9}$ |
+| `g3` | Transported datum | $\simeq0.140781$ | $\simeq0.140780$ | $\simeq0.140778$ | $\simeq0.1408$ | $\simeq2.34\times10^{-9}$ |
+
+**Predictions.**
+- **F1 holds.** The median of $A=\mathcal L^X-\gamma_{\mathcal L^X,0}$ on the full datum differs from its median on $g_{128}$ by a relative $7.9\times10^{-4}$ on `g2` ($1.070445\times10^{-4}$ against $1.071288\times10^{-4}$) and $4.1\times10^{-4}$ on `g3` ($4.451310\times10^{-4}$ against $4.449494\times10^{-4}$), both within the $10\%$ of the prediction.
+- **F2 holds.** The control is below the highest-order split on the full datum by a factor $\simeq6.4$ on `g2` ($7.75\times10^{-5}$ against $4.93\times10^{-4}$) and $\simeq11$ on `g3` ($4.40\times10^{-5}$ against $4.90\times10^{-4}$).
+- **F3 holds.** The transported datum exceeds the threshold $4.9\times10^{-3}$: its median is $\simeq2.8\times10^{2}$ times that of the highest-order split on `g2` ($0.1368$) and $\simeq2.9\times10^{2}$ times on `g3` ($0.1408$).
+- **F4 holds.** Chen–Mangasarian exceeds the highest-order split on the full datum by a factor $\simeq13$ on `g2` ($6.59\times10^{-3}$) and $\simeq6.9\times10^{4}$ on `g3` ($33.9$).
+
+**Observations, not predicted.**
+- The three seeds of the transported datum give $\delta_\Gamma$ equal to four digits on `g2` and to five digits on `g3`, at validation residuals equal, to within $1\%$, to those of the control ($1.73\times10^{-9}$ against $1.72\times10^{-9}$ on `g2`, $2.34\times10^{-9}$ against $2.33\times10^{-9}$ on `g3`). The medians $0.1368$ and $0.1408$ differ by a relative $1.1\%$ and $6.8\%$ from those of $A=0$ on the full datum in the study of 2026-10-08 ($0.1383$ and $0.1510$). No closed-form limit was computed for the transported datum.
+- The control on the full datum coincides with its value on $g_{128}$ to a relative $0.7\%$ on `g2` ($7.75\times10^{-5}$ against $7.69\times10^{-5}$) and to a relative $5\times10^{-5}$ on `g3` ($4.4028\times10^{-5}$ against $4.4026\times10^{-5}$).
+- Chen–Mangasarian is larger on the full datum than on $g_{128}$: $6.59\times10^{-3}$ against $1.15\times10^{-3}$ on `g2`, $33.9$ against $2.87$ on `g3`. On `g3` the retained updates are $500$, $1100$ and $5200$, and the median training floor $1.43\times10^{6}$ is smaller than the closed-form floor $1.25\times10^{9}$ (reference band $4096$) by a factor $\simeq8.7\times10^{2}$.
