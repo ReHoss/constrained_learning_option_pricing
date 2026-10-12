@@ -51,13 +51,22 @@ def test_autograd_derivatives_of_the_full_datum_are_the_classical_ones():
 
 
 @pytest.mark.parametrize(
-    "cell_name, split_variant",
-    [("g2_bernoulli_full", "split_diffusion"), ("g3_bernoulli_full", "split_principal")],
+    "cell_name, split_variant, split_and_first_order_variant",
+    [
+        ("g2_bernoulli_full", "split_diffusion", "split_diffusion_advection"),
+        ("g3_bernoulli_full", "split_principal", "split_principal_advection"),
+    ],
 )
-def test_full_datum_cells_give_the_full_datum_to_the_raw_variant_only(cell_name, split_variant):
+def test_full_datum_cells_give_the_full_datum_to_the_raw_variant_only(
+    cell_name, split_variant, split_and_first_order_variant
+):
     problem = runner.build_problem(cell_name)
     assert problem["band_edge"] == catalogue.FULL_DATUM_REFERENCE_BAND_EDGE
-    assert catalogue.variant_names(cell_name) == ["constant_in_time", split_variant]
+    # The variants of the 2026-10-08 study first, then those added on 2026-10-12.
+    assert catalogue.variant_names(cell_name) == [
+        "constant_in_time", split_variant, split_and_first_order_variant,
+        "graded_chen_mangasarian", "exact_solution", "transported_datum",
+    ]
     raw_problem = runner.problem_for_variant(
         problem, catalogue.variant_by_name(cell_name, "constant_in_time")
     )
@@ -103,3 +112,54 @@ def test_line_source_correction_solves_its_equation_mode_by_mode(generator_coeff
     assert np.max(np.abs(residual[in_band])) < 1e-6 * max(1.0, np.max(np.abs(singular_coefficients[in_band])))
     terminal_values = runner.line_source_correction_values(problem, x, np.full_like(x, 1.0))
     np.testing.assert_allclose(terminal_values, 0.0, atol=1e-15)
+
+
+# ---------------------------------------------------------------------------
+# Transported field of the full datum (added 2026-10-12)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cell_name", ["g2_bernoulli_full", "g3_bernoulli_full"])
+def test_full_datum_transported_variant_receives_the_full_datum(cell_name):
+    problem = runner.build_problem(cell_name)
+    transported_problem = runner.problem_for_variant(
+        problem, catalogue.variant_by_name(cell_name, "transported_datum")
+    )
+    assert transported_problem["terminal_datum"] is runner.full_bernoulli_datum_values
+
+
+@pytest.mark.parametrize(
+    "generator_coefficients",
+    [{2: 0.125, 1: -0.095, 0: -0.03}, {4: -0.05, 1: 1.3, 0: -0.4}],
+)
+def test_full_datum_transported_field_is_the_damped_translate(generator_coefficients):
+    field = runner.FullDatumTransportedField(generator_coefficients, terminal_time=1.0)
+    x = POINTS_AWAY_FROM_THE_BREAK
+    np.testing.assert_allclose(
+        field.field(x, np.ones_like(x)), runner.full_bernoulli_datum_values(x), rtol=0, atol=0
+    )
+    for time in (0.0, 0.4):
+        s = 1.0 - time
+        expected = math.exp(generator_coefficients[0] * s) * runner.full_bernoulli_datum_values(
+            x + generator_coefficients[1] * s
+        )
+        np.testing.assert_allclose(field.field(x, np.full_like(x, time)), expected, rtol=1e-13)
+
+
+def test_full_datum_transported_field_terminal_profile_and_torch_path():
+    torch = pytest.importorskip("torch")
+    field = runner.FullDatumTransportedField({2: 0.125, 1: -0.095, 0: -0.03}, terminal_time=1.0)
+    np.testing.assert_allclose(
+        field.terminal_forcing_profile(POINTS_AWAY_FROM_THE_BREAK),
+        np.full_like(POINTS_AWAY_FROM_THE_BREAK, 0.125 / (2.0 * math.pi**2)),
+    )
+    fourth_order = runner.FullDatumTransportedField({4: -0.05, 1: 1.3, 0: -0.4}, terminal_time=1.0)
+    assert np.all(fourth_order.terminal_forcing_profile(POINTS_AWAY_FROM_THE_BREAK) == 0.0)
+    x = torch.tensor(POINTS_AWAY_FROM_THE_BREAK, dtype=torch.float64)
+    t = torch.full_like(x, 0.4)
+    np.testing.assert_allclose(
+        field.field(x, t).numpy(),
+        field.field(POINTS_AWAY_FROM_THE_BREAK, np.full_like(POINTS_AWAY_FROM_THE_BREAK, 0.4)),
+        rtol=1e-13,
+    )
+

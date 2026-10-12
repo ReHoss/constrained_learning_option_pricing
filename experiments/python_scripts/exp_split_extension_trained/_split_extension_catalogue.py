@@ -384,6 +384,24 @@ TRANSPORTED_DATUM_VARIANT: dict = {
     "label": r"transported datum $\{\partial_x,1\}$: $P\Psi=0$ off the kink lines",
 }
 
+# The remaining choices of h of the CMAP median table on the full-datum cells (added
+# 2026-10-12, pre-registration 2026-10-12_preregistration_full_datum_remaining_choices.md).
+# The split and the control are Fourier sums truncated at FULL_DATUM_REFERENCE_BAND_EDGE,
+# like the split of the 2026-10-08 study; the transported field is built on the full datum
+# (runner: FullDatumTransportedField).
+FULL_DATUM_SECOND_ORDER_ADDED_VARIANTS: list[dict] = [
+    _generator_variant("split_diffusion_advection"),
+    _generator_variant("graded_chen_mangasarian"),
+    _generator_variant("exact_solution"),
+    TRANSPORTED_DATUM_VARIANT,
+]
+FULL_DATUM_FOURTH_ORDER_ADDED_VARIANTS: list[dict] = [
+    SPLIT_PRINCIPAL_ADVECTION_VARIANT,
+    _generator_variant("graded_chen_mangasarian"),
+    _generator_variant("exact_solution"),
+    TRANSPORTED_DATUM_VARIANT,
+]
+
 BUTTERFLY_REAL_LINE_CELL_VARIANTS: list[dict] = [
     _generator_variant("convex_raw"),
     _generator_variant("constant_in_time"),
@@ -734,9 +752,9 @@ def variants_for_cell(cell_name: str) -> list[dict]:
     if cell_conf["variant_set"] == "variable_coefficient":
         return list(VARIABLE_COEFFICIENT_CELL_VARIANTS)
     if cell_conf["variant_set"] == "full_datum_second_order":
-        return list(FULL_DATUM_SECOND_ORDER_CELL_VARIANTS)
+        return list(FULL_DATUM_SECOND_ORDER_CELL_VARIANTS) + FULL_DATUM_SECOND_ORDER_ADDED_VARIANTS
     if cell_conf["variant_set"] == "full_datum_fourth_order":
-        return list(FULL_DATUM_FOURTH_ORDER_CELL_VARIANTS)
+        return list(FULL_DATUM_FOURTH_ORDER_CELL_VARIANTS) + FULL_DATUM_FOURTH_ORDER_ADDED_VARIANTS
     if cell_conf["variant_set"] == "sixth_order":
         return list(SIXTH_ORDER_CELL_VARIANTS)
     if cell_conf["variant_set"] == "real_line_butterfly":

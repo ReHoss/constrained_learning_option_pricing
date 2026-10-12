@@ -311,6 +311,57 @@ def full_bernoulli_datum_values(x):
     return unit_position * unit_position - unit_position + 1.0 / 6.0
 
 
+class FullDatumTransportedField:
+    r"""Transported field of the full datum, :math:`h(x, t) = e^{r_0 s}\, g(x + \mu s)` with
+    :math:`s = T - t`, the evolution of the retained operator :math:`A = \mu\,\partial_x + r_0`
+    of orders 1 and 0 (added 2026-10-12, pre-registration
+    2026-10-12_preregistration_full_datum_remaining_choices.md).
+
+    It is built on the unprojected datum :func:`full_bernoulli_datum_values`, like the
+    constant-in-time variant of the full-datum cells: no analytic derivative is supplied,
+    so the ansatz differentiates it by autograd and sees the classical derivatives only.
+    The Dirac part of its forcing, carried by the line :math:`x + \mu s \equiv 0`, is
+    absent from the pointwise residual.  Its value at :math:`t = T` is the full datum, so
+    the initial-value check is exact.
+    """
+
+    def __init__(self, generator_coefficients: dict, terminal_time: float) -> None:
+        self.generator_coefficients = {int(order): float(value) for order, value in generator_coefficients.items()}
+        self.advection_coefficient = self.generator_coefficients.get(1, 0.0)
+        self.reaction_coefficient = self.generator_coefficients.get(0, 0.0)
+        if self.reaction_coefficient > 0.0:
+            raise ValueError(
+                "the transported field requires r0 <= 0 (dissipative retained operator), "
+                f"received r0 = {self.reaction_coefficient!r}"
+            )
+        self.terminal_time = float(terminal_time)
+
+    def field(self, x, t):
+        """Value :math:`e^{r_0 s} g(x + \mu s)` for numpy arrays or torch tensors."""
+        import numpy as np
+
+        try:
+            import torch
+        except ImportError:  # pragma: no cover - torch is installed wherever the runner trains
+            torch = None
+        time_to_terminal = self.terminal_time - t
+        if torch is not None and isinstance(x, torch.Tensor):
+            damping = torch.exp(self.reaction_coefficient * time_to_terminal)
+        else:
+            damping = np.exp(self.reaction_coefficient * np.asarray(time_to_terminal, dtype=np.float64))
+        return damping * full_bernoulli_datum_values(x + self.advection_coefficient * time_to_terminal)
+
+    def terminal_forcing_profile(self, x):
+        r"""Classical part of :math:`(Ph)(\cdot, T)`, the remainder of orders :math:`\ge 2`
+        applied to the datum away from the break point: :math:`g'' = 1/(2\pi^2)` and the
+        derivatives of order 3 and above vanish, so the profile is
+        :math:`c_2 / (2\pi^2)`."""
+        import numpy as np
+
+        second_order_coefficient = self.generator_coefficients.get(2, 0.0)
+        return np.full_like(np.asarray(x, dtype=np.float64), second_order_coefficient / (2.0 * math.pi**2))
+
+
 def problem_for_variant(problem: dict, variant: dict) -> dict:
     """Problem seen by one variant.
 
@@ -319,7 +370,11 @@ def problem_for_variant(problem: dict, variant: dict) -> dict:
     use the full datum; the extension variants and the exact reference keep
     the spectral datum at the reference band.  Every other cell is unchanged.
     """
-    if problem.get("full_terminal_datum") is not None and variant["extension"] is None:
+    if problem.get("full_terminal_datum") is not None and variant["extension"] in (
+        None, "transported_datum"
+    ):
+        # The transported field of a full-datum cell is built on the full datum too
+        # (FullDatumTransportedField), so its terminal identity uses it.
         return dict(problem, terminal_datum=problem["full_terminal_datum"])
     return problem
 
@@ -1074,6 +1129,14 @@ def build_ansatz(variant: dict, problem: dict, hparams: dict, *, model_seed: int
         )
         extension_fn = extension_field.field
         extension_derivative_fns = extension_field.derivative_callables()
+    elif problem.get("full_terminal_datum") is not None and variant["extension"] == "transported_datum":
+        # Full-datum cell: the transported field of the unprojected datum, differentiated by
+        # autograd (no analytic derivatives), so that the Dirac line of its forcing is not seen.
+        extension_field = FullDatumTransportedField(
+            problem["generator_coefficients"], terminal_time
+        )
+        extension_fn = extension_field.field
+        extension_derivative_fns = None
     elif variant["extension"] is not None:
         builder = EXTENSION_FIELD_REGISTRY[variant["extension"]]
         comparison_diffusivity = None
@@ -2287,6 +2350,17 @@ def main(argv=None) -> int:
                 line_source_metrics["line_source_correction_relative_l2"],
                 line_source_metrics["relative_l2_to_line_source_limit"],
             )
+        elif problem.get("full_terminal_datum") is not None and variant["extension"] == "transported_datum":
+            # The transported field of the full datum has a Dirac line in its forcing:
+            # infinite energy, no band-limited closed form (recorded as NaN).  The
+            # line-source limit of the constant-in-time variant does not apply to it.
+            forcing_floor_closed_form = float("nan")
+            logger.info(
+                "[%s] closed-form forcing floor not defined: the forcing of the transported "
+                "full datum has a singular part on the line x + mu (T - t) = 0 (recorded as NaN)",
+                variant["name"],
+            )
+            line_source_metrics = {}
         elif full_datum_path:
             # The forcing of the unprojected datum has a Dirac part: its energy
             # is infinite and no band-limited closed form represents it.
