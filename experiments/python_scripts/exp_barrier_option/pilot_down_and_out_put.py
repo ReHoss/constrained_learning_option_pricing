@@ -124,6 +124,7 @@ from learning_option_pricing.pricing.barrier import (  # noqa: E402
     SUBTRACTION_TERMINAL_PROFILES,
     reiner_rubinstein_down_and_out_put,
 )
+from learning_option_pricing.pricing.corner_similarity_sampling import CornerSimilaritySampling  # noqa: E402
 from learning_option_pricing.pricing.terminal import bsm_operator  # noqa: E402
 from learning_option_pricing.utils.figure_layout import finalize_figure  # noqa: E402
 from learning_option_pricing.utils.run_context import (  # noqa: E402
@@ -325,8 +326,12 @@ def sample_collocation(
 # construction away from the corner; see the module docstring).
 # ---------------------------------------------------------------------------
 
-def compute_loss(model: ETCNN, s_f: torch.Tensor, t_f: torch.Tensor, r: float, sigma: float) -> torch.Tensor:
-    r"""Interior PDE residual loss, mean(F(U_theta)^2).
+def compute_loss(model: ETCNN, s_f: torch.Tensor, t_f: torch.Tensor, r: float, sigma: float,
+                 weights: torch.Tensor | None = None) -> torch.Tensor:
+    r"""Interior PDE residual loss, mean(F(U_theta)^2), or mean(w F(U_theta)^2) with
+    importance ``weights`` w = u/m (``--corner-sampling``; see
+    :mod:`learning_option_pricing.pricing.corner_similarity_sampling`), which keeps the loss an
+    unbiased estimator of the same uniform-measure L2 norm of the residual.
 
     Two routes, selected by whether ``model.g2`` exposes
     ``black_scholes_residual`` (true only for the split-semigroup mode,
@@ -378,7 +383,9 @@ def compute_loss(model: ETCNN, s_f: torch.Tensor, t_f: torch.Tensor, r: float, s
     else:
         u_f = model(x_f).squeeze()
         F_u = bsm_operator(u_f, s_f, t_f, r, 0.0, sigma)
-    return torch.mean(F_u**2)
+    if weights is None:
+        return torch.mean(F_u**2)
+    return torch.mean(weights * F_u**2)
 
 
 # ---------------------------------------------------------------------------
@@ -688,6 +695,7 @@ def train_one_epsilon(
     enrichment_delta1: float = DEFAULT_ENRICHMENT_DELTA1,
     similarity_profile_hidden_width: int = DEFAULT_SIMILARITY_PROFILE_HIDDEN_WIDTH,
     similarity_profile_hidden_depth: int = DEFAULT_SIMILARITY_PROFILE_HIDDEN_DEPTH,
+    corner_sampling: CornerSimilaritySampling | None = None,
 ) -> tuple[ETCNN, dict, float, int]:
     """Train one ETCNN for one epsilon (or, in the analytic corner treatments,
     the single placeholder epsilon). Returns (best_model, history, best_loss, best_iter)."""
@@ -767,8 +775,15 @@ def train_one_epsilon(
     t0 = time.time()
     for it in range(start_iter, total_iters + 1):
         optimizer.zero_grad()
-        s_f, t_f = sample_collocation(n_f, B, s_inf, T, generator, corner_exclusion_window)
-        loss = compute_loss(model, s_f, t_f, r, sigma)
+        if corner_sampling is None:
+            s_f, t_f = sample_collocation(n_f, B, s_inf, T, generator, corner_exclusion_window)
+            loss = compute_loss(model, s_f, t_f, r, sigma)
+        else:
+            s_f, t_f, importance_weights, sampling_statistics = corner_sampling.sample_mixture(
+                n_f, generator, torch.get_default_dtype())
+            s_f = s_f.to(DEVICE).requires_grad_(True)
+            t_f = t_f.to(DEVICE).requires_grad_(True)
+            loss = compute_loss(model, s_f, t_f, r, sigma, importance_weights.to(DEVICE))
         loss.backward()
 
         total_norm = 0.0
@@ -814,6 +829,10 @@ def train_one_epsilon(
                 f"[{label}] iter {it:>6d}/{total_iters}  loss={loss_val:.6e}  "
                 f"|grad|={total_norm:.2e}  lr={lr_now:.6f}  best={best_loss:.6e}@{best_iter}  ({elapsed:.1f}s)"
                 + profile_message
+                + ("" if corner_sampling is None else
+                   f"  weights in [{sampling_statistics['minimum_weight']:.2e}, {sampling_statistics['maximum_weight']:.2f}]"
+                   f" mean {sampling_statistics['mean_weight']:.3f}"
+                   f", {sampling_statistics['number_of_rejected_corner_draws']} corner redraws")
             )
 
         if checkpoint_every > 0 and it % checkpoint_every == 0 and it < total_iters:
@@ -1471,6 +1490,20 @@ def main() -> None:
                               "exactly the region where the residual is enforced (rel_l2_global still "
                               "includes the window and rel_l2_corner is the window alone), isolating the "
                               "treatment of the payoff singularity at s=K from that of the corner.")
+    parser.add_argument("--corner-sampling", action="store_true",
+                         help="Importance sampling of the collocation points towards the corner (B, T): a fraction "
+                              "--corner-sampling-fraction of each batch is drawn with tau log-uniform on "
+                              "[--corner-sampling-smallest-time-to-maturity, T] and xi uniform on "
+                              "[0, --corner-sampling-similarity-variable-max], s = B exp(xi sigma sqrt(2 tau)) (redrawn "
+                              "if s > s_inf); the rest uniformly as without the flag. Each squared residual is weighted "
+                              "by u/m (uniform over mixture density), so the loss estimates the same L2 norm. "
+                              "Default off: the plain sampler, bit-for-bit unchanged.")
+    parser.add_argument("--corner-sampling-fraction", type=float, default=0.5,
+                         help="Fraction p in (0, 1) of corner points per batch (with --corner-sampling).")
+    parser.add_argument("--corner-sampling-smallest-time-to-maturity", type=float, default=1e-6,
+                         help="Lower end of the log-uniform law of tau (with --corner-sampling).")
+    parser.add_argument("--corner-sampling-similarity-variable-max", type=float, default=5.0,
+                         help="Upper end of the uniform law of xi (with --corner-sampling).")
     parser.add_argument("--analytic-residual", action="store_true",
                          help="With --black-scholes-payoff only: build g2 as BlackScholesCornerExtension, "
                               "which exposes an analytic black_scholes_residual. compute_loss then assembles "
@@ -1650,6 +1683,23 @@ def main() -> None:
         print(f"ERROR: --eps0 must be > 0; got {args.eps0}.", file=sys.stderr)
         sys.exit(2)
 
+    corner_sampling = None
+    if args.corner_sampling:
+        if args.exclude_corner_from_collocation:
+            print("ERROR: --corner-sampling concentrates collocation points at the corner that "
+                  "--exclude-corner-from-collocation removes; the two flags are mutually exclusive.", file=sys.stderr)
+            sys.exit(2)
+        try:
+            corner_sampling = CornerSimilaritySampling(
+                barrier=args.B, truncation_price=args.s_inf, maturity=args.T, volatility=args.sigma,
+                corner_fraction=args.corner_sampling_fraction,
+                smallest_time_to_maturity=args.corner_sampling_smallest_time_to_maturity,
+                similarity_variable_max=args.corner_sampling_similarity_variable_max,
+            )
+        except ValueError as error:
+            print(f"ERROR: --corner-sampling: {error}", file=sys.stderr)
+            sys.exit(2)
+
     payoff_modes_requested = sum([args.smoothed_payoff, args.black_scholes_payoff, args.split_payoff])
     if payoff_modes_requested > 1:
         print(
@@ -1745,8 +1795,10 @@ def main() -> None:
     # the run IS, and metadata.yaml is not what one reads when listing data/.
     corner_tag = "_nocorner" if args.exclude_corner_from_collocation else ""
     far_field_tag = "_farfield" if args.far_field_dirichlet else ""
+    corner_sampling_tag = f"_cornersampling{args.corner_sampling_fraction:g}" if args.corner_sampling else ""
     out_dir = (Path(args.out_dir) if args.out_dir is not None else script_data_dir(__file__) / (
         f"{debug_prefix}{timestamp}_iters{args.iters}_eps{eps_tag}_seed{args.seed}{payoff_tag}{corner_tag}{far_field_tag}"
+        f"{corner_sampling_tag}"
     ))
     resuming_existing_run = args.resume and (out_dir / "metadata.yaml").exists()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1818,6 +1870,20 @@ def main() -> None:
            if args.exclude_corner_from_collocation
            else "the whole domain Omega = (B, s_inf) x (0, T), corner window INCLUDED")
     )
+    if corner_sampling is None:
+        logger.info("  Collocation sampler: uniform on Omega (no --corner-sampling)")
+    else:
+        effective_fraction = corner_sampling.effective_corner_fraction(args.n_f)
+        logger.info(
+            f"  Collocation sampler: mixture (--corner-sampling): {corner_sampling.number_of_corner_points(args.n_f)} of "
+            f"{args.n_f} points per batch (effective fraction {effective_fraction:g}) with tau log-uniform on "
+            f"[{corner_sampling.smallest_time_to_maturity:g}, {args.T:g}] and xi uniform on "
+            f"[0, {corner_sampling.similarity_variable_max:g}], s = B exp(xi sigma sqrt(2 tau)) redrawn if s > s_inf "
+            f"(acceptance probability {corner_sampling.acceptance_probability():.6f}); the rest uniform on Omega. "
+            f"Squared residuals weighted by u/m in (0, {1.0 / (1.0 - effective_fraction):g}]: the loss is an "
+            f"unbiased estimator of the same uniform-measure L2 norm as without the flag. The corner group is drawn "
+            f"from the same sampler generator, after the uniform group."
+        )
     logger.info(f"  Iterations per epsilon: {args.iters}, n_f={args.n_f}")
     logger.info(f"  Master seed: {args.seed}")
     logger.info(f"    -> model_init seed: {derive_seed(args.seed, 'model_init')}")
@@ -1974,6 +2040,13 @@ def main() -> None:
             "black_scholes_payoff": args.black_scholes_payoff,
             "analytic_residual": args.analytic_residual,
             "corner_exclusion_window": (corner_window if args.exclude_corner_from_collocation else None),
+            "corner_sampling": (None if corner_sampling is None else {
+                "corner_fraction": corner_sampling.corner_fraction,
+                "effective_corner_fraction": corner_sampling.effective_corner_fraction(args.n_f),
+                "smallest_time_to_maturity": corner_sampling.smallest_time_to_maturity,
+                "similarity_variable_max": corner_sampling.similarity_variable_max,
+                "acceptance_probability": corner_sampling.acceptance_probability(),
+            }),
             "far_field_dirichlet": args.far_field_dirichlet,
             "split_payoff": args.split_payoff,
             "comparison_volatility": comparison_volatility,
@@ -2045,6 +2118,7 @@ def main() -> None:
             enrichment_delta0=args.enrichment_delta0, enrichment_delta1=args.enrichment_delta1,
             similarity_profile_hidden_width=args.similarity_profile_hidden_width,
             similarity_profile_hidden_depth=args.similarity_profile_hidden_depth,
+            corner_sampling=corner_sampling,
         )
         # The per-iteration history (loss, gradient norms and, for the learned
         # profile, the profile error) is saved so trajectory figures can be
