@@ -800,10 +800,10 @@ def train_one_epsilon(
 
     With ``corner_treatment="learned_barrier_location"`` the training objective is
     the interior loss plus ``barrier_trace_penalty_weight`` times the mean of
-    :math:`\Phi_\theta(B,t_j)^2 = g_2(B,t_j)^2` over the ``barrier_trace_points``
-    midpoint nodes :math:`t_j = T(j+1/2)/n`; with weight ``0`` (the default) the
-    objective is the interior loss alone and the penalty is only logged. The
-    learned barrier :math:`B'`, the gradient in :math:`\eta = \ln(B'/B)`, the interior loss
+    Phi_theta(B, t_j)^2 = g2(B, t_j)^2 over the ``barrier_trace_points`` midpoint
+    nodes t_j = T (j + 1/2)/n; with weight ``0`` (the default) the objective is
+    the interior loss alone and the penalty is only logged. The learned barrier
+    B', the gradient in eta = ln(B'/B), the interior loss
     and the penalty are recorded at every logged iteration.
 
     With ``model_snapshot_every = N > 0``, the model state after the optimiser step of every
