@@ -1785,6 +1785,177 @@ def compute_slices(model, problem, terminal_target: dict) -> dict:
     return out
 
 
+def compute_greeks(model, problem) -> dict:
+    r"""Delta and Gamma of the trained field and of the exact solution at the runner time 0.
+
+    The runner time 0 carries the price at the initial date (the paper's
+    :math:`t = T`, time to maturity :math:`T`).  For the hard forms the trained
+    field is :math:`\hat u = (1 - \lambda)\,N_\theta + \Psi`; the spatial
+    derivatives of the network part are obtained by autograd, those of the
+    extension :math:`\Psi` from its closed-form derivative callables when the
+    ansatz has them, and by autograd otherwise (datum path).  On the datum path
+    these are the classical derivatives: the Dirac masses of
+    :math:`\partial_{xx}\Psi` at the first-derivative discontinuities of the datum
+    are not represented, and :math:`\partial_x\Psi` takes the one-sided value of
+    the branch the grid point lies on.  The reference side is the closed-form
+    :math:`\partial_x u^\star` and :math:`\partial_{xx} u^\star` in ``float64``.
+
+    Returns:
+        A dict with the grid ``x``, the arrays ``price_predicted``,
+        ``delta_predicted``, ``gamma_predicted``, ``price_reference``,
+        ``delta_reference``, ``gamma_reference`` (``float64``), and the scalar
+        relative :math:`L^2` errors ``delta_rel_l2``, ``gamma_rel_l2`` on the
+        evaluation grid and, on the real line, ``delta_rel_l2_interior``,
+        ``gamma_rel_l2_interior`` on the interior window.
+    """
+    import numpy as np
+    import torch
+
+    from learning_option_pricing.models.terminal_ansatz import SOFT_FORMS
+
+    device = next(model.parameters()).device
+    exact_field = problem["exact_field"]
+    x64 = _evaluation_grid(problem)
+    parameter_dtype = next(model.parameters()).dtype
+    coordinate = torch.as_tensor(x64, dtype=parameter_dtype, device=device).requires_grad_(True)
+    time_column = torch.zeros_like(coordinate).unsqueeze(-1)
+    coordinate_column = coordinate.unsqueeze(-1)
+    network_value = model.free_network(torch.cat([coordinate_column, time_column], dim=1)).squeeze(-1)
+
+    def first_and_second_space_derivatives(values):
+        (first,) = torch.autograd.grad(values.sum(), coordinate, create_graph=True, allow_unused=True)
+        if first is None:
+            first = torch.zeros_like(coordinate)
+        if not first.requires_grad:
+            return first, torch.zeros_like(coordinate)
+        (second,) = torch.autograd.grad(first.sum(), coordinate, allow_unused=True)
+        return first, (second if second is not None else torch.zeros_like(coordinate))
+
+    if model.form in SOFT_FORMS:
+        price = network_value
+        delta, gamma = first_and_second_space_derivatives(network_value)
+    else:
+        network_weight = 1.0 - model._interp_coeff(time_column.squeeze(-1))
+        network_delta, network_gamma = first_and_second_space_derivatives(network_weight * network_value)
+        if model._extension_derivative_fns is not None:
+            with torch.no_grad():
+                extension_value = model.extension(coordinate_column, time_column).reshape(coordinate.shape)
+                extension_delta = model._extension_derivative_fns["dx"](
+                    coordinate_column, time_column).reshape(coordinate.shape)
+                extension_gamma = model._extension_derivative_fns["dxx"](
+                    coordinate_column, time_column).reshape(coordinate.shape)
+        else:
+            extension_value = model.extension(coordinate_column, time_column).reshape(coordinate.shape)
+            extension_delta, extension_gamma = first_and_second_space_derivatives(extension_value)
+        price = network_weight * network_value + extension_value
+        delta = network_delta + extension_delta
+        gamma = network_gamma + extension_gamma
+
+    def to_float64(values):
+        return values.detach().cpu().numpy().astype(np.float64)
+
+    zero_time = np.zeros_like(x64)
+    greeks = {
+        "x": x64,
+        "price_predicted": to_float64(price),
+        "delta_predicted": to_float64(delta),
+        "gamma_predicted": to_float64(gamma),
+        "price_reference": np.asarray(exact_field.field(x64, zero_time), dtype=np.float64),
+        "delta_reference": np.asarray(exact_field.space_derivative(x64, zero_time), dtype=np.float64),
+        "gamma_reference": np.asarray(exact_field.second_space_derivative(x64, zero_time), dtype=np.float64),
+    }
+
+    def relative_l2(predicted, reference, mask):
+        return float(np.linalg.norm(predicted[mask] - reference[mask]) / np.linalg.norm(reference[mask]))
+
+    whole_grid = np.ones_like(x64, dtype=bool)
+    for greek in ("delta", "gamma"):
+        greeks[f"{greek}_rel_l2"] = relative_l2(
+            greeks[f"{greek}_predicted"], greeks[f"{greek}_reference"], whole_grid)
+    if is_real_line_problem(problem):
+        interior_lower, interior_upper = problem["interior_window"]
+        interior_mask = (x64 >= interior_lower) & (x64 <= interior_upper)
+        for greek in ("delta", "gamma"):
+            greeks[f"{greek}_rel_l2_interior"] = relative_l2(
+                greeks[f"{greek}_predicted"], greeks[f"{greek}_reference"], interior_mask)
+    return greeks
+
+
+def compute_greeks_for_saved_run(run_directory: Path, device_name: str) -> int:
+    """Write ``greeks.npz`` for every saved variant of a run directory, from its ``model.pt``.
+
+    No training: each ansatz is rebuilt from ``metadata.yaml`` (cell, hyperparameters,
+    master seed), its saved state is loaded, and the relative error at the runner time
+    0 is recomputed and compared with the recorded ``rel_l2_t0`` (relative tolerance
+    ``1e-4``; a larger deviation raises, since the reloaded model would then not be
+    the trained one).  A summary ``greeks_summary.yaml`` gathers the scalar errors.
+    """
+    import numpy as np
+    import torch
+    import yaml
+
+    start_time = time.time()
+    with open(run_directory / "metadata.yaml") as metadata_file:
+        metadata = yaml.safe_load(metadata_file)
+    cell_name = metadata["cell"]
+    hparams = metadata["hparams"]
+    master_seed = int(metadata["seed"])
+    model_seed = derive_seed(master_seed, "model_init")
+    if device_name == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device_name)
+
+    logger.info("=" * 72)
+    logger.info("GREEKS FROM SAVED MODELS (no training)")
+    logger.info("=" * 72)
+    logger.info("  command:   %s", " ".join(sys.argv))
+    logger.info("  python:    %s | numpy %s | torch %s | cuda %s (version %s)",
+                sys.version.split()[0], np.__version__, torch.__version__,
+                torch.cuda.is_available(), torch.version.cuda)
+    logger.info("  device:    %s", device)
+    logger.info("  run:       %s", run_directory)
+    logger.info("  cell:      %s | master seed %d (model_init=%d)", cell_name, master_seed, model_seed)
+    logger.info("  hparams:   %s", hparams)
+
+    problem = build_problem(cell_name, hparams.get("truncation_wavenumber"))
+    greeks_summary: dict = {}
+    for variant_directory in sorted(run_directory.glob("variant_*")):
+        state_path = variant_directory / "models" / "model.pt"
+        variant_name = variant_directory.name[len("variant_"):]
+        if not state_path.exists():
+            logger.warning("[%s] no saved model at %s: skipped", variant_name, state_path)
+            continue
+        variant = catalogue.variant_by_name(cell_name, variant_name)
+        variant_problem = problem_for_variant(problem, variant)
+        model, _ = build_ansatz(variant, variant_problem, hparams, model_seed=model_seed)
+        model.load_state_dict(torch.load(state_path, map_location=device))
+        model.to(device).eval()
+
+        with open(run_directory / f"summary_{variant_name}.yaml") as summary_file:
+            recorded_error = float(yaml.safe_load(summary_file)[variant_name]["rel_l2_t0"])
+        recomputed_error = compute_error_metrics(model, variant_problem)["rel_l2_t0"]
+        reload_deviation = abs(recomputed_error - recorded_error) / recorded_error
+        if reload_deviation > 1e-4:
+            raise RuntimeError(
+                f"[{variant_name}] the reloaded model gives rel_l2_t0 = {recomputed_error:.6e}, "
+                f"recorded {recorded_error:.6e} (relative deviation {reload_deviation:.2e} > 1e-4)")
+
+        greeks = compute_greeks(model, variant_problem)
+        output_path = variant_directory / "greeks.npz"
+        np.savez_compressed(output_path, **greeks)
+        scalar_errors = {key: value for key, value in greeks.items() if key.endswith(("rel_l2", "rel_l2_interior"))}
+        greeks_summary[variant_name] = {"reload_rel_l2_t0_deviation": reload_deviation, **scalar_errors}
+        logger.info("[%s] reloaded model reproduces rel_l2_t0 = %.6e (recorded %.6e, relative deviation %.1e); "
+                    "Greeks errors %s; wrote %s", variant_name, recomputed_error, recorded_error,
+                    reload_deviation, {key: f"{value:.3e}" for key, value in scalar_errors.items()}, output_path)
+
+    write_summary(run_directory / "greeks_summary.yaml", greeks_summary)
+    logger.info("wrote %s (%d variants) in %.1f s", run_directory / "greeks_summary.yaml",
+                len(greeks_summary), time.time() - start_time)
+    return 0
+
+
 def compute_spectra(
     model, problem, variant, closed_form_extension, slice_fractions=None
 ) -> dict:
@@ -2019,6 +2190,12 @@ def build_parser() -> argparse.ArgumentParser:
              "(no training).",
     )
     parser.add_argument(
+        "--compute-greeks", type=str, default=None,
+        help="Write greeks.npz (Delta and Gamma at the initial date) for every "
+             "saved variant of an existing run DIR, from its model.pt (no "
+             "training).",
+    )
+    parser.add_argument(
         "--init-only", action="store_true",
         help="Create dir + metadata + one config YAML per array task, print "
              "the absolute EXPDIR, then exit (login-node safe).",
@@ -2122,6 +2299,9 @@ def main(argv=None) -> int:
         from _split_extension_plots import replot
         replot(Path(args.replot))
         return 0
+
+    if args.compute_greeks is not None:
+        return compute_greeks_for_saved_run(Path(args.compute_greeks), args.device)
 
     # Array-worker contract: a per-task YAML fully specifies the task.
     is_worker = args.config_dir is not None and args.config_name is not None
@@ -2429,6 +2609,11 @@ def main(argv=None) -> int:
 
         variant_dir = ablation_dir / f"variant_{variant['name']}"
         save_variant(variant_dir, model, history, metrics, slices, spectra)
+        if hasattr(problem["exact_field"], "second_space_derivative"):
+            np.savez_compressed(variant_dir / "greeks.npz", **compute_greeks(model, problem))
+        else:
+            logger.warning("[%s] the exact field of the cell has no closed-form space derivatives: "
+                           "greeks.npz not written", variant["name"])
         logger.info(
             "[%s] done in %.1fs (%.3f s/iter) | retained iter %d (validation residual %.3e) | "
             "rel_l2=%.3e rel_l2_t0=%.3e corner_t0=%.3e | floor(median "
