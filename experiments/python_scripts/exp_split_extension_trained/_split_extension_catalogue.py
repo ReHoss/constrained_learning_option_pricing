@@ -723,10 +723,14 @@ def cell_by_name(name: str) -> dict:
 def variants_for_cell(cell_name: str) -> list[dict]:
     """Return the variant list of a cell (7 generator / 2 control entries)."""
     cell_conf = cell_by_name(cell_name)
+    # The transported datum (retained operator of orders 1 and 0) is also run on
+    # the band-limited circle cells (added 2026-10-12, pre-registration
+    # 2026-10-12_preregistration_transported_datum_on_the_circle.md); it is
+    # appended last so that the order of the earlier variants is unchanged.
     if cell_conf["variant_set"] == "generator":
-        return list(GENERATOR_CELL_VARIANTS)
+        return list(GENERATOR_CELL_VARIANTS) + [TRANSPORTED_DATUM_VARIANT]
     if cell_conf["variant_set"] == "fourth_order":
-        return list(FOURTH_ORDER_CELL_VARIANTS)
+        return list(FOURTH_ORDER_CELL_VARIANTS) + [TRANSPORTED_DATUM_VARIANT]
     if cell_conf["variant_set"] == "variable_coefficient":
         return list(VARIABLE_COEFFICIENT_CELL_VARIANTS)
     if cell_conf["variant_set"] == "full_datum_second_order":

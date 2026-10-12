@@ -844,6 +844,9 @@ def _build_constant_coefficient_closed_form_extension(variant: dict, problem: di
         return SplitSemigroupExtension(datum, generator, (top_order,), terminal_time)
     if variant["extension"] == "split_principal_advection":
         return SplitSemigroupExtension(datum, generator, (1, top_order), terminal_time)
+    if variant["extension"] == "transported_datum":
+        # Retained operator of orders 1 and 0 on the circle (added 2026-10-12).
+        return SplitSemigroupExtension(datum, generator, (0, 1), terminal_time)
     if variant["extension"] == "graded_gaussian":
         comparison_diffusivity = (
             float(variant["comparison_diffusivity_ratio"])
