@@ -56,6 +56,15 @@ barrier-condition loss term) -- Section 4's stated goal in the note.
   and the defect integral I of equation (32) are logged during training,
   recorded in the summary and plotted (figures/learned_similarity_profile.png)
   (:class:`learning_option_pricing.pricing.barrier.LearnedSimilarityProfileCornerEnrichedExtension`).
+- ``learned_barrier_location`` (exploratory, section 18 of the methodology
+  document): the analytic enrichment with erf centred at a trained
+  B' = B exp(eta), initialised at --initial-learned-barrier; cutoff, jump,
+  regular part and distance factor stay on B, so the traces are exact only at
+  B' = B. --barrier-trace-penalty-weight adds lambda_B mean_j g2(B, t_j)^2 to
+  the interior loss (0 by default: interior loss alone). B', the gradient in
+  eta and both loss terms are logged and plotted
+  (figures/learned_barrier_location.png)
+  (:class:`learning_option_pricing.pricing.barrier.LearnedBarrierLocationCornerEnrichedExtension`).
 
 Trained models are compared, for each epsilon, to the exact closed-form
 reference (method of images / Reiner-Rubinstein,
@@ -118,6 +127,7 @@ from learning_option_pricing.pricing.barrier import (  # noqa: E402
     make_subtracted_digital_extension,
     make_corner_enriched_extension,
     make_learned_similarity_profile_corner_enriched_extension,
+    make_learned_barrier_location_corner_enriched_extension,
     error_function_target_of_the_profile_network,
     learned_similarity_profile_base_and_vanishing_factor,
     similarity_profile_diagnostics,
@@ -181,12 +191,18 @@ DEFAULT_SPLIT_PADDING_DIFFUSION_LENGTHS = 6.0
 
 #: The corner treatments of Table 1 of the note implemented here (see the
 #: module docstring): smoothing, exact subtraction (Section 5.1), enrichment
-#: (Section 5.2) and the learned similarity profile (Section 5.3).
-CORNER_TREATMENTS = ("smoothing", "subtraction", "enrichment", "learned_similarity_profile")
+#: (Section 5.2), the learned similarity profile (Section 5.3) and the
+#: exploratory enrichment with a trainable barrier location of the profile
+#: (section 18 of the methodology document).
+CORNER_TREATMENTS = ("smoothing", "subtraction", "enrichment", "learned_similarity_profile", "learned_barrier_location")
 #: The treatments that resolve the corner without a corner layer (no epsilon).
-ANALYTIC_CORNER_TREATMENTS = ("subtraction", "enrichment", "learned_similarity_profile")
+ANALYTIC_CORNER_TREATMENTS = ("subtraction", "enrichment", "learned_similarity_profile", "learned_barrier_location")
 #: The treatments built on the enrichment of Definition 8 (cutoff radii delta0, delta1).
-ENRICHMENT_CORNER_TREATMENTS = ("enrichment", "learned_similarity_profile")
+ENRICHMENT_CORNER_TREATMENTS = ("enrichment", "learned_similarity_profile", "learned_barrier_location")
+# Number of midpoint-rule nodes t_j = T (j + 1/2)/n on the barrier face of the
+# barrier-trace penalty (learned_barrier_location only): a fixed grid, so the
+# penalty draws no random number and the collocation sampler is unchanged.
+DEFAULT_BARRIER_TRACE_POINTS = 256
 # In the analytic treatments there is no corner layer; the epsilon loop, file
 # names (summary_eps<E>.yaml, model_eps<E>.pt) and directory tag use this
 # single placeholder so the artefact layout stays identical to the smoothing runs.
@@ -356,8 +372,9 @@ def compute_loss(model: ETCNN, s_f: torch.Tensor, t_f: torch.Tensor, r: float, s
       g2 does not depend on theta, so its contribution is computed under
       torch.no_grad() and enters the loss as a constant additive shift; the
       gradient the optimiser sees is exactly F(g1*u_theta)'s -- except for
-      the learned similarity profile, whose g2 holds the trained parameters
-      theta' of g_theta' and whose residual therefore enters the graph.
+      the learned similarity profile and the learned barrier location, whose g2
+      holds trained parameters (theta' of g_theta', or eta = ln(B'/B)) and whose
+      residual therefore enters the graph.
     """
     x_f = torch.stack([s_f, t_f], dim=1)
     g2 = model.g2
@@ -376,7 +393,7 @@ def compute_loss(model: ETCNN, s_f: torch.Tensor, t_f: torch.Tensor, r: float, s
         # theta': there the residual of g2 is recorded in the graph, so that the
         # objective (27) trains (theta, theta') jointly. Every other g2 is a
         # fixed function and its residual a constant additive shift.
-        g2_carries_trained_parameters = getattr(g2, "similarity_profile_is_learned", False)
+        g2_carries_trained_parameters = getattr(g2, "extension_has_trained_parameters", False)
         with (contextlib.nullcontext() if g2_carries_trained_parameters else torch.no_grad()):
             F_g2 = g2.black_scholes_residual(s_f.detach(), t_f.detach(), r, sigma)
         F_u = F_neural_manifold + F_g2
@@ -583,6 +600,7 @@ def build_model(
     similarity_profile_hidden_width: int = DEFAULT_SIMILARITY_PROFILE_HIDDEN_WIDTH,
     similarity_profile_hidden_depth: int = DEFAULT_SIMILARITY_PROFILE_HIDDEN_DEPTH,
     similarity_profile_seed: int = 0,
+    initial_learned_barrier: float | None = None,
 ) -> ETCNN:
     """Build the ETCNN ansatz U_theta = g1 * u_theta + g2.
 
@@ -608,6 +626,11 @@ def build_model(
     ``similarity_profile_seed``; the ResNet backbone is drawn first, from
     ``model_seed`` exactly as in every other mode, so it is identical to the
     one of the analytic enrichment at the same master seed.
+    ``corner_treatment="learned_barrier_location"`` builds the analytic
+    enrichment with erf centred at a trainable B' = B exp(eta), initialised at
+    ``initial_learned_barrier``
+    (:func:`make_learned_barrier_location_corner_enriched_extension`); the
+    hard constraints then hold only at B' = B.
 
     ``far_field_dirichlet`` replaces ``g1 = (T-t)(s-B)`` by
     :func:`barrier_composite_distance_with_far_field`, which also vanishes on
@@ -668,6 +691,13 @@ def build_model(
         )
         if corner_treatment == "subtraction":
             g2 = make_subtracted_digital_extension(K, B, r, sigma, T, subtraction_terminal_profile, **profile_options)
+        elif corner_treatment == "learned_barrier_location":
+            if initial_learned_barrier is None:
+                raise ValueError("corner_treatment='learned_barrier_location' needs initial_learned_barrier.")
+            g2 = make_learned_barrier_location_corner_enriched_extension(
+                K, B, r, sigma, T, initial_learned_barrier, subtraction_terminal_profile,
+                delta0=enrichment_delta0, delta1=enrichment_delta1, **profile_options,
+            )
         elif corner_treatment == "learned_similarity_profile":
             g2 = make_learned_similarity_profile_corner_enriched_extension(
                 K, B, r, sigma, T, subtraction_terminal_profile,
@@ -749,6 +779,9 @@ def train_one_epsilon(
     validation_every: int = DEFAULT_VALIDATION_EVERY,
     validation_set_size: int = DEFAULT_VALIDATION_SET_SIZE,
     model_snapshot_every: int = 0,
+    initial_learned_barrier: float | None = None,
+    barrier_trace_penalty_weight: float = 0.0,
+    barrier_trace_points: int = DEFAULT_BARRIER_TRACE_POINTS,
 ) -> tuple[ETCNN, dict, float, int, dict]:
     """Train one ETCNN for one epsilon (or, in the analytic corner treatments,
     the single placeholder epsilon).
@@ -764,6 +797,14 @@ def train_one_epsilon(
       state is the one after that step -- kept unchanged for comparability with those runs).
 
     Both running minima are tracked and returned whichever criterion selects.
+
+    With ``corner_treatment="learned_barrier_location"`` the training objective is
+    the interior loss plus ``barrier_trace_penalty_weight`` times the mean of
+    :math:`\Phi_\theta(B,t_j)^2 = g_2(B,t_j)^2` over the ``barrier_trace_points``
+    midpoint nodes :math:`t_j = T(j+1/2)/n`; with weight ``0`` (the default) the
+    objective is the interior loss alone and the penalty is only logged. The
+    learned barrier :math:`B'`, the gradient in :math:`\eta = \ln(B'/B)`, the interior loss
+    and the penalty are recorded at every logged iteration.
 
     With ``model_snapshot_every = N > 0``, the model state after the optimiser step of every
     iteration multiple of ``N`` (and of the last one) is also written to
@@ -800,6 +841,7 @@ def train_one_epsilon(
         similarity_profile_hidden_width=similarity_profile_hidden_width,
         similarity_profile_hidden_depth=similarity_profile_hidden_depth,
         similarity_profile_seed=similarity_profile_seed,
+        initial_learned_barrier=initial_learned_barrier,
     ).to(DEVICE)
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(f"[{label}] model parameters: {n_params}")
@@ -811,6 +853,20 @@ def train_one_epsilon(
             f"g_theta' (similarity profile network, width {similarity_profile_hidden_width}, depth "
             f"{similarity_profile_hidden_depth}, tanh, zero output layer at initialisation) {n_profile_params}; "
             f"one Adam optimiser on (theta, theta') jointly."
+        )
+    learned_barrier_location = getattr(model.g2, "barrier_location_is_learned", False)
+    barrier_trace_times = None
+    if learned_barrier_location:
+        barrier_trace_times = (T * (torch.arange(barrier_trace_points, dtype=torch.get_default_dtype()) + 0.5)
+                               / barrier_trace_points).to(DEVICE)
+        logger.info(
+            f"[{label}] learned barrier location: B' = B exp(eta), B = {B:g}, initial B' = {model.g2.learned_barrier():.6g} "
+            f"(eta = {float(model.g2.log_barrier_shift):.6g}); 1 trained scalar on top of Psi_theta, same Adam optimiser "
+            f"and learning-rate schedule. Objective: interior loss"
+            + (f" + {barrier_trace_penalty_weight:g} x mean_j g2(B, t_j)^2 over {barrier_trace_points} midpoint nodes "
+               f"t_j = T (j + 1/2)/{barrier_trace_points}" if barrier_trace_penalty_weight > 0.0
+               else f" alone (--barrier-trace-penalty-weight 0: the barrier-trace penalty on {barrier_trace_points} "
+                    f"midpoint nodes is logged, not trained on)")
         )
     # Report the interior-residual route from the built g2 object itself (the
     # capability test compute_loss performs), not from the CLI flags: this is
@@ -834,6 +890,9 @@ def train_one_epsilon(
         history.update({"similarity_profile_sup_distance_to_error_function": [],
                         "similarity_profile_defect_integral": [],
                         "similarity_profile_network_grad_norm": []})
+    if learned_barrier_location:
+        history.update({"learned_barrier": [], "log_barrier_shift_gradient": [],
+                        "interior_loss": [], "barrier_trace_penalty": [], "barrier_trace_sup_abs": []})
     history.update({"validation_iter": [], "validation_loss": []})
     best_loss = math.inf
     best_iter = 0
@@ -902,6 +961,12 @@ def train_one_epsilon(
             s_f = s_f.to(DEVICE).requires_grad_(True)
             t_f = t_f.to(DEVICE).requires_grad_(True)
             loss = compute_loss(model, s_f, t_f, r, sigma, importance_weights.to(DEVICE))
+        if learned_barrier_location:
+            interior_loss = loss
+            barrier_trace = model.g2.barrier_trace(barrier_trace_times)
+            barrier_trace_penalty = torch.mean(barrier_trace**2)
+            if barrier_trace_penalty_weight > 0.0:
+                loss = interior_loss + barrier_trace_penalty_weight * barrier_trace_penalty
         loss.backward()
 
         total_norm = 0.0
@@ -914,6 +979,10 @@ def train_one_epsilon(
             profile_grad_norm = sum(
                 p.grad.detach().norm(2).item() ** 2 for p in model.g2.parameters() if p.grad is not None
             ) ** 0.5
+
+        log_barrier_shift_gradient = None
+        if learned_barrier_location and model.g2.log_barrier_shift.grad is not None:
+            log_barrier_shift_gradient = float(model.g2.log_barrier_shift.grad)
 
         optimizer.step()
         scheduler.step()
@@ -965,10 +1034,26 @@ def train_one_epsilon(
                     f"@xi={diagnostics['argmax_xi']:.2f}  I={diagnostics['similarity_equation_defect_integral']:.3e}"
                     f"  |grad theta'|={profile_grad_norm:.2e}"
                 )
+            barrier_message = ""
+            if learned_barrier_location:
+                # B' after the optimiser step; the losses and the gradient are those of the step.
+                current_learned_barrier = model.g2.learned_barrier()
+                history["learned_barrier"].append(current_learned_barrier)
+                history["log_barrier_shift_gradient"].append(log_barrier_shift_gradient)
+                history["interior_loss"].append(float(interior_loss.detach()))
+                history["barrier_trace_penalty"].append(float(barrier_trace_penalty.detach()))
+                history["barrier_trace_sup_abs"].append(float(barrier_trace.detach().abs().max()))
+                barrier_message = (
+                    f"  B'={current_learned_barrier:.6f} (B'-B={current_learned_barrier - B:+.3e})"
+                    f"  d loss/d eta={log_barrier_shift_gradient:+.3e}"
+                    f"  interior={float(interior_loss.detach()):.4e}"
+                    f"  mean g2(B,t)^2={float(barrier_trace_penalty.detach()):.3e}"
+                    f"  sup|g2(B,t)|={float(barrier_trace.detach().abs().max()):.3e}"
+                )
             logger.info(
                 f"[{label}] iter {it:>6d}/{total_iters}  loss={loss_val:.6e}  "
                 f"|grad|={total_norm:.2e}  lr={lr_now:.6f}  best={best_loss:.6e}@{best_iter}  ({elapsed:.1f}s)"
-                + profile_message
+                + profile_message + barrier_message
                 + ("" if corner_sampling is None else
                    f"  weights in [{sampling_statistics['minimum_weight']:.2e}, {sampling_statistics['maximum_weight']:.2f}]"
                    f" mean {sampling_statistics['mean_weight']:.3f}"
@@ -1199,6 +1284,17 @@ def formula_text_subtraction(
             r"$h(s,t)=\pi(s,t)-\chi(s)\,\pi(B,t)$,  " + profile_line,
             reference_line,
         ])
+    if corner_treatment == "learned_barrier_location":
+        return "\n".join([
+            operator_line
+            + r"$\Phi_\theta=E'+h+g_1u_\theta$, $E'=\chi(s)\,\Delta\,\mathrm{erf}(\xi')$, $\Delta=K-B$, "
+            r"$g_1(s,t)=(T-t)(s-B)$ (corner enrichment centred at a trained $B'=Be^{\eta}$; exact traces only at $B'=B$)",
+            r"$\xi'(s,t)=\frac{\ln(s/B')}{\sigma\sqrt{2(T-t)}}$;  "
+            rf"$\chi(s)=1-\zeta\left((s-B-\delta_0)/(\delta_1-\delta_0)\right)$, $\delta_0={enrichment_delta0:g}$, "
+            rf"$\delta_1={enrichment_delta1:g}$;  "
+            r"$h(s,t)=\pi(s,t)-\chi(s)\,\pi(B,t)$,  " + profile_line,
+            reference_line,
+        ])
     if corner_treatment == "enrichment":
         return "\n".join([
             operator_line
@@ -1245,6 +1341,8 @@ def plot_subtraction_decomposition(
         ax.plot(s_np, eval_result["learned"].numpy()[:, j], color="tab:blue", lw=1.6, label=r"$\Phi_\theta$ (trained)")
         singular_label = (r"$E_{\theta'}=\chi\,\Delta\,\Lambda_{\theta'}(\xi)$ (learned similarity profile)"
                           if getattr(g2, "similarity_profile_is_learned", False)
+                          else rf"$E'=\chi\,\Delta\,\mathrm{{erf}}(\xi')$, $B'={g2.learned_barrier():.5g}$ (learned barrier location)"
+                          if getattr(g2, "barrier_location_is_learned", False)
                           else r"$E=\chi\,\Delta\,\mathrm{erf}(\xi)$ (corner enrichment)" if hasattr(g2, "enrichment")
                           else r"$\Delta\,V_{DOD}$ (subtracted singular part)")
         regular_label = (r"$h=\pi-\chi\,\pi(B,\cdot)$ (regular extension)" if hasattr(g2, "enrichment")
@@ -1324,6 +1422,57 @@ def plot_learned_similarity_profile(model: ETCNN, history: dict, out_path: Path)
     legends = [axis.legend(loc="upper left", bbox_to_anchor=(0.0, -0.24), fontsize=8) for axis in axes]
     fig.subplots_adjust(bottom=0.45, wspace=0.3)
     finalize_figure(fig, out_path, legends=legends, formula=FORMULA_TEXT_SIMILARITY_PROFILE, axes=list(axes))
+
+
+FORMULA_TEXT_LEARNED_BARRIER_LOCATION = (
+    r"$E'=\chi(s)\,\Delta\,\mathrm{erf}(\xi')$, $\xi'(s,t)=\frac{\ln(s/B')}{\sigma\sqrt{2(T-t)}}$, "
+    r"$B'=B\,e^{\eta}$ with $\eta$ trained jointly with $\Psi_\theta$; $\chi$, $\Delta=K-B$, $h$ and "
+    r"$d_{\partial_pQ}=(T-t)(s-B)$ on the contract's barrier $B$"
+    "\n"
+    r"Barrier trace $\Phi_\theta(B,t)=g_2(B,t)=\Delta\,\mathrm{erf}\left(-\eta/(\sigma\sqrt{2(T-t)})\right)$, "
+    r"zero for every $t$ iff $B'=B$;  penalty $P=\frac{1}{n}\sum_j g_2(B,t_j)^2$, $t_j=T(j+\frac{1}{2})/n$;  "
+    r"objective $\mathcal{J}=\mathrm{mean}\,(\mathcal{L}^{BS}\Phi_\theta)^2+\lambda_B P$"
+)
+
+
+def plot_learned_barrier_location(model: ETCNN, history: dict, B: float, T: float, out_path: Path,
+                                  barrier_trace_penalty_weight: float) -> None:
+    """Trajectory of the learned barrier B' (left), of the interior loss and of the
+    barrier-trace penalty (middle) over training -- read from the saved history,
+    never recomputed -- and the barrier trace g2(B, t) of the restored state (right)."""
+    iterations = np.asarray(history["iter"])
+    fig, axes = plt.subplots(1, 3, figsize=(17, 4.6))
+    ax = axes[0]
+    ax.plot(iterations, history["learned_barrier"], color="tab:blue", lw=1.6, label=r"$B'$ (trained)")
+    ax.axhline(B, color="black", linestyle="--", lw=1.2, label=rf"$B={B:g}$ (contract barrier)")
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel(r"Learned barrier $B'$")
+    ax.set_title(r"Learned barrier location")
+    ax.grid(alpha=0.3)
+    ax = axes[1]
+    ax.semilogy(iterations, history["interior_loss"], color="tab:blue", lw=1.4,
+                label=r"Interior loss $\mathrm{mean}\,(\mathcal{L}^{BS}\Phi_\theta)^2$")
+    ax.semilogy(iterations, history["barrier_trace_penalty"], color="tab:red", lw=1.4,
+                label=(rf"Barrier-trace penalty $P$ (weight $\lambda_B={barrier_trace_penalty_weight:g}$)"
+                       if barrier_trace_penalty_weight > 0.0
+                       else r"Barrier-trace penalty $P$ (logged, $\lambda_B=0$: not trained on)"))
+    ax.set_xlabel("Iteration")
+    ax.set_title("Loss terms (single batch)")
+    ax.grid(alpha=0.3, which="both")
+    ax = axes[2]
+    parameter = model.g2.log_barrier_shift
+    t = torch.linspace(0.0, T, 1001, dtype=parameter.dtype, device=parameter.device)
+    with torch.no_grad():
+        trace = model.g2.barrier_trace(t).double().cpu().numpy()
+    ax.plot(t.double().cpu().numpy(), trace, color="tab:blue", lw=1.6,
+            label=rf"$\Phi_\theta(B,t)$ (restored state, $B'={model.g2.learned_barrier():.5g}$)")
+    ax.axhline(0.0, color="black", linestyle="--", lw=1.2, label=r"Barrier datum $V_{DO}(B,t)=0$")
+    ax.set_xlabel("Time $t$")
+    ax.set_title("Barrier trace")
+    ax.grid(alpha=0.3)
+    legends = [axis.legend(loc="upper left", bbox_to_anchor=(0.0, -0.24), fontsize=8) for axis in axes]
+    fig.subplots_adjust(bottom=0.45, wspace=0.3)
+    finalize_figure(fig, out_path, legends=legends, formula=FORMULA_TEXT_LEARNED_BARRIER_LOCATION, axes=list(axes))
 
 
 def _history_path(out_dir: Path, epsilon: float) -> Path:
@@ -1501,6 +1650,8 @@ def load_trained_model(run_dir: Path, epsilon: float, meta: dict | None = None) 
         # irrelevant (the weights are overwritten).
         similarity_profile_hidden_width=hyper.get("similarity_profile_hidden_width") or DEFAULT_SIMILARITY_PROFILE_HIDDEN_WIDTH,
         similarity_profile_hidden_depth=hyper.get("similarity_profile_hidden_depth") or DEFAULT_SIMILARITY_PROFILE_HIDDEN_DEPTH,
+        # Overwritten by the saved eta; any positive value builds the module.
+        initial_learned_barrier=hyper.get("initial_learned_barrier") or B,
     )
     model_path = run_dir / "models" / f"model_eps{epsilon:g}.pt"
     model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
@@ -1536,6 +1687,25 @@ def _similarity_profile_summary(model: ETCNN) -> dict:
         "similarity_profile_base_sup_distance_to_error_function": base["sup_distance_to_error_function"],
         "similarity_profile_base_defect_integral": base["similarity_equation_defect_integral"],
         "similarity_profile_diagnostic_grid": {"xi_max": trained["xi_max"], "n_points": trained["n_points"]},
+    }
+
+
+def _learned_barrier_summary(model: ETCNN, n_t: int = 1001) -> dict:
+    """Scalar diagnostics of the learned barrier location of a trained model: B', its
+    distance to B, and the barrier trace Phi(B, t) = g2(B, t) on a uniform grid of [0, T)."""
+    g2 = model.g2
+    parameter = g2.log_barrier_shift
+    t = torch.linspace(0.0, g2.T, n_t + 1, dtype=parameter.dtype, device=parameter.device)[:-1]
+    with torch.no_grad():
+        trace = g2.barrier_trace(t).double().cpu()
+    return {
+        "learned_barrier": g2.learned_barrier(),
+        "initial_learned_barrier": g2.initial_learned_barrier,
+        "learned_barrier_minus_barrier": g2.learned_barrier() - g2.B,
+        "log_barrier_shift": float(parameter.detach()),
+        "barrier_trace_sup_abs": float(trace.abs().max()),
+        "barrier_trace_mean_square": float((trace**2).mean()),
+        "barrier_trace_grid_points": n_t,
     }
 
 
@@ -1620,7 +1790,10 @@ def main() -> None:
                               "Psi_theta; same cutoff, regular part and conventions as 'enrichment'. "
                               "||Lambda_theta' - erf||_Linf and the defect integral I of equation (32) are logged "
                               "at every logged iteration and recorded. Directory tag "
-                              "_learnedprofile_<profile>_d0<delta0>_d1<delta1>_w<width>_l<depth>.")
+                              "_learnedprofile_<profile>_d0<delta0>_d1<delta1>_w<width>_l<depth>. "
+                              "'learned_barrier_location' (exploratory, section 18 of the methodology document): "
+                              "the analytic enrichment with erf centred at a trained B' = B exp(eta) "
+                              "(--initial-learned-barrier, --barrier-trace-penalty-weight); exact traces only at B' = B.")
     parser.add_argument("--enrichment-delta0", type=float, default=DEFAULT_ENRICHMENT_DELTA0,
                          help="Inner cutoff radius delta0 of the corner enrichment (chi = 1 on s - B <= delta0), "
                               "price units; only used with --corner-treatment enrichment or learned_similarity_profile.")
@@ -1633,6 +1806,19 @@ def main() -> None:
     parser.add_argument("--similarity-profile-hidden-depth", type=int, default=DEFAULT_SIMILARITY_PROFILE_HIDDEN_DEPTH,
                          help="Number of hidden layers of g_theta'; only used with --corner-treatment "
                               "learned_similarity_profile.")
+    parser.add_argument("--initial-learned-barrier", type=float, default=None,
+                         help="Initial value of the trained barrier location B' = B exp(eta) of the error-function "
+                              "profile; required with --corner-treatment learned_barrier_location (exploratory "
+                              "experiment, section 18 of the methodology document: erf centred at B' instead of B, "
+                              "cutoff, jump, regular part and distance factor on B; exact traces only at B' = B). "
+                              "Directory tag _learnedbarrier_<profile>_d0<delta0>_d1<delta1>_Bp0<B'_0>_lambdaB<weight>.")
+    parser.add_argument("--barrier-trace-penalty-weight", type=float, default=0.0,
+                         help="Weight lambda_B of the barrier-trace penalty mean_j g2(B, t_j)^2 added to the interior "
+                              "loss (learned_barrier_location only). 0 (default): interior loss alone, the penalty "
+                              "is logged only.")
+    parser.add_argument("--barrier-trace-points", type=int, default=DEFAULT_BARRIER_TRACE_POINTS,
+                         help="Number n of midpoint nodes t_j = T (j + 1/2)/n of the barrier-trace penalty "
+                              "(learned_barrier_location only).")
     parser.add_argument("--exclude-corner-from-collocation", action="store_true",
                          help="Reject interior collocation points falling in the ell^1 corner window "
                               "(s-B)+(T-t) <= --corner-window, so the PDE residual is never enforced at the "
@@ -1823,6 +2009,15 @@ def main() -> None:
                 _write_summary(out_dir, epsilon, summary)
                 plot_learned_similarity_profile(model, history, out_dir / "figures" / "learned_similarity_profile.png")
                 logger.info(f"[eps={epsilon:g}] learned similarity profile figure rebuilt from {model_path} and {history_path}")
+            if getattr(model.g2, "barrier_location_is_learned", False):
+                history_path = _history_path(out_dir, epsilon)
+                with open(history_path) as f:
+                    history = yaml.safe_load(f)
+                summary.update(_learned_barrier_summary(model))
+                _write_summary(out_dir, epsilon, summary)
+                plot_learned_barrier_location(model, history, B, T, out_dir / "figures" / "learned_barrier_location.png",
+                                              meta["hyperparameters"]["barrier_trace_penalty_weight"])
+                logger.info(f"[eps={epsilon:g}] learned barrier location figure rebuilt from {model_path} and {history_path}")
             logger.info(f"[eps={epsilon:g}] price-surface figure rebuilt from {model_path}")
 
         if replot_subtraction:
@@ -1906,6 +2101,19 @@ def main() -> None:
             print(f"ERROR: need 0 < --enrichment-delta0 < --enrichment-delta1; got {args.enrichment_delta0}, "
                   f"{args.enrichment_delta1}.", file=sys.stderr)
             sys.exit(2)
+        if args.corner_treatment == "learned_barrier_location":
+            if args.initial_learned_barrier is None or args.initial_learned_barrier <= 0.0:
+                print("ERROR: --corner-treatment learned_barrier_location needs --initial-learned-barrier > 0.",
+                      file=sys.stderr)
+                sys.exit(2)
+            if args.barrier_trace_penalty_weight < 0.0 or args.barrier_trace_points < 1:
+                print(f"ERROR: need --barrier-trace-penalty-weight >= 0 and --barrier-trace-points >= 1; got "
+                      f"{args.barrier_trace_penalty_weight}, {args.barrier_trace_points}.", file=sys.stderr)
+                sys.exit(2)
+            if args.best_state_selection == "validation":
+                print("ERROR: --best-state-selection validation evaluates the interior loss alone, not the objective "
+                      "with the barrier-trace penalty; use single_batch with learned_barrier_location.", file=sys.stderr)
+                sys.exit(2)
         if args.smoothed_payoff:
             print(f"ERROR: --corner-treatment {args.corner_treatment} does not accept --smoothed-payoff (the Chen-Mangasarian "
                   "family was set aside in section 10 of the methodology document; the terminal profiles of the "
@@ -1961,8 +2169,12 @@ def main() -> None:
         payoff_tag = f"_{args.corner_treatment}_{subtraction_terminal_profile.replace('_', '')}"
         if args.corner_treatment == "learned_similarity_profile":
             payoff_tag = f"_learnedprofile_{subtraction_terminal_profile.replace('_', '')}"
+        if args.corner_treatment == "learned_barrier_location":
+            payoff_tag = f"_learnedbarrier_{subtraction_terminal_profile.replace('_', '')}"
         if args.corner_treatment in ENRICHMENT_CORNER_TREATMENTS:
             payoff_tag += f"_d0{args.enrichment_delta0:g}_d1{args.enrichment_delta1:g}"
+        if args.corner_treatment == "learned_barrier_location":
+            payoff_tag += f"_Bp0{args.initial_learned_barrier:g}_lambdaB{args.barrier_trace_penalty_weight:g}"
         if args.corner_treatment == "learned_similarity_profile":
             payoff_tag += f"_w{args.similarity_profile_hidden_width}_l{args.similarity_profile_hidden_depth}"
         if subtraction_terminal_profile == "split":
@@ -2108,6 +2320,24 @@ def main() -> None:
             "The corner is "
             + ("EXCLUDED from collocation (--exclude-corner-from-collocation): the signal on theta' then comes only "
                "from tau > the window." if args.exclude_corner_from_collocation
+               else "INCLUDED in collocation.")
+        )
+    elif args.corner_treatment == "learned_barrier_location":
+        logger.info(
+            f"  Ansatz: corner enrichment with a trained barrier location of the profile (exploratory, section 18 of "
+            f"the methodology document): Phi = E' + h + g1 u_theta, E' = chi(s) (K-B) erf(xi'), "
+            f"xi' = ln(s/B')/(sigma sqrt(2(T-t))), B' = B exp(eta) trained, initial B' = {args.initial_learned_barrier:g} "
+            f"(B = {args.B:g}); chi, Delta = K - B = {args.K - args.B:g}, h = pi - chi(s) pi(B, .) and "
+            f"g1 = (T-t)(s-B) on the contract's barrier; cutoff radii delta0={args.enrichment_delta0:g}, "
+            f"delta1={args.enrichment_delta1:g}; terminal profile pi = {subtraction_terminal_profile} "
+            f"(make_learned_barrier_location_corner_enriched_extension)."
+        )
+        logger.info(
+            "    Hard constraints hold only at B' = B: Phi(B, t) = (K-B) erf(-eta/(sigma sqrt(2(T-t)))) for every network. "
+            f"Barrier-trace penalty weight lambda_B = {args.barrier_trace_penalty_weight:g} on "
+            f"{args.barrier_trace_points} midpoint nodes. Interior residual: two-term analytic route, F(E') recorded in "
+            "the graph (it depends on eta). The corner is "
+            + ("EXCLUDED from collocation (--exclude-corner-from-collocation)." if args.exclude_corner_from_collocation
                else "INCLUDED in collocation.")
         )
     elif args.corner_treatment == "enrichment":
@@ -2269,6 +2499,12 @@ def main() -> None:
                                                 if args.corner_treatment == "learned_similarity_profile" else None),
             "similarity_profile_seed": (derive_seed(args.seed, "similarity_profile_init")
                                         if args.corner_treatment == "learned_similarity_profile" else None),
+            "initial_learned_barrier": (args.initial_learned_barrier
+                                        if args.corner_treatment == "learned_barrier_location" else None),
+            "barrier_trace_penalty_weight": (args.barrier_trace_penalty_weight
+                                             if args.corner_treatment == "learned_barrier_location" else None),
+            "barrier_trace_points": (args.barrier_trace_points
+                                     if args.corner_treatment == "learned_barrier_location" else None),
         },
     }
     if resuming_existing_run:
@@ -2329,6 +2565,9 @@ def main() -> None:
             validation_every=args.validation_every,
             validation_set_size=args.validation_set_size,
             model_snapshot_every=args.save_model_snapshot_every,
+            initial_learned_barrier=args.initial_learned_barrier,
+            barrier_trace_penalty_weight=args.barrier_trace_penalty_weight,
+            barrier_trace_points=args.barrier_trace_points,
         )
         # The per-iteration history (loss, gradient norms and, for the learned
         # profile, the profile error) is saved so trajectory figures can be
@@ -2380,7 +2619,16 @@ def main() -> None:
             "final_history_loss": history["loss"][-1] if history["loss"] else None,
             **({"far_field_truncation_error_bound": truncation_bound["bound"]} if truncation_bound else {}),
             **(_similarity_profile_summary(model) if getattr(model.g2, "similarity_profile_is_learned", False) else {}),
+            **(_learned_barrier_summary(model) if getattr(model.g2, "barrier_location_is_learned", False) else {}),
         }
+        if getattr(model.g2, "barrier_location_is_learned", False):
+            logger.info(
+                f"[eps={epsilon:g}] learned barrier location (restored state): B' = {summary['learned_barrier']:.6f}, "
+                f"B' - B = {summary['learned_barrier_minus_barrier']:+.4e} (initial B' = "
+                f"{summary['initial_learned_barrier']:g}); sup_t |Phi(B, t)| = {summary['barrier_trace_sup_abs']:.4e}, "
+                f"mean_t Phi(B, t)^2 = {summary['barrier_trace_mean_square']:.4e} (uniform grid of "
+                f"{summary['barrier_trace_grid_points']} points of [0, T))"
+            )
         if getattr(model.g2, "similarity_profile_is_learned", False):
             logger.info(
                 f"[eps={epsilon:g}] learned similarity profile (best-loss state): "
@@ -2402,6 +2650,10 @@ def main() -> None:
             )
         if getattr(model.g2, "similarity_profile_is_learned", False):
             plot_learned_similarity_profile(model, history, out_dir / "figures" / "learned_similarity_profile.png")
+        if getattr(model.g2, "barrier_location_is_learned", False):
+            plot_learned_barrier_location(model, history, args.B, args.T,
+                                          out_dir / "figures" / "learned_barrier_location.png",
+                                          args.barrier_trace_penalty_weight)
     if subtraction:
         logger.info(f"  error_vs_epsilon.png not produced: no epsilon sweep in {args.corner_treatment} mode.")
     else:
