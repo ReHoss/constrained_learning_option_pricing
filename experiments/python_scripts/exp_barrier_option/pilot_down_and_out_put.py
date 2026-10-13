@@ -65,6 +65,16 @@ barrier-condition loss term) -- Section 4's stated goal in the note.
   eta and both loss terms are logged and plotted
   (figures/learned_barrier_location.png)
   (:class:`learning_option_pricing.pricing.barrier.LearnedBarrierLocationCornerEnrichedExtension`).
+- ``penalty`` (mode P of Section 6 of the note, Definition 10): the penalty
+  baseline. No composite distance g1, no extension of the data: the terminal
+  and barrier conditions enter the objective as weighted penalty terms
+  lambda_T mean w (Phi(s,T) - (K-s)^+)^2 + lambda_B mean w Phi(B,t)^2
+  (--penalty-terminal-weight, --penalty-barrier-weight), on boundary points
+  drawn from a uniform / log-uniform mixture in the distance to the corner
+  (log(s-B) on Sigma_T, log tau on Sigma_B). With --far-field-dirichlet the
+  far condition stays hard, Phi = (s_inf-s)/(s_inf-B) Psi_theta + pi(s_inf,t),
+  identical to that of the hard modes
+  (:mod:`learning_option_pricing.pricing.boundary_penalty`).
 
 Trained models are compared, for each epsilon, to the exact closed-form
 reference (method of images / Reiner-Rubinstein,
@@ -134,6 +144,13 @@ from learning_option_pricing.pricing.barrier import (  # noqa: E402
     SUBTRACTION_TERMINAL_PROFILES,
     reiner_rubinstein_down_and_out_put,
 )
+from learning_option_pricing.pricing.boundary_penalty import (  # noqa: E402
+    BarrierBoundaryPenaltySampling,
+    FarFieldDatumLift,
+    boundary_constraint_violations,
+    far_field_distance_factor,
+    weighted_boundary_penalties,
+)
 from learning_option_pricing.pricing.corner_similarity_sampling import CornerSimilaritySampling  # noqa: E402
 from learning_option_pricing.pricing.terminal import bsm_operator  # noqa: E402
 from learning_option_pricing.utils.figure_layout import finalize_figure  # noqa: E402
@@ -194,9 +211,17 @@ DEFAULT_SPLIT_PADDING_DIFFUSION_LENGTHS = 6.0
 #: (Section 5.2), the learned similarity profile (Section 5.3) and the
 #: exploratory enrichment with a trainable barrier location of the profile
 #: (section 19 of the methodology document).
-CORNER_TREATMENTS = ("smoothing", "subtraction", "enrichment", "learned_similarity_profile", "learned_barrier_location")
+CORNER_TREATMENTS = ("smoothing", "subtraction", "enrichment", "learned_similarity_profile", "learned_barrier_location",
+                     "penalty")
 #: The treatments that resolve the corner without a corner layer (no epsilon).
 ANALYTIC_CORNER_TREATMENTS = ("subtraction", "enrichment", "learned_similarity_profile", "learned_barrier_location")
+#: The treatments without a corner layer, hence without an epsilon sweep: the analytic ones and the
+#: penalty baseline P (no hard terminal or barrier condition at all).
+TREATMENTS_WITHOUT_CORNER_LAYER = ANALYTIC_CORNER_TREATMENTS + ("penalty",)
+#: Penalty baseline P (Section 6 of the note): boundary points per face and per batch. The interior
+#: batch (--n-f, 4096 by default) samples a two-dimensional set; each face is one-dimensional.
+DEFAULT_PENALTY_BOUNDARY_POINTS = 1024
+PENALTY_BASELINE_TRAINED_TITLE = "Trained (penalty baseline P, soft terminal and barrier conditions)"
 #: The treatments built on the enrichment of Definition 8 (cutoff radii delta0, delta1).
 ENRICHMENT_CORNER_TREATMENTS = ("enrichment", "learned_similarity_profile", "learned_barrier_location")
 # Number of midpoint-rule nodes t_j = T (j + 1/2)/n on the barrier face of the
@@ -447,6 +472,23 @@ def validation_loss(model: ETCNN, validation_set: dict, r: float, sigma: float) 
     return total / (size // VALIDATION_CHUNK_SIZE)
 
 
+def draw_boundary_validation_set(sampling: BarrierBoundaryPenaltySampling, size: int, seed: int) -> dict:
+    """Fixed boundary validation set of the penalty baseline P: one draw of ``size`` points on each face
+    from its own generator (role ``validation_boundary_set``), so that the selection criterion of P is the
+    full objective (27) on fixed sets, and the interior part is the common validation set of the other modes."""
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    batch = sampling.sample(size, generator, torch.get_default_dtype())
+    return {key: value.to(DEVICE) for key, value in batch.items()} | {"seed": seed}
+
+
+def boundary_validation_penalties(model: ETCNN, boundary_validation_set: dict, K: float) -> tuple[float, float]:
+    """Weighted terminal and barrier penalties of ``model`` on the fixed boundary validation set."""
+    with torch.no_grad():
+        terminal_penalty, barrier_penalty = weighted_boundary_penalties(model, boundary_validation_set, K)
+    return float(terminal_penalty), float(barrier_penalty)
+
+
 # ---------------------------------------------------------------------------
 # Optimiser — Adam + two-stage exponential LR decay (identical schedule to
 # experiments/python_scripts/exp1/phase3_training.py::build_lr_lambda).
@@ -495,6 +537,7 @@ def _save_checkpoint(
     label: str,
     sampler_generator: torch.Generator,
     best_state_tracking: dict | None = None,
+    boundary_sampler_generator: torch.Generator | None = None,
 ) -> None:
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
@@ -521,6 +564,9 @@ def _save_checkpoint(
         # are those of the criterion the run selects with (best_state_tracking["selection"]).
         "best_state_tracking": best_state_tracking,
     }
+    if boundary_sampler_generator is not None:
+        # Penalty baseline P only: the boundary points come from their own explicit generator.
+        payload["boundary_sampler_generator_state"] = boundary_sampler_generator.get_state()
     torch.save(payload, tmp_path)
     tmp_path.replace(checkpoint_path)
     logger.info(f"[{label}] checkpoint saved at iter {iter_done}/{total_iters} -> {checkpoint_path}")
@@ -532,8 +578,14 @@ def _load_checkpoint(
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     sampler_generator: torch.Generator,
+    boundary_sampler_generator: torch.Generator | None = None,
 ) -> tuple[int, int, dict, float, int, dict, dict | None]:
     payload = torch.load(checkpoint_path, map_location=DEVICE, weights_only=False)
+    if boundary_sampler_generator is not None:
+        if "boundary_sampler_generator_state" not in payload:
+            raise ValueError(f"{checkpoint_path} holds no boundary-sampler state: it was not written by a "
+                             f"penalty-baseline run, and resuming it as one would replay its boundary batches.")
+        boundary_sampler_generator.set_state(payload["boundary_sampler_generator_state"])
     model.load_state_dict(payload["model_state"])
     optimizer.load_state_dict(payload["optimizer_state"])
     scheduler.load_state_dict(payload["scheduler_state"])
@@ -603,6 +655,14 @@ def build_model(
     initial_learned_barrier: float | None = None,
 ) -> ETCNN:
     """Build the ETCNN ansatz U_theta = g1 * u_theta + g2.
+
+    ``corner_treatment="penalty"`` (mode P of Section 6 of the note) builds the
+    penalty baseline: no composite distance and no extension of the data. With
+    ``far_field_dirichlet``, g1 = (s_inf - s)/(s_inf - B) and g2 = pi(s_inf, t)
+    (:class:`FarFieldDatumLift`, profile ``subtraction_terminal_profile``), so that
+    only the far condition is hard, with the datum of the hard modes; without it,
+    g1 = 1 and g2 = 0. The ResNet backbone is drawn from ``model_seed`` first, as
+    in every other mode, so Psi_theta is initialised identically at the same seed.
 
     ``corner_treatment="subtraction"`` replaces every corner-regularised
     ``g2`` below by the exact-subtraction extension
@@ -676,6 +736,19 @@ def build_model(
         if far_field_dirichlet:
             return barrier_composite_distance_with_far_field(s, t, B, T, s_inf)
         return barrier_composite_distance(s, t, B, T)
+
+    if corner_treatment == "penalty":
+        if far_field_dirichlet:
+            def g1_penalty(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+                return far_field_distance_factor(s, B, s_inf)
+            g2_penalty = FarFieldDatumLift(K, r, sigma, T, s_inf, subtraction_terminal_profile)
+        else:
+            def g1_penalty(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+                return torch.ones_like(s)
+
+            def g2_penalty(s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+                return torch.zeros_like(s)
+        return ETCNN(resnet=resnet, g1=g1_penalty, g2=g2_penalty, normalizer=InputNormalization(K))
 
     if corner_treatment in ANALYTIC_CORNER_TREATMENTS:
         resolved_comparison_volatility = comparison_volatility if comparison_volatility is not None else sigma
@@ -782,6 +855,10 @@ def train_one_epsilon(
     initial_learned_barrier: float | None = None,
     barrier_trace_penalty_weight: float = 0.0,
     barrier_trace_points: int = DEFAULT_BARRIER_TRACE_POINTS,
+    boundary_penalty_sampling: BarrierBoundaryPenaltySampling | None = None,
+    penalty_terminal_weight: float = 1.0,
+    penalty_barrier_weight: float = 1.0,
+    penalty_boundary_points: int = DEFAULT_PENALTY_BOUNDARY_POINTS,
 ) -> tuple[ETCNN, dict, float, int, dict]:
     """Train one ETCNN for one epsilon (or, in the analytic corner treatments,
     the single placeholder epsilon).
@@ -797,6 +874,14 @@ def train_one_epsilon(
       state is the one after that step -- kept unchanged for comparability with those runs).
 
     Both running minima are tracked and returned whichever criterion selects.
+
+    With ``corner_treatment="penalty"`` (mode P, Section 6 of the note) the training objective is the
+    interior loss plus ``penalty_terminal_weight`` times the weighted mean of
+    (Phi(s,T) - (K-s)^+)^2 and ``penalty_barrier_weight`` times the weighted mean of Phi(B,t)^2, on
+    ``penalty_boundary_points`` points per face drawn from ``boundary_penalty_sampling`` with an
+    explicit generator (role ``boundary_sampler``); the validation criterion is the same objective on
+    the fixed interior validation set and a fixed boundary validation set (role
+    ``validation_boundary_set``). The three terms are recorded separately.
 
     With ``corner_treatment="learned_barrier_location"`` the training objective is
     the interior loss plus ``barrier_trace_penalty_weight`` times the mean of
@@ -820,8 +905,11 @@ def train_one_epsilon(
         raise ValueError(f"best_state_selection must be one of {BEST_STATE_SELECTIONS}; got {best_state_selection!r}")
     if best_state_selection == "validation" and validation_sampling is None:
         raise ValueError("best_state_selection='validation' needs validation_sampling")
-    label = (f"{corner_treatment}:{subtraction_terminal_profile}" if corner_treatment in ANALYTIC_CORNER_TREATMENTS
+    label = (f"{corner_treatment}:{subtraction_terminal_profile}" if corner_treatment in TREATMENTS_WITHOUT_CORNER_LAYER
              else f"eps={epsilon:g}")
+    penalty_baseline = corner_treatment == "penalty"
+    if penalty_baseline and boundary_penalty_sampling is None:
+        raise ValueError("corner_treatment='penalty' needs boundary_penalty_sampling")
     model_seed = derive_seed(seed, "model_init")
     sampler_seed = derive_seed(seed, "sampler")
     similarity_profile_seed = derive_seed(seed, "similarity_profile_init")
@@ -882,6 +970,21 @@ def train_one_epsilon(
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, build_lr_lambda(total_iters))
     generator = torch.Generator(device="cpu")
     generator.manual_seed(sampler_seed)
+    boundary_generator = None
+    if penalty_baseline:
+        # Own generator: the interior batches are drawn exactly as in the hard modes at the same seed.
+        boundary_sampler_seed = derive_seed(seed, "boundary_sampler")
+        boundary_generator = torch.Generator(device="cpu")
+        boundary_generator.manual_seed(boundary_sampler_seed)
+        logger.info(
+            f"[{label}] penalty baseline P: objective = interior loss + {penalty_terminal_weight:g} x mean w "
+            f"(Phi(s,T) - (K-s)^+)^2 + {penalty_barrier_weight:g} x mean w Phi(B,t)^2, {penalty_boundary_points} points "
+            f"per face and per batch (boundary_sampler seed {boundary_sampler_seed}); s - B on Sigma_T and tau on "
+            f"Sigma_B from a mixture of the uniform law and the log-uniform law on "
+            f"[{boundary_penalty_sampling.smallest_distance_to_barrier:g}, {s_inf - B:g}] and "
+            f"[{boundary_penalty_sampling.smallest_time_to_maturity:g}, {T:g}] (log-uniform fraction "
+            f"{boundary_penalty_sampling.log_uniform_fraction:g}), weights u/m."
+        )
 
     history = {"iter": [], "loss": [], "grad_norm": [], "lr": []}
     if learned_similarity_profile:
@@ -893,7 +996,12 @@ def train_one_epsilon(
     if learned_barrier_location:
         history.update({"learned_barrier": [], "log_barrier_shift_gradient": [],
                         "interior_loss": [], "barrier_trace_penalty": [], "barrier_trace_sup_abs": []})
+    if penalty_baseline:
+        history.update({"interior_loss": [], "terminal_penalty": [], "barrier_penalty": []})
     history.update({"validation_iter": [], "validation_loss": []})
+    if penalty_baseline:
+        history.update({"validation_interior_loss": [], "validation_terminal_penalty": [],
+                        "validation_barrier_penalty": []})
     best_loss = math.inf
     best_iter = 0
     best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
@@ -919,6 +1027,17 @@ def train_one_epsilon(
     else:
         logger.info(f"[{label}] best-state selection: single-batch training loss (criterion of the runs before "
                     f"--best-state-selection existed).")
+    boundary_validation_set = None
+    if penalty_baseline and validation_set is not None:
+        boundary_validation_seed = derive_seed(seed, "validation_boundary_set")
+        boundary_validation_set = draw_boundary_validation_set(boundary_penalty_sampling, validation_set_size,
+                                                               boundary_validation_seed)
+        logger.info(
+            f"[{label}] penalty baseline P: the validation criterion is the full objective, the interior term on "
+            f"the fixed set above plus the two penalties on a fixed boundary set of {validation_set_size} points per "
+            f"face (seed {boundary_validation_seed}, role 'validation_boundary_set'); its three terms are recorded "
+            f"separately (the interior term is comparable with the validation loss of the hard modes)."
+        )
 
     snapshot_directory = checkpoint_path.parent / f"snapshots_eps{epsilon:g}"
     if model_snapshot_every > 0:
@@ -928,7 +1047,8 @@ def train_one_epsilon(
 
     if resume and checkpoint_path.exists():
         (iter_done, total_iters_saved, history, best_loss, best_iter, best_model_state,
-         saved_tracking) = _load_checkpoint(checkpoint_path, model, optimizer, scheduler, generator)
+         saved_tracking) = _load_checkpoint(checkpoint_path, model, optimizer, scheduler, generator,
+                                            boundary_generator)
         if saved_tracking is None:
             saved_tracking = {"selection": "single_batch", "single_batch_loss": best_loss, "single_batch_iter": best_iter,
                               "validation_loss": math.inf, "validation_iter": 0}
@@ -961,6 +1081,12 @@ def train_one_epsilon(
             s_f = s_f.to(DEVICE).requires_grad_(True)
             t_f = t_f.to(DEVICE).requires_grad_(True)
             loss = compute_loss(model, s_f, t_f, r, sigma, importance_weights.to(DEVICE))
+        if penalty_baseline:
+            interior_loss = loss
+            boundary_batch = boundary_penalty_sampling.sample(penalty_boundary_points, boundary_generator,
+                                                              torch.get_default_dtype())
+            terminal_penalty, barrier_penalty = weighted_boundary_penalties(model, boundary_batch, K, DEVICE)
+            loss = interior_loss + penalty_terminal_weight * terminal_penalty + penalty_barrier_weight * barrier_penalty
         if learned_barrier_location:
             interior_loss = loss
             barrier_trace = model.g2.barrier_trace(barrier_trace_times)
@@ -998,6 +1124,16 @@ def train_one_epsilon(
 
         if validation_set is not None and (it % validation_every == 0 or it == total_iters):
             current_validation_loss = validation_loss(model, validation_set, r, sigma)
+            penalty_validation_message = ""
+            if penalty_baseline:
+                validation_terminal, validation_barrier = boundary_validation_penalties(model, boundary_validation_set, K)
+                history["validation_interior_loss"].append(current_validation_loss)
+                history["validation_terminal_penalty"].append(validation_terminal)
+                history["validation_barrier_penalty"].append(validation_barrier)
+                penalty_validation_message = (f"  (interior {current_validation_loss:.4e}, terminal {validation_terminal:.4e}, "
+                                              f"barrier {validation_barrier:.4e})")
+                current_validation_loss = (current_validation_loss + penalty_terminal_weight * validation_terminal
+                                           + penalty_barrier_weight * validation_barrier)
             history["validation_iter"].append(it)
             history["validation_loss"].append(current_validation_loss)
             improved = current_validation_loss < best_state_tracking["validation_loss"]
@@ -1008,6 +1144,7 @@ def train_one_epsilon(
                 best_iter = it
                 best_model_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
             logger.info(f"[{label}] iter {it:>6d}/{total_iters}  validation loss={current_validation_loss:.6e}"
+                        f"{penalty_validation_message}"
                         f"{'  (new best state)' if improved else ''}  best={best_loss:.6e}@{best_iter}")
 
         if model_snapshot_every > 0 and (it % model_snapshot_every == 0 or it == total_iters):
@@ -1035,6 +1172,13 @@ def train_one_epsilon(
                     f"  |grad theta'|={profile_grad_norm:.2e}"
                 )
             barrier_message = ""
+            if penalty_baseline:
+                history["interior_loss"].append(float(interior_loss.detach()))
+                history["terminal_penalty"].append(float(terminal_penalty.detach()))
+                history["barrier_penalty"].append(float(barrier_penalty.detach()))
+                barrier_message = (f"  interior={float(interior_loss.detach()):.4e}"
+                                   f"  terminal penalty={float(terminal_penalty.detach()):.4e}"
+                                   f"  barrier penalty={float(barrier_penalty.detach()):.4e}")
             if learned_barrier_location:
                 # B' after the optimiser step; the losses and the gradient are those of the step.
                 current_learned_barrier = model.g2.learned_barrier()
@@ -1064,7 +1208,7 @@ def train_one_epsilon(
             _save_checkpoint(
                 checkpoint_path, it, total_iters, model, optimizer, scheduler,
                 history, best_loss, best_iter, best_model_state, label, generator,
-                best_state_tracking,
+                best_state_tracking, boundary_generator,
             )
 
     elapsed_total = time.time() - t0
@@ -1085,7 +1229,7 @@ def train_one_epsilon(
         _save_checkpoint(
             checkpoint_path, total_iters, total_iters, model, optimizer, scheduler,
             history, best_loss, best_iter, best_model_state, label, generator,
-            best_state_tracking,
+            best_state_tracking, boundary_generator,
         )
 
     # Restore the best state before returning (CLAUDE.md: the last iter
@@ -1316,6 +1460,26 @@ def formula_text_subtraction(
     ])
 
 
+def formula_text_penalty(terminal_profile: str, far_field_dirichlet: bool, terminal_weight: float,
+                         barrier_weight: float) -> str:
+    """Formula textbox of the penalty baseline P (Section 6 of the note, Definition 10)."""
+    operator_line = r"$\mathcal{L}^{BS}V=\partial_tV+\frac{1}{2}\sigma^2s^2\partial_{ss}V+rs\partial_sV-rV$;  "
+    if far_field_dirichlet:
+        far_datum = r"V^e(s_\infty,t)" if terminal_profile == "black_scholes" else r"(K-s_\infty)^+"
+        ansatz = (rf"$\Phi_\theta(s,t)=\frac{{s_\infty-s}}{{s_\infty-B}}\Psi_\theta(s,t)+{far_datum}$ "
+                  r"(penalty baseline P: only the far condition is hard)")
+    else:
+        ansatz = r"$\Phi_\theta=\Psi_\theta$ (penalty baseline P: no hard condition)"
+    return "\n".join([
+        operator_line + ansatz,
+        rf"$J(\theta)=\overline{{w(\mathcal{{L}}^{{BS}}\Phi_\theta)^2}}_Q+{terminal_weight:g}\,"
+        rf"\overline{{w(\Phi_\theta(s,T)-(K-s)^+)^2}}_{{\Sigma_T}}+{barrier_weight:g}\,"
+        r"\overline{w\,\Phi_\theta(B,t)^2}_{\Sigma_B}$, $w=u/m$ (importance weights of the uniform/log-uniform mixtures)",
+        r"reference: $V_{DO}$ = Reiner-Rubinstein closed form (method of images, $\mathcal{L}^{BS}$-exact); "
+        r"UNFAIR comparison warning: the terminal and barrier conditions hold only approximately in P",
+    ])
+
+
 def plot_subtraction_decomposition(
     model: ETCNN, eval_result: dict, K: float, B: float, T: float, out_path: Path, formula_text: str,
 ) -> None:
@@ -1498,6 +1662,7 @@ def plot_error_vs_epsilon(summaries: list[dict], out_path: Path, formula_text: s
 def plot_price_surface(
     eval_result: dict, epsilon: float, K: float, B: float, out_path: Path,
     formula_text: str = FORMULA_TEXT_RAW_PAYOFF,
+    trained_title: str | None = None,
 ) -> None:
     s_grid = eval_result["s_grid"].numpy()
     t_grid = eval_result["t_grid"].numpy()
@@ -1511,8 +1676,9 @@ def plot_price_surface(
 
     # epsilon = 0 is never a smoothing bandwidth (rejected by the builders): it
     # is the placeholder of the exact-subtraction runs.
-    trained_title = ("Trained (analytic corner resolution, no corner layer)" if epsilon == SUBTRACTION_EPSILON_PLACEHOLDER
-                     else f"Trained ($\\varepsilon={epsilon:g}$)")
+    if trained_title is None:
+        trained_title = ("Trained (analytic corner resolution, no corner layer)" if epsilon == SUBTRACTION_EPSILON_PLACEHOLDER
+                         else f"Trained ($\\varepsilon={epsilon:g}$)")
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5), sharey=True)
     panels = (
         (axes[0], learned,   trained_title,                            "viridis", vmin,  vmax,  "Price $V(s,t)$"),
@@ -1588,6 +1754,9 @@ def formula_text_for_run(meta: dict) -> str:
     a run's metadata. ``.get(..., default)`` keeps runs recorded before a mode
     existed readable (absent key -> the raw-payoff default)."""
     hyper = meta["hyperparameters"]
+    if hyper.get("corner_treatment", "smoothing") == "penalty":
+        return formula_text_penalty(hyper["subtraction_terminal_profile"], hyper.get("far_field_dirichlet", False),
+                                    hyper["penalty_terminal_weight"], hyper["penalty_barrier_weight"])
     if hyper.get("corner_treatment", "smoothing") in ANALYTIC_CORNER_TREATMENTS:
         comparison_volatility = hyper.get("comparison_volatility", None)
         return formula_text_subtraction(
@@ -1793,7 +1962,11 @@ def main() -> None:
                               "_learnedprofile_<profile>_d0<delta0>_d1<delta1>_w<width>_l<depth>. "
                               "'learned_barrier_location' (exploratory, section 19 of the methodology document): "
                               "the analytic enrichment with erf centred at a trained B' = B exp(eta) "
-                              "(--initial-learned-barrier, --barrier-trace-penalty-weight); exact traces only at B' = B.")
+                              "(--initial-learned-barrier, --barrier-trace-penalty-weight); exact traces only at B' = B. "
+                              "'penalty' (mode P, Section 6 of the note): no hard terminal or barrier condition, both "
+                              "penalised (--penalty-*); with --far-field-dirichlet the far condition stays hard with the "
+                              "datum pi(s_inf, t) of the hard modes. Directory tag _penalty_<profile>_lambdaT<w>_lambdaB<w>"
+                              "_nb<points>.")
     parser.add_argument("--enrichment-delta0", type=float, default=DEFAULT_ENRICHMENT_DELTA0,
                          help="Inner cutoff radius delta0 of the corner enrichment (chi = 1 on s - B <= delta0), "
                               "price units; only used with --corner-treatment enrichment or learned_similarity_profile.")
@@ -1819,6 +1992,21 @@ def main() -> None:
     parser.add_argument("--barrier-trace-points", type=int, default=DEFAULT_BARRIER_TRACE_POINTS,
                          help="Number n of midpoint nodes t_j = T (j + 1/2)/n of the barrier-trace penalty "
                               "(learned_barrier_location only).")
+    parser.add_argument("--penalty-terminal-weight", type=float, default=1.0,
+                         help="Weight lambda_T of the terminal penalty mean w (Phi(s,T) - (K-s)^+)^2 (--corner-treatment "
+                              "penalty only, mode P of Section 6 of the note).")
+    parser.add_argument("--penalty-barrier-weight", type=float, default=1.0,
+                         help="Weight lambda_B of the barrier penalty mean w Phi(B,t)^2 (--corner-treatment penalty only).")
+    parser.add_argument("--penalty-boundary-points", type=int, default=DEFAULT_PENALTY_BOUNDARY_POINTS,
+                         help="Boundary points per face and per batch (--corner-treatment penalty only).")
+    parser.add_argument("--penalty-log-uniform-fraction", type=float, default=0.5,
+                         help="Fraction of each face batch drawn log-uniformly in the distance to the corner (s - B on "
+                              "Sigma_T, tau on Sigma_B), the rest uniformly; squared residuals weighted by u/m "
+                              "(--corner-treatment penalty only).")
+    parser.add_argument("--penalty-smallest-distance-to-barrier", type=float, default=1e-6,
+                         help="Lower end of the log-uniform law of s - B on Sigma_T (--corner-treatment penalty only).")
+    parser.add_argument("--penalty-smallest-time-to-maturity", type=float, default=1e-6,
+                         help="Lower end of the log-uniform law of tau on Sigma_B (--corner-treatment penalty only).")
     parser.add_argument("--exclude-corner-from-collocation", action="store_true",
                          help="Reject interior collocation points falling in the ell^1 corner window "
                               "(s-B)+(T-t) <= --corner-window, so the PDE residual is never enforced at the "
@@ -1968,6 +2156,8 @@ def main() -> None:
         corner_window = meta["hyperparameters"]["corner_window"]
         formula_text = formula_text_for_run(meta)
         replot_subtraction = meta["hyperparameters"].get("corner_treatment", "smoothing") in ANALYTIC_CORNER_TREATMENTS
+        replot_without_corner_layer = (meta["hyperparameters"].get("corner_treatment", "smoothing")
+                                       in TREATMENTS_WITHOUT_CORNER_LAYER)
         if meta["hyperparameters"].get("dtype") == "float64":
             torch.set_default_dtype(torch.float64)
         (out_dir / "figures").mkdir(exist_ok=True)
@@ -1995,7 +2185,9 @@ def main() -> None:
                 f"rel_l2_global={eval_result['rel_l2_global']:.4e}  rel_l2_corner={eval_result['rel_l2_corner']:.4e}"
                 + (f"  (summary keys added/changed: {sorted(changed)})" if changed else "  (summary unchanged)")
             )
-            plot_price_surface(eval_result, epsilon, K, B, out_dir / "figures" / f"price_surface_eps{epsilon:g}.png", formula_text=formula_text)
+            plot_price_surface(eval_result, epsilon, K, B, out_dir / "figures" / f"price_surface_eps{epsilon:g}.png", formula_text=formula_text,
+                               trained_title=(PENALTY_BASELINE_TRAINED_TITLE
+                                              if meta["hyperparameters"].get("corner_treatment") == "penalty" else None))
             plot_log_slice(eval_result, epsilon, B, out_dir / "figures" / f"log_slice_eps{epsilon:g}.png", formula_text=formula_text)
             if replot_subtraction:
                 plot_subtraction_decomposition(
@@ -2020,8 +2212,8 @@ def main() -> None:
                 logger.info(f"[eps={epsilon:g}] learned barrier location figure rebuilt from {model_path} and {history_path}")
             logger.info(f"[eps={epsilon:g}] price-surface figure rebuilt from {model_path}")
 
-        if replot_subtraction:
-            logger.info("--replot: error_vs_epsilon.png not produced (analytic corner treatment, no epsilon sweep).")
+        if replot_without_corner_layer:
+            logger.info("--replot: error_vs_epsilon.png not produced (no corner layer, no epsilon sweep).")
         else:
             plot_error_vs_epsilon(summaries, out_dir / "figures" / "error_vs_epsilon.png", formula_text=formula_text)
         logger.info(f"--replot: done ({len(summaries)} epsilon values)")
@@ -2128,6 +2320,39 @@ def main() -> None:
         if args.corner_window is None:
             args.corner_window = DEFAULT_SUBTRACTION_CORNER_WINDOW
 
+    # ---- penalty baseline P: no corner layer (placeholder epsilon, canonical evaluation window); the payoff
+    # flags select only the profile of the far-field datum pi(s_inf, t).
+    penalty_baseline = args.corner_treatment == "penalty"
+    boundary_penalty_sampling = None
+    if penalty_baseline:
+        if args.smoothed_payoff or args.split_payoff or args.analytic_residual or args.exclude_corner_from_collocation:
+            print("ERROR: --corner-treatment penalty accepts neither --smoothed-payoff, --split-payoff, --analytic-residual "
+                  "nor --exclude-corner-from-collocation (the payoff flag only selects the far-field datum, raw or "
+                  "--black-scholes-payoff).", file=sys.stderr)
+            sys.exit(2)
+        if args.penalty_terminal_weight < 0.0 or args.penalty_barrier_weight < 0.0 or args.penalty_boundary_points < 1:
+            print(f"ERROR: need --penalty-terminal-weight >= 0, --penalty-barrier-weight >= 0 and "
+                  f"--penalty-boundary-points >= 1; got {args.penalty_terminal_weight}, {args.penalty_barrier_weight}, "
+                  f"{args.penalty_boundary_points}.", file=sys.stderr)
+            sys.exit(2)
+        try:
+            boundary_penalty_sampling = BarrierBoundaryPenaltySampling(
+                barrier=args.B, truncation_price=args.s_inf, maturity=args.T,
+                smallest_distance_to_barrier=args.penalty_smallest_distance_to_barrier,
+                smallest_time_to_maturity=args.penalty_smallest_time_to_maturity,
+                log_uniform_fraction=args.penalty_log_uniform_fraction,
+            )
+        except ValueError as error:
+            print(f"ERROR: --penalty-*: {error}", file=sys.stderr)
+            sys.exit(2)
+        subtraction_terminal_profile = "black_scholes" if args.black_scholes_payoff else "raw"
+        if args.epsilons != list(DEFAULT_EPSILONS) and args.epsilons != [SUBTRACTION_EPSILON_PLACEHOLDER]:
+            print(f"WARNING: --corner-treatment penalty has no corner layer; --epsilons {args.epsilons} is ignored "
+                  f"(placeholder eps={SUBTRACTION_EPSILON_PLACEHOLDER:g} names the artefacts).", file=sys.stderr)
+        args.epsilons = [SUBTRACTION_EPSILON_PLACEHOLDER]
+        if args.corner_window is None:
+            args.corner_window = DEFAULT_SUBTRACTION_CORNER_WINDOW
+
     # ---- split-semigroup mode: resolve defaults now (not inside build_model)
     # so the resolved values are logged and recorded in metadata.yaml exactly
     # once, identically for every epsilon in the sweep.
@@ -2144,7 +2369,10 @@ def main() -> None:
             split_y_hi = split_y_hi if split_y_hi is not None else default_y_hi
 
     corner_window = args.corner_window if args.corner_window is not None else max(args.epsilons)
-    if subtraction:
+    if penalty_baseline:
+        formula_text = formula_text_penalty(subtraction_terminal_profile, args.far_field_dirichlet,
+                                            args.penalty_terminal_weight, args.penalty_barrier_weight)
+    elif subtraction:
         formula_text = formula_text_subtraction(
             subtraction_terminal_profile, comparison_volatility, args.split_profile, args.split_n_quad,
             corner_treatment=args.corner_treatment,
@@ -2181,6 +2409,9 @@ def main() -> None:
             payoff_tag += f"_nuc{comparison_volatility:g}" + (
                 "_closedform" if args.split_profile == "closed_form" else f"_nquad{args.split_n_quad}"
             )
+    elif penalty_baseline:
+        payoff_tag = (f"_penalty_{subtraction_terminal_profile.replace('_', '')}_lambdaT{args.penalty_terminal_weight:g}"
+                      f"_lambdaB{args.penalty_barrier_weight:g}_nb{args.penalty_boundary_points}")
     elif args.smoothed_payoff:
         payoff_tag = f"_smoothed_eps0{args.eps0:g}_{args.grading}"
     elif args.black_scholes_payoff:
@@ -2247,14 +2478,17 @@ def main() -> None:
         logger.info(f"  GPU: {torch.cuda.get_device_name(0)}  ({torch.cuda.get_device_properties(0).total_memory / 2**30:.1f} GiB)")
     logger.info(f"  Device (requested): {args.device}  (resolved: {DEVICE})")
     logger.info(f"  Contract: K={args.K}, B={args.B}, r={args.r}, sigma={args.sigma}, T={args.T}")
-    if args.far_field_dirichlet:
+    if args.far_field_dirichlet and penalty_baseline:
+        logger.info(f"  Domain: s in ({args.B}, {args.s_inf})  [hard Dirichlet on s = s_inf via "
+                    "g1 = (s_inf-s)/(s_inf-B) (penalty baseline P): the trial solution equals g2(s_inf, t) there]")
+    elif args.far_field_dirichlet:
         logger.info(f"  Domain: s in ({args.B}, {args.s_inf})  [hard Dirichlet on s = s_inf via "
                     "g1 = (T-t)(s-B)(s_inf-s)/(s_inf-B): the trial solution equals g2(s_inf, t) there]")
     else:
         logger.info(f"  Domain: s in ({args.B}, {args.s_inf})  [NO far-field condition: the truncated problem "
                     "is not well posed without one, see --far-field-dirichlet; Remark 2 of the methodology doc]")
     logger.info(f"  Corner treatment: {args.corner_treatment}")
-    if subtraction:
+    if subtraction or penalty_baseline:
         logger.info(f"  Epsilons swept: none ({args.corner_treatment} has no corner layer; placeholder "
                     f"eps={SUBTRACTION_EPSILON_PLACEHOLDER:g} names the artefacts)")
     else:
@@ -2340,6 +2574,27 @@ def main() -> None:
             + ("EXCLUDED from collocation (--exclude-corner-from-collocation)." if args.exclude_corner_from_collocation
                else "INCLUDED in collocation.")
         )
+    elif penalty_baseline:
+        logger.info(
+            "  Ansatz: penalty baseline P (Section 6 of the note, Definition 10): no composite distance, no extension of "
+            "the data; "
+            + (f"Phi = (s_inf - s)/(s_inf - B) Psi_theta + pi(s_inf, t), pi = {subtraction_terminal_profile} (far-field "
+               "Dirichlet condition hard, with the far datum of the hard modes; the factor equals 1 on Sigma_B and does "
+               "not vanish on Sigma_T)" if args.far_field_dirichlet
+               else "Phi = Psi_theta (no hard condition at all)")
+            + f". Terminal condition Phi(s,T) = (K-s)^+ and barrier condition Phi(B,t) = 0 penalised with weights "
+              f"lambda_T = {args.penalty_terminal_weight:g}, lambda_B = {args.penalty_barrier_weight:g}, "
+              f"{args.penalty_boundary_points} points per face and per batch, log-uniform fraction "
+              f"{args.penalty_log_uniform_fraction:g} (s - B >= {args.penalty_smallest_distance_to_barrier:g} on Sigma_T, "
+              f"tau >= {args.penalty_smallest_time_to_maturity:g} on Sigma_B)."
+        )
+        logger.info(
+            "    Interior residual: ordinary route, autograd through the full trial solution. The corner is "
+            + ("EXCLUDED from collocation." if args.exclude_corner_from_collocation else "INCLUDED in collocation.")
+        )
+        logger.info(f"    -> boundary_sampler seed: {derive_seed(args.seed, 'boundary_sampler')}"
+                    + (f";  validation_boundary_set seed: {derive_seed(args.seed, 'validation_boundary_set')}"
+                       if args.best_state_selection == "validation" else ""))
     elif args.corner_treatment == "enrichment":
         logger.info(
             f"  Ansatz: corner enrichment (Method 2, Section 5.2, Definition 8): "
@@ -2375,14 +2630,14 @@ def main() -> None:
             logger.info(f"    comparison_volatility={comparison_volatility:g} "
                         f"({'matched to --sigma' if comparison_volatility == args.sigma else 'MISMATCHED from --sigma'}), "
                         f"profile route: {args.split_profile}.")
-    else:
+    elif not penalty_baseline:
         logger.info(
             "  Note: h_epsilon's transition has scale ~1/epsilon in the first "
             "derivative and ~1/epsilon^2 in the second; small epsilon sharpens "
             "the interior residual near the corner and may need more collocation "
             "density / iterations there to resolve well."
         )
-    if subtraction:
+    if subtraction or penalty_baseline:
         pass  # the terminal profile was logged with the ansatz above
     elif args.smoothed_payoff:
         logger.info(
@@ -2505,6 +2760,16 @@ def main() -> None:
                                              if args.corner_treatment == "learned_barrier_location" else None),
             "barrier_trace_points": (args.barrier_trace_points
                                      if args.corner_treatment == "learned_barrier_location" else None),
+            **({"penalty_terminal_weight": args.penalty_terminal_weight,
+                "penalty_barrier_weight": args.penalty_barrier_weight,
+                "penalty_boundary_points": args.penalty_boundary_points,
+                "penalty_log_uniform_fraction": args.penalty_log_uniform_fraction,
+                "penalty_smallest_distance_to_barrier": args.penalty_smallest_distance_to_barrier,
+                "penalty_smallest_time_to_maturity": args.penalty_smallest_time_to_maturity,
+                "boundary_sampler_seed": derive_seed(args.seed, "boundary_sampler"),
+                "validation_boundary_set_seed": (derive_seed(args.seed, "validation_boundary_set")
+                                                 if args.best_state_selection == "validation" else None)}
+               if penalty_baseline else {}),
         },
     }
     if resuming_existing_run:
@@ -2568,6 +2833,10 @@ def main() -> None:
             initial_learned_barrier=args.initial_learned_barrier,
             barrier_trace_penalty_weight=args.barrier_trace_penalty_weight,
             barrier_trace_points=args.barrier_trace_points,
+            boundary_penalty_sampling=boundary_penalty_sampling,
+            penalty_terminal_weight=args.penalty_terminal_weight,
+            penalty_barrier_weight=args.penalty_barrier_weight,
+            penalty_boundary_points=args.penalty_boundary_points,
         )
         # The per-iteration history (loss, gradient norms and, for the learned
         # profile, the profile error) is saved so trajectory figures can be
@@ -2620,7 +2889,17 @@ def main() -> None:
             **({"far_field_truncation_error_bound": truncation_bound["bound"]} if truncation_bound else {}),
             **(_similarity_profile_summary(model) if getattr(model.g2, "similarity_profile_is_learned", False) else {}),
             **(_learned_barrier_summary(model) if getattr(model.g2, "barrier_location_is_learned", False) else {}),
+            **(boundary_constraint_violations(model, args.K, args.B, args.T, args.s_inf, corner_window=corner_window)
+               if penalty_baseline else {}),
         }
+        if penalty_baseline:
+            logger.info(
+                f"[eps={epsilon:g}] boundary-condition violations of the restored state (penalty baseline P): "
+                f"max_s |Phi(s,T) - (K-s)^+| = {summary['terminal_condition_max_abs_violation']:.4e} "
+                f"({summary['terminal_condition_max_abs_violation_outside_corner']:.4e} for s - B > {corner_window:g}); "
+                f"max_t |Phi(B,t)| = {summary['barrier_condition_max_abs_violation']:.4e} "
+                f"({summary['barrier_condition_max_abs_violation_outside_corner']:.4e} for T - t > {corner_window:g})"
+            )
         if getattr(model.g2, "barrier_location_is_learned", False):
             logger.info(
                 f"[eps={epsilon:g}] learned barrier location (restored state): B' = {summary['learned_barrier']:.6f}, "
@@ -2641,7 +2920,8 @@ def main() -> None:
         _write_summary(out_dir, epsilon, summary)
         summaries.append({**summary, **{k: eval_result[k] for k in ("s_grid", "t_grid", "learned", "reference")}})
 
-        plot_price_surface(eval_result, epsilon, args.K, args.B, out_dir / "figures" / f"price_surface_eps{epsilon:g}.png", formula_text=formula_text)
+        plot_price_surface(eval_result, epsilon, args.K, args.B, out_dir / "figures" / f"price_surface_eps{epsilon:g}.png", formula_text=formula_text,
+                           trained_title=PENALTY_BASELINE_TRAINED_TITLE if penalty_baseline else None)
         plot_log_slice(eval_result, epsilon, args.B, out_dir / "figures" / f"log_slice_eps{epsilon:g}.png", formula_text=formula_text)
         if subtraction:
             plot_subtraction_decomposition(
@@ -2654,7 +2934,7 @@ def main() -> None:
             plot_learned_barrier_location(model, history, args.B, args.T,
                                           out_dir / "figures" / "learned_barrier_location.png",
                                           args.barrier_trace_penalty_weight)
-    if subtraction:
+    if subtraction or penalty_baseline:
         logger.info(f"  error_vs_epsilon.png not produced: no epsilon sweep in {args.corner_treatment} mode.")
     else:
         plot_error_vs_epsilon(summaries, out_dir / "figures" / "error_vs_epsilon.png", formula_text=formula_text)
