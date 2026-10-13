@@ -2594,13 +2594,15 @@ def main(argv=None) -> int:
                 "[%s] closed-form forcing floor not defined: the forcing of the full "
                 "datum has a singular part at x = 0 (recorded as NaN)", variant["name"]
             )
-            if problem.get("variable_generator") is not None:
-                # The line-source correction w is a constant-coefficient closed form;
-                # with variable coefficients it has none, and it is not recorded.
+            if problem.get("variable_generator") is not None or variant["form"] != "hard_constant":
+                # The line-source correction w is the closed form of the constant-in-time
+                # extension with constant coefficients; with variable coefficients, or for
+                # the convex extension (singular forcing weighted in time), it does not
+                # apply and is not recorded.
                 line_source_metrics = {}
                 logger.info(
-                    "[%s] line-source limit not computed: no closed form with variable "
-                    "coefficients", variant["name"],
+                    "[%s] line-source limit not computed: its closed form covers the "
+                    "constant-in-time extension with constant coefficients only", variant["name"],
                 )
             else:
                 line_source_metrics = compute_line_source_metrics(model, problem)

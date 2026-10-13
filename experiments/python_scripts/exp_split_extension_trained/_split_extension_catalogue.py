@@ -410,6 +410,18 @@ FULL_DATUM_FOURTH_ORDER_ADDED_VARIANTS: list[dict] = [
     _generator_variant("exact_solution"),
     TRANSPORTED_DATUM_VARIANT,
 ]
+# Variants of the paper's earlier comparison, run on the full datum as well (author request
+# 2026-10-13: computed for completeness, not reported in the paper nor in the talk); appended
+# last so that the order of the earlier variants is unchanged.
+FULL_DATUM_SECOND_ORDER_EXTRA_VARIANTS: list[dict] = [
+    _generator_variant("convex_raw"),
+    _generator_variant("graded_gaussian_mismatched"),
+    _generator_variant("graded_chen_mangasarian_narrow"),
+]
+FULL_DATUM_FOURTH_ORDER_EXTRA_VARIANTS: list[dict] = [
+    _generator_variant("convex_raw"),
+    GRADED_GAUSSIAN_WIDTH_MATCHED_VARIANT,
+]
 
 BUTTERFLY_REAL_LINE_CELL_VARIANTS: list[dict] = [
     _generator_variant("convex_raw"),
@@ -784,9 +796,11 @@ def variants_for_cell(cell_name: str) -> list[dict]:
     if cell_conf["variant_set"] == "variable_coefficient_full_datum":
         return list(VARIABLE_COEFFICIENT_FULL_DATUM_CELL_VARIANTS)
     if cell_conf["variant_set"] == "full_datum_second_order":
-        return list(FULL_DATUM_SECOND_ORDER_CELL_VARIANTS) + FULL_DATUM_SECOND_ORDER_ADDED_VARIANTS
+        return (list(FULL_DATUM_SECOND_ORDER_CELL_VARIANTS) + FULL_DATUM_SECOND_ORDER_ADDED_VARIANTS
+                + FULL_DATUM_SECOND_ORDER_EXTRA_VARIANTS)
     if cell_conf["variant_set"] == "full_datum_fourth_order":
-        return list(FULL_DATUM_FOURTH_ORDER_CELL_VARIANTS) + FULL_DATUM_FOURTH_ORDER_ADDED_VARIANTS
+        return (list(FULL_DATUM_FOURTH_ORDER_CELL_VARIANTS) + FULL_DATUM_FOURTH_ORDER_ADDED_VARIANTS
+                + FULL_DATUM_FOURTH_ORDER_EXTRA_VARIANTS)
     if cell_conf["variant_set"] == "sixth_order":
         return list(SIXTH_ORDER_CELL_VARIANTS)
     if cell_conf["variant_set"] == "real_line_butterfly":

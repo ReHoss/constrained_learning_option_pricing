@@ -62,8 +62,9 @@ def test_full_datum_cells_give_the_full_datum_to_the_raw_variant_only(
 ):
     problem = runner.build_problem(cell_name)
     assert problem["band_edge"] == catalogue.FULL_DATUM_REFERENCE_BAND_EDGE
-    # The variants of the 2026-10-08 study first, then those added on 2026-10-12.
-    assert catalogue.variant_names(cell_name) == [
+    # The variants of the 2026-10-08 study first, then those added on 2026-10-12, then the
+    # extra variants of 2026-10-13 (checked in test_extra_variants_are_appended_last...).
+    assert catalogue.variant_names(cell_name)[:6] == [
         "constant_in_time", split_variant, split_and_first_order_variant,
         "graded_chen_mangasarian", "exact_solution", "transported_datum",
     ]
@@ -163,3 +164,21 @@ def test_full_datum_transported_field_terminal_profile_and_torch_path():
         rtol=1e-13,
     )
 
+
+
+@pytest.mark.parametrize("cell_name, extra_names", [
+    ("g2_bernoulli_full", ["convex_raw", "graded_gaussian_mismatched", "graded_chen_mangasarian_narrow"]),
+    ("g3_bernoulli_full", ["convex_raw", "graded_gaussian_width_matched"]),
+])
+def test_extra_variants_are_appended_last_and_meet_their_datum(cell_name, extra_names):
+    names = catalogue.variant_names(cell_name)
+    assert names[-len(extra_names):] == extra_names
+    problem = runner.build_problem(cell_name)
+    small_network = dict(catalogue.DEFAULT_HPARAMS, net_width=8, net_blocks=1, net_layers_per_block=1)
+    for variant_name in extra_names:
+        variant = catalogue.variant_by_name(cell_name, variant_name)
+        variant_problem = runner.problem_for_variant(problem, variant)
+        model, _ = runner.build_ansatz(variant, variant_problem, small_network, model_seed=0)
+        assert runner.compute_error_metrics(model, variant_problem)["tc_l2"] == 0.0
+    convex_problem = runner.problem_for_variant(problem, catalogue.variant_by_name(cell_name, "convex_raw"))
+    assert convex_problem["terminal_datum"] is runner.full_bernoulli_datum_values
