@@ -44,4 +44,44 @@ Admissibility follows the paper: finite validation and evaluation quantities, ex
 
 ## 4. Outcome
 
-To be written after the run.
+Written 2026-10-13 after Jean Zay array 1017682 (smoke test 1017681) completed at revision `a252181`. The values are read from the `summary_*.yaml` files of the 24 run directories (`rel_l2` is $\delta_\Gamma$), copied to `data/ablation_split_extension_trained/variable_coefficient_full_datum_2026-10-13/`. No checkpoint files exist.
+
+**Smoke test** (not results). The Galerkin reference changes by a relative $9\times10^{-13}$ to $2\times10^{-12}$ (order 2) and $1.5\times10^{-8}$ to $3.0\times10^{-8}$ (order 4) between $N$ and $\tfrac32N$, at the evaluation times $t<T$.
+
+**Admissibility.** The 72 runs are admissible:
+- finite validation and evaluation quantities;
+- exact initial-value check ($\mathrm{tc}_{l^2}=0$);
+- no gradient-norm safeguard activation and no non-finite norm over the 20000 recorded updates.
+
+Wall times range from $408$ to $702$ s at order 2 and from $1647$ to $2116$ s at order 4.
+
+**Median relative error $\delta_\Gamma$** (measured, 3 seeds; same revision and hardware for both data):
+
+| Cell | Choice of $h$ | $g_{128}$ | $g$ | Change from $g_{128}$ to $g$ |
+|---|---|---|---|---|
+| LV2, $\varepsilon=0.25$ | $A=0$ | $\simeq1.23\times10^{-3}$ | $\simeq0.157$ | factor $\simeq1.3\times10^{2}$ |
+| LV2, $\varepsilon=0.25$ | frozen at $x^\star$ | $\simeq4.520\times10^{-4}$ | $\simeq4.528\times10^{-4}$ | $+0.2\%$ |
+| LV2, $\varepsilon=0.25$ | frozen at the mean | $\simeq5.698\times10^{-4}$ | $\simeq5.733\times10^{-4}$ | $+0.6\%$ |
+| LV2, $\varepsilon=0.75$ | $A=0$ | $\simeq1.87\times10^{-3}$ | $\simeq0.193$ | factor $\simeq1.0\times10^{2}$ |
+| LV2, $\varepsilon=0.75$ | frozen at $x^\star$ | $\simeq4.027\times10^{-4}$ | $\simeq4.034\times10^{-4}$ | $+0.2\%$ |
+| LV2, $\varepsilon=0.75$ | frozen at the mean | $\simeq7.168\times10^{-4}$ | $\simeq6.649\times10^{-4}$ | $-7.2\%$ |
+| LV4, $\varepsilon=0.25$ | $A=0$ | $\simeq11.1$ | $\simeq0.165$ | factor $\simeq0.015$ |
+| LV4, $\varepsilon=0.25$ | frozen at $x^\star$ | $\simeq5.558\times10^{-4}$ | $\simeq5.461\times10^{-4}$ | $-1.7\%$ |
+| LV4, $\varepsilon=0.25$ | frozen at the mean | $\simeq1.354\times10^{-3}$ | $\simeq1.389\times10^{-3}$ | $+2.6\%$ |
+| LV4, $\varepsilon=0.75$ | $A=0$ | $\simeq5.22$ | $\simeq0.190$ | factor $\simeq0.036$ |
+| LV4, $\varepsilon=0.75$ | frozen at $x^\star$ | $\simeq1.108\times10^{-3}$ | $\simeq1.086\times10^{-3}$ | $-2.0\%$ |
+| LV4, $\varepsilon=0.75$ | frozen at the mean | $\simeq2.107\times10^{-3}$ | $\simeq2.382\times10^{-3}$ | $+13.0\%$ |
+
+**Closed-form forcing floors of the frozen splits** (band $128$ against band $4096$): at order 2 they change by at most $0.4\%$; at order 4, frozen at $x^\star$, by less than $10^{-4}$ relative; at order 4, frozen at the mean, they grow by a factor $\simeq2.5$ ($\varepsilon=0.25$, $1.07\times10^{-2}$ to $2.66\times10^{-2}$) and $\simeq10.9$ ($\varepsilon=0.75$, $1.45\times10^{-2}$ to $0.158$).
+
+**Predictions.**
+- **V1 holds.** On LV2 the four medians on $g$ lie within a relative $10\%$ of those on $g_{128}$ (largest change $-7.2\%$, frozen at the mean, $\varepsilon=0.75$).
+- **V2 does not hold.** On LV4 the median of the split frozen at the mean increases by $+13.0\%$ at $\varepsilon=0.75$, beyond the $10\%$ of the prediction, but by $+2.6\%$ only at $\varepsilon=0.25$. The closed-form forcing floor grows with the band, as the heuristic states; the trained error changes by less than the prediction at the smaller amplitude.
+- **V3 holds.** On LV4 the median of the split frozen at $x^\star$ changes by $-1.7\%$ and $-2.0\%$.
+- **V4 holds.** On the full-datum LV4 cells the split frozen at $x^\star$ has the smaller median: by a factor $\simeq2.5$ ($\varepsilon=0.25$) and $\simeq2.2$ ($\varepsilon=0.75$).
+- **V5 holds.** On the four full-datum cells $A=0$ exceeds the split frozen at $x^\star$ by a factor $\simeq3.5\times10^{2}$, $\simeq4.8\times10^{2}$ (LV2) and $\simeq3.0\times10^{2}$, $\simeq1.7\times10^{2}$ (LV4).
+
+**Observations, not predicted.**
+- On the full datum the three seeds of $A=0$ give $\delta_\Gamma$ equal to two or three digits ($0.1569$ to $0.1574$, $0.1925$ to $0.1929$, $0.1644$ to $0.1652$, $0.1891$ to $0.1899$), at validation residuals of $10^{-6}$ (LV2) and $10^{-4}$ (LV4), as for the constant-coefficient cells. No closed-form limit is computed with variable coefficients.
+- At order 4, $A=0$ has a much smaller error on $g$ than on $g_{128}$ ($0.165$ against $11.1$, $0.190$ against $5.22$), with the retained updates of the $g_{128}$ runs between $100$ and $4500$. The same ordering holds at constant coefficients (order four on $\mathbb T$: $0.151$ on $g$, $9.29$ on $g_{128}$).
+- On LV4 the split frozen at the mean has one seed with a larger error on both data (seed 1: $5.2\times10^{-3}$ and $6.0\times10^{-3}$ at $\varepsilon=0.25$, $1.3\times10^{-2}$ and $6.6\times10^{-3}$ at $\varepsilon=0.75$), retained at earlier updates ($8000$ to $14800$).

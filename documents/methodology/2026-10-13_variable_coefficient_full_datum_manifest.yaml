@@ -1,0 +1,17 @@
+# Manifest of the variable-coefficient study on the full datum (pre-registration
+# documents/methodology/2026-10-13_preregistration_variable_coefficient_full_datum.md).
+variable_coefficient_full_datum:
+  cells: [lv2_bernoulli_full_eps0p25, lv2_bernoulli_full_eps0p75, lv4_bernoulli_full_eps0p25, lv4_bernoulli_full_eps0p75,
+          lv2_bernoulli_bandlimited_eps0p25, lv2_bernoulli_bandlimited_eps0p75, lv4_bernoulli_bandlimited_eps0p25, lv4_bernoulli_bandlimited_eps0p75]
+  variants: [constant_in_time, split_frozen_singular, split_frozen_mean]   # convex_raw of the band-limited cells not run
+  seeds: [0, 1, 2]
+  tasks: 72
+  cluster: Jean Zay (IDRIS), NVIDIA V100 (gpu_p13), akz@v100, qos_gpu-t3, time limit 10:00:00 per task
+  slurm_jobs: {smoke_test: 1017681, array: 1017682}
+  smoke_test: qos_gpu-dev, 300 iterations per variant on lv2_full_eps0p25 and lv4_full_eps0p75 with --debug; Galerkin N vs 1.5 N deviations <= 3.0e-8 at t < T; cross-checks <= 2.7e-8; values not reported as results
+  code_revision: a252181   # recorded in every metadata.yaml at the --init-only phase (git is unavailable on compute nodes)
+  reference: Fourier-Galerkin, N = 512 (order 2) and 256 (order 4); full-datum cells built on g_{N-1} with the full datum at t = T
+  hyperparameters: identical to the full-datum runs of 2026-10-12 (checked against full_datum_remaining_choices_2026-10-12/2026-10-12-18-01-02-584775Z_g2_bernoulli_full_iters20000_seed0 at --init-only)
+  run_directories: data/ablation_split_extension_trained/variable_coefficient_full_datum_2026-10-13/ (Jean Zay and local copy, no checkpoint files, _debug_ excluded)
+  launch_scripts: Jean Zay, $WORK/oym_migration/work/logs/constrained_learning_option_pricing/variable_coefficient_full_datum_2026-10-13/
+  status: completed 2026-10-13, 72 admissible runs; V1, V3, V4, V5 hold, V2 does not (pre-registration section 4)
