@@ -303,6 +303,15 @@ VARIABLE_COEFFICIENT_CELL_VARIANTS: list[dict] = [
     SPLIT_FROZEN_SINGULAR_VARIANT,
     SPLIT_FROZEN_MEAN_VARIANT,
 ]
+# Full-datum variable-coefficient cells (pre-registration
+# documents/methodology/2026-10-13_preregistration_variable_coefficient_full_datum.md): the
+# datum-path constant-in-time extension on the unprojected datum and the two freezings; the
+# convex extension is not run, as in the choices of the CMAP talk.
+VARIABLE_COEFFICIENT_FULL_DATUM_CELL_VARIANTS: list[dict] = [
+    _generator_variant("constant_in_time"),
+    SPLIT_FROZEN_SINGULAR_VARIANT,
+    SPLIT_FROZEN_MEAN_VARIANT,
+]
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +428,23 @@ def _amplitude_tag(amplitude_ratio: float) -> str:
     return f"eps{amplitude_ratio:.2f}".replace(".", "p")
 
 
-def _local_volatility_cell(amplitude_ratio: float) -> dict:
+def _variable_coefficient_datum_entries(full_datum: bool) -> dict:
+    """Datum keys of a variable-coefficient cell: the band-limited g_128, or the full datum
+    (spectral extensions at the reference band, datum path on the unprojected datum)."""
+    if full_datum:
+        return {"datum": "bernoulli_full", "truncation_wavenumber": FULL_DATUM_REFERENCE_BAND_EDGE,
+                "variant_set": "variable_coefficient_full_datum"}
+    return {"datum": "bernoulli_bandlimited", "truncation_wavenumber": 128,
+            "variant_set": "variable_coefficient"}
+
+
+def _variable_coefficient_datum_label(full_datum: bool) -> str:
+    if full_datum:
+        return r"$g(x)=\tfrac16-\tfrac{x}{2\pi}+\tfrac{x^2}{4\pi^2}$ on $[0,2\pi)$ (full datum),  "
+    return r"$g(x)=\sum_{k=1}^{128}\frac{\cos(kx)}{\pi^2k^2}$,  "
+
+
+def _local_volatility_cell(amplitude_ratio: float, full_datum: bool = False) -> dict:
     diffusivity_mean, risk_free_rate = 0.125, 0.03
     amplitude = diffusivity_mean * amplitude_ratio
     return {
@@ -432,22 +457,20 @@ def _local_volatility_cell(amplitude_ratio: float) -> dict:
             0: -risk_free_rate,
         },
         "variable_coefficients": True,
-        "datum": "bernoulli_bandlimited",
-        "truncation_wavenumber": 128,
+        **_variable_coefficient_datum_entries(full_datum),
         "terminal_time": 1.0,
         "corner_point": 0.0,  # the datum's break point x*, where A* is frozen
-        "variant_set": "variable_coefficient",
-        "short_label": rf"LV2, $\varepsilon={amplitude_ratio:g}$",
+        "short_label": rf"LV2, $\varepsilon={amplitude_ratio:g}$" + (", full datum" if full_datum else ""),
         "label": (
-            r"$g(x)=\sum_{k=1}^{128}\frac{\cos(kx)}{\pi^2k^2}$,  "
-            r"$A=a(x)\,\partial_{xx}+(r-a(x))\,\partial_x-r$,  "
+            _variable_coefficient_datum_label(full_datum)
+            + r"$A=a(x)\,\partial_{xx}+(r-a(x))\,\partial_x-r$,  "
             rf"$a(x)=0.125\,(1+{amplitude_ratio:g}\cos(x-\pi/4))$, $r=0.03$ "
             r"(LV2, local volatility),  $T=1$"
         ),
     }
 
 
-def _variable_biharmonic_cell(amplitude_ratio: float) -> dict:
+def _variable_biharmonic_cell(amplitude_ratio: float, full_datum: bool = False) -> dict:
     beta_mean = 0.05
     return {
         # beta(x) = 0.05 (1 + eps cos(x - pi/4)); A = -beta(x) d_x^4 + 1.3 d_x - 0.4.
@@ -458,15 +481,13 @@ def _variable_biharmonic_cell(amplitude_ratio: float) -> dict:
             0: -0.4,
         },
         "variable_coefficients": True,
-        "datum": "bernoulli_bandlimited",
-        "truncation_wavenumber": 128,
+        **_variable_coefficient_datum_entries(full_datum),
         "terminal_time": 1.0,
         "corner_point": 0.0,
-        "variant_set": "variable_coefficient",
-        "short_label": rf"LV4, $\varepsilon={amplitude_ratio:g}$",
+        "short_label": rf"LV4, $\varepsilon={amplitude_ratio:g}$" + (", full datum" if full_datum else ""),
         "label": (
-            r"$g(x)=\sum_{k=1}^{128}\frac{\cos(kx)}{\pi^2k^2}$,  "
-            r"$A=-\beta(x)\,\partial_x^4+1.3\,\partial_x-0.4$,  "
+            _variable_coefficient_datum_label(full_datum)
+            + r"$A=-\beta(x)\,\partial_x^4+1.3\,\partial_x-0.4$,  "
             rf"$\beta(x)=0.05\,(1+{amplitude_ratio:g}\cos(x-\pi/4))$ "
             r"(LV4),  $T=1$"
         ),
@@ -586,6 +607,15 @@ CELL_CONFIGS: dict[str, dict] = {
     },
     **{
         f"lv4_bernoulli_bandlimited_{_amplitude_tag(ratio)}": _variable_biharmonic_cell(ratio)
+        for ratio in VARIABLE_COEFFICIENT_AMPLITUDE_RATIOS
+    },
+    # Full-datum versions (added 2026-10-13).
+    **{
+        f"lv2_bernoulli_full_{_amplitude_tag(ratio)}": _local_volatility_cell(ratio, full_datum=True)
+        for ratio in VARIABLE_COEFFICIENT_AMPLITUDE_RATIOS
+    },
+    **{
+        f"lv4_bernoulli_full_{_amplitude_tag(ratio)}": _variable_biharmonic_cell(ratio, full_datum=True)
         for ratio in VARIABLE_COEFFICIENT_AMPLITUDE_RATIOS
     },
     "g2_bernoulli_full": {
@@ -751,6 +781,8 @@ def variants_for_cell(cell_name: str) -> list[dict]:
         return list(FOURTH_ORDER_CELL_VARIANTS) + [TRANSPORTED_DATUM_VARIANT]
     if cell_conf["variant_set"] == "variable_coefficient":
         return list(VARIABLE_COEFFICIENT_CELL_VARIANTS)
+    if cell_conf["variant_set"] == "variable_coefficient_full_datum":
+        return list(VARIABLE_COEFFICIENT_FULL_DATUM_CELL_VARIANTS)
     if cell_conf["variant_set"] == "full_datum_second_order":
         return list(FULL_DATUM_SECOND_ORDER_CELL_VARIANTS) + FULL_DATUM_SECOND_ORDER_ADDED_VARIANTS
     if cell_conf["variant_set"] == "full_datum_fourth_order":

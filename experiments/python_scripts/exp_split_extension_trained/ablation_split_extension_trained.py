@@ -757,12 +757,21 @@ def _build_variable_coefficient_problem(cell_name: str, cell_conf: dict) -> dict
     generator = generator_from_specification(cell_conf["generator_coefficients"], cell_name)
     cosine_coefficients = bandlimited_bernoulli_cosine_coefficients(band_edge)
     datum = BandLimitedDatum(PeriodisedBernoulliDatum(1), band_edge)
-    reference = GalerkinReferenceSolution(
-        generator,
-        datum,
-        VARIABLE_COEFFICIENT_GALERKIN_BAND_BY_ORDER[generator.principal_order],
-        terminal_time,
-    )
+    galerkin_band = VARIABLE_COEFFICIENT_GALERKIN_BAND_BY_ORDER[generator.principal_order]
+    full_datum = cell_conf["datum"] == "bernoulli_full"
+    if full_datum:
+        # The Galerkin reference needs a datum band below its truncation N: it is built on
+        # g_{N-1} and returns the full datum at t = T, where u*(., T) = g. For t < T the
+        # components above N are damped by at least e^{-c N^{2p} (T - t)}.
+        reference = FullDatumGalerkinReference(
+            GalerkinReferenceSolution(
+                generator, BandLimitedDatum(PeriodisedBernoulliDatum(1), galerkin_band - 1),
+                galerkin_band, terminal_time,
+            ),
+            terminal_time,
+        )
+    else:
+        reference = GalerkinReferenceSolution(generator, datum, galerkin_band, terminal_time)
     datum_field = exact_solution_field(
         generator.frozen_principal_coefficients("mean"),
         cosine_coefficients,
@@ -773,6 +782,9 @@ def _build_variable_coefficient_problem(cell_name: str, cell_conf: dict) -> dict
         "generator_coefficients": generator.runtime_coefficients(),
         "variable_generator": generator,
         "band_limited_datum": datum,
+        # Full-datum cells: the unprojected datum of the datum-path variants
+        # (problem_for_variant); the frozen splits keep the reference band.
+        "full_terminal_datum": full_bernoulli_datum_values if full_datum else None,
         "singular_point": float(cell_conf["corner_point"]),
         "terminal_time": terminal_time,
         "datum_kind": cell_conf["datum"],
@@ -790,6 +802,34 @@ def _build_variable_coefficient_problem(cell_name: str, cell_conf: dict) -> dict
         "forcing_band_edge": band_edge + 1,
         "forcing_wavenumber_band": full_wavenumber_band(band_edge + 1),
     }
+
+
+class FullDatumGalerkinReference:
+    """Galerkin reference of a full-datum variable-coefficient cell.
+
+    Equal to the Galerkin solution built on g_{N-1} for t < T, and to the full datum at t = T,
+    where u*(., T) = g. Exposes the two methods the runner uses on a variable-coefficient
+    reference, ``field`` and ``terminal_datum_values``.
+    """
+
+    def __init__(self, galerkin_reference, terminal_time: float) -> None:
+        self.galerkin_reference = galerkin_reference
+        self.terminal_time = float(terminal_time)
+        self.galerkin_band = galerkin_reference.galerkin_band
+
+    def field(self, x, t):
+        import numpy as np
+
+        x_array, t_array = np.broadcast_arrays(np.asarray(x, dtype=np.float64), np.asarray(t, dtype=np.float64))
+        values = np.asarray(self.galerkin_reference.field(x_array, t_array), dtype=np.float64).copy()
+        at_terminal_time = t_array == self.terminal_time
+        values[at_terminal_time] = full_bernoulli_datum_values(x_array[at_terminal_time])
+        return values
+
+    def terminal_datum_values(self, x):
+        import numpy as np
+
+        return full_bernoulli_datum_values(np.asarray(x, dtype=np.float64))
 
 
 class SingleSineWavenumberDatum:
@@ -2554,14 +2594,23 @@ def main(argv=None) -> int:
                 "[%s] closed-form forcing floor not defined: the forcing of the full "
                 "datum has a singular part at x = 0 (recorded as NaN)", variant["name"]
             )
-            line_source_metrics = compute_line_source_metrics(model, problem)
-            logger.info(
-                "[%s] line-source limit: predicted relative L2 of the correction %.3e "
-                "(closed form); measured relative L2 distance of the trained field to "
-                "u* + w %.3e", variant["name"],
-                line_source_metrics["line_source_correction_relative_l2"],
-                line_source_metrics["relative_l2_to_line_source_limit"],
-            )
+            if problem.get("variable_generator") is not None:
+                # The line-source correction w is a constant-coefficient closed form;
+                # with variable coefficients it has none, and it is not recorded.
+                line_source_metrics = {}
+                logger.info(
+                    "[%s] line-source limit not computed: no closed form with variable "
+                    "coefficients", variant["name"],
+                )
+            else:
+                line_source_metrics = compute_line_source_metrics(model, problem)
+                logger.info(
+                    "[%s] line-source limit: predicted relative L2 of the correction %.3e "
+                    "(closed form); measured relative L2 distance of the trained field to "
+                    "u* + w %.3e", variant["name"],
+                    line_source_metrics["line_source_correction_relative_l2"],
+                    line_source_metrics["relative_l2_to_line_source_limit"],
+                )
         else:
             forcing_floor_closed_form = closed_form_forcing_floor(variant, problem)
             line_source_metrics = {}
