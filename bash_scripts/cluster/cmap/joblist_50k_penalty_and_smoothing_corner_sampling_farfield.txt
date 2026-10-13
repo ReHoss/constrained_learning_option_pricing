@@ -1,0 +1,37 @@
+# Controlled comparison of Section 6 of the note (hypotheses H: E vs P, and H': E vs H2), completed with
+# the penalty baseline P and the smoothed hard modes H2 (epsilon = 0.1) and H2- (epsilon = 0.02), under the
+# protocol of the runs E and E_theta' of 2026-10-13 (joblist_50k_corner_sampling_and_validation_selection_
+# farfield_republique.txt, wave 1): same backbone Psi_theta (ResNet, 20601 parameters, model_init seed),
+# Adam, learning rate 1e-2 with the same two-stage decay, 50000 iterations, n_f = 4096, far-field
+# Dirichlet condition at s_inf = 3 with the datum V^e(s_inf, t), --corner-sampling (fraction 0.5),
+# restored state chosen on the fixed validation set (seed derive_seed(seed, "validation_set"), shared with
+# E and E_theta'), model snapshot every 1000 iterations, 4 threads per run, seeds 0-4.
+#   P   : --corner-treatment penalty: no g1, no h; lambda_T = lambda_B = 1, 1024 boundary points per face
+#         and per batch, half of them log-uniform in s - B (Sigma_T) and in tau (Sigma_B) on [1e-6, .],
+#         weights u/m. Validation criterion: the full objective (interior term on the common set, both
+#         penalties on a fixed boundary set); the interior term alone is recorded too.
+#   H2  : --corner-treatment smoothing --epsilons 0.1, h_eps = zeta((s-B)/eps) V^e (Definition 5).
+#   H2- : the same with --epsilons 0.02 (divergent control of Proposition 7).
+# H2 and H2- use --analytic-residual: the two-term residual route of E (same field, F(h_eps) in closed
+# form), and --corner-window 0.1, the evaluation window of E, so rel_l2_outside_corner is on one region.
+# Debug runs (300 iterations, seed 0) of the three modes: 0.12-0.14 s/iteration on the laptop with 5
+# concurrent runs, the same as E in the same conditions, hence about 0.055-0.065 s/iteration on
+# republique/orleans as measured for E on 2026-10-13.
+# --- P (penalty baseline)
+--corner-treatment penalty --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 0 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0_seed0_penalty_blackscholes_lambdaT1_lambdaB1_nb1024_farfield_cornersampling0.5
+--corner-treatment penalty --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 1 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0_seed1_penalty_blackscholes_lambdaT1_lambdaB1_nb1024_farfield_cornersampling0.5
+--corner-treatment penalty --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 2 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0_seed2_penalty_blackscholes_lambdaT1_lambdaB1_nb1024_farfield_cornersampling0.5
+--corner-treatment penalty --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 3 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0_seed3_penalty_blackscholes_lambdaT1_lambdaB1_nb1024_farfield_cornersampling0.5
+--corner-treatment penalty --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 4 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0_seed4_penalty_blackscholes_lambdaT1_lambdaB1_nb1024_farfield_cornersampling0.5
+# --- H2 (smoothing, epsilon = 0.1)
+--corner-treatment smoothing --epsilons 0.1 --analytic-residual --corner-window 0.1 --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 0 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0.1_seed0_blackscholes_analyticres_farfield_cornersampling0.5
+--corner-treatment smoothing --epsilons 0.1 --analytic-residual --corner-window 0.1 --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 1 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0.1_seed1_blackscholes_analyticres_farfield_cornersampling0.5
+--corner-treatment smoothing --epsilons 0.1 --analytic-residual --corner-window 0.1 --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 2 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0.1_seed2_blackscholes_analyticres_farfield_cornersampling0.5
+--corner-treatment smoothing --epsilons 0.1 --analytic-residual --corner-window 0.1 --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 3 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0.1_seed3_blackscholes_analyticres_farfield_cornersampling0.5
+--corner-treatment smoothing --epsilons 0.1 --analytic-residual --corner-window 0.1 --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 4 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0.1_seed4_blackscholes_analyticres_farfield_cornersampling0.5
+# --- H2- (smoothing, epsilon = 0.02)
+--corner-treatment smoothing --epsilons 0.02 --analytic-residual --corner-window 0.1 --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 0 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0.02_seed0_blackscholes_analyticres_farfield_cornersampling0.5
+--corner-treatment smoothing --epsilons 0.02 --analytic-residual --corner-window 0.1 --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 1 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0.02_seed1_blackscholes_analyticres_farfield_cornersampling0.5
+--corner-treatment smoothing --epsilons 0.02 --analytic-residual --corner-window 0.1 --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 2 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0.02_seed2_blackscholes_analyticres_farfield_cornersampling0.5
+--corner-treatment smoothing --epsilons 0.02 --analytic-residual --corner-window 0.1 --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 3 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0.02_seed3_blackscholes_analyticres_farfield_cornersampling0.5
+--corner-treatment smoothing --epsilons 0.02 --analytic-residual --corner-window 0.1 --black-scholes-payoff --far-field-dirichlet --iters 50000 --corner-sampling --best-state-selection validation --save-model-snapshot-every 1000 --seed 4 --out-dir data/pilot_down_and_out_put/20261014_010000_iters50000_eps0.02_seed4_blackscholes_analyticres_farfield_cornersampling0.5
