@@ -56,4 +56,30 @@ No prediction is made on which weight gives the smallest $\delta_\Gamma$.
 
 ## 4. Outcome
 
-To be written after the runs, from the `summary_*.yaml` files of the run directories.
+Written 2026-10-18 after Jean Zay array 1269248 completed (smoke test 1269151, tests 1269150: 53 passed) at revision `1660618`. The values are read from the `summary_*.yaml` files of the nine run directories (`rel_l2` is $\delta_\Gamma$, `tc_l2` the relative $L^2$ terminal mismatch on the evaluation grid), copied to `data/ablation_split_extension_trained/soft_constraint_comparison_2026-10-18/`. The penalty weight and the validation terminal mismatch are read from `metrics.npz`: the runner did not write them to the summary (fixed in `25898a5`, after this series). No checkpoint files exist.
+
+**Admissibility.** The 27 runs are admissible: finite validation and evaluation quantities, a positive and finite terminal mismatch, no gradient-norm safeguard activation and no non-finite norm over the 20000 recorded updates. Wall times range from $389$ to $474$ s on `g2` and on the butterfly cell, and from $1689$ to $2161$ s on `g3`.
+
+**Relative error $\delta_\Gamma$** (measured, 3 seeds):
+
+| Cell | Weight $\chi$ | Seed 0 | Seed 1 | Seed 2 | Median | Median `tc_l2` |
+|---|---|---|---|---|---|---|
+| `g2` | $1$ | $\simeq4.975\times10^{-3}$ | $\simeq3.960\times10^{-3}$ | $\simeq3.697\times10^{-3}$ | $\simeq3.96\times10^{-3}$ | $\simeq1.18\times10^{-2}$ |
+| `g2` | $10$ | $\simeq2.912\times10^{-3}$ | $\simeq2.968\times10^{-3}$ | $\simeq3.099\times10^{-3}$ | $\simeq2.97\times10^{-3}$ | $\simeq8.07\times10^{-3}$ |
+| `g2` | $100$ | $\simeq4.657\times10^{-3}$ | $\simeq4.229\times10^{-3}$ | $\simeq5.572\times10^{-3}$ | $\simeq4.66\times10^{-3}$ | $\simeq6.32\times10^{-3}$ |
+| `g3` | $1$ | $\simeq1.920\times10^{-2}$ | $\simeq1.771\times10^{-2}$ | $\simeq1.545\times10^{-2}$ | $\simeq1.77\times10^{-2}$ | $\simeq4.68\times10^{-2}$ |
+| `g3` | $10$ | $\simeq9.330\times10^{-3}$ | $\simeq1.014\times10^{-2}$ | $\simeq9.746\times10^{-3}$ | $\simeq9.75\times10^{-3}$ | $\simeq2.57\times10^{-2}$ |
+| `g3` | $100$ | $\simeq8.170\times10^{-3}$ | $\simeq8.818\times10^{-3}$ | $\simeq7.775\times10^{-3}$ | $\simeq8.17\times10^{-3}$ | $\simeq1.87\times10^{-2}$ |
+| butterfly | $1$ | $\simeq4.557\times10^{-3}$ | $\simeq5.805\times10^{-3}$ | $\simeq3.365\times10^{-3}$ | $\simeq4.56\times10^{-3}$ | $\simeq1.15\times10^{-2}$ |
+| butterfly | $10$ | $\simeq3.034\times10^{-3}$ | $\simeq2.808\times10^{-3}$ | $\simeq2.308\times10^{-3}$ | $\simeq2.81\times10^{-3}$ | $\simeq6.33\times10^{-3}$ |
+| butterfly | $100$ | $\simeq3.319\times10^{-3}$ | $\simeq3.972\times10^{-3}$ | $\simeq2.413\times10^{-3}$ | $\simeq3.32\times10^{-3}$ | $\simeq4.36\times10^{-3}$ |
+
+**Predictions.**
+- **S1 holds.** Every median lies below that of $A=0$: at most $4.66\times10^{-3}$ against $0.138$ on `g2`, $1.77\times10^{-2}$ against $0.151$ on `g3`, and $4.56\times10^{-3}$ against $0.2347$ on the butterfly cell.
+- **S2 holds.** Every median exceeds that of the highest-order split, by a factor between $\simeq6.0$ and $\simeq9.4$ on `g2` ($4.93\times10^{-4}$), between $\simeq17$ and $\simeq36$ on `g3` ($4.90\times10^{-4}$), and between $\simeq4.9$ and $\simeq8.0$ on the butterfly cell ($5.72\times10^{-4}$).
+- **S3 holds.** On every cell the median of `tc_l2` decreases strictly from $\chi=1$ to $\chi=10$ to $\chi=100$.
+
+**Observations, not predicted.**
+- The weight with the smallest median $\delta_\Gamma$ is $\chi=10$ on `g2` and on the butterfly cell, and $\chi=100$ on `g3`. No weight is selected; all three are reported.
+- The soft constraint has a smaller median than the algebraic kernel ($6.59\times10^{-3}$, $33.9$ and $5.09\times10^{-3}$) at every weight on `g3` and on the butterfly cell, and at every weight on `g2`.
+- The median validation residual of the soft constraint (the residual part of the selection criterion) ranges from $3.07\times10^{-7}$ to $6.95\times10^{-5}$ and increases with $\chi$ on every cell.
