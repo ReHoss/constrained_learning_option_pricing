@@ -95,6 +95,10 @@ GRADED_MATCHED_AGREEMENT_TOLERANCE = 1.0e-6
 # pre-clip norm of every update is saved (GradientNormSafeguardMonitor; the
 # runs before this instrumentation stored the norm at the logged iterations only).
 GRADIENT_NORM_SAFEGUARD_THRESHOLD = 1.0e12
+# The soft forms of learning_option_pricing.models.terminal_ansatz (SOFT_FORMS), restated
+# here so that the torch-free paths of this script can test a variant's form; the
+# equality of the two tuples is asserted at the start of every training run.
+SOFT_CONSTRAINT_FORMS = ("soft_pinn", "pure_nn")
 
 # Fourier-Galerkin truncation of the reference solution of the variable-
 # coefficient cells, per principal order (pre-registration 2026-09-29, section
@@ -860,6 +864,9 @@ class SingleSineWavenumberDatum:
 
 
 def build_closed_form_extension(variant: dict, problem: dict):
+    if variant["form"] in SOFT_CONSTRAINT_FORMS:
+        # Soft constraint: no extension, hence no extension forcing.
+        return None
     if is_real_line_problem(problem):
         # No Fourier band on the real line: the spectral counterpart is undefined.
         return None
@@ -1264,6 +1271,7 @@ def train_variant(
     import torch
 
     from learning_option_pricing.models.terminal_ansatz import (
+        SOFT_FORMS,
         cross_check_extension_forcing_analytic_versus_autograd,
         residual_decomposition,
         residual_loss_in_chunks,
@@ -1271,6 +1279,8 @@ def train_variant(
     from learning_option_pricing.utils.gradient_norm_safeguard import (
         GradientNormSafeguardMonitor,
     )
+
+    assert tuple(SOFT_FORMS) == SOFT_CONSTRAINT_FORMS, (SOFT_FORMS, SOFT_CONSTRAINT_FORMS)
 
     generator_coefficients = problem["generator_coefficients"]
     model_seed = derive_seed(seed, "model_init")
@@ -1300,6 +1310,36 @@ def train_variant(
         n_validation, generator=validation_generator
     )
 
+    # Soft constraint (pre-registration 2026-10-18): the terminal mismatch is
+    # penalised in the objective with the variant's weight, on fresh uniform
+    # terminal points drawn from a generator of their own, so that the interior
+    # sampler draws the same batches as for the hard variants of the same seed.
+    # The retained state minimises the same objective on fixed validation sets:
+    # the residual on the cylinder plus the weight times the terminal mismatch.
+    soft_constraint = variant["form"] in SOFT_FORMS
+    terminal_penalty_weight = float(variant.get("terminal_penalty_weight") or 0.0)
+    if soft_constraint:
+        if not terminal_penalty_weight > 0.0:
+            raise ValueError(
+                f"[{variant['name']}] a soft-constraint variant needs a positive "
+                f"terminal_penalty_weight, got {variant.get('terminal_penalty_weight')!r}"
+            )
+        terminal_penalty_seed = derive_seed(seed, "terminal_penalty_sampler")
+        terminal_validation_seed = derive_seed(seed, "terminal_validation")
+        terminal_penalty_generator = torch.Generator(device="cpu")
+        terminal_penalty_generator.manual_seed(terminal_penalty_seed)
+        n_terminal_penalty = int(hparams["n_terminal"])
+        terminal_validation_generator = torch.Generator(device="cpu")
+        terminal_validation_generator.manual_seed(terminal_validation_seed)
+        x_terminal_validation = scale_unit_samples_to_space(
+            torch.rand(n_validation, generator=terminal_validation_generator), problem
+        ).to(device)
+        t_terminal_validation = torch.full_like(
+            x_terminal_validation, problem["terminal_time"]
+        )
+        with torch.no_grad():
+            datum_at_terminal_validation = problem["terminal_datum"](x_terminal_validation)
+
     optimizer = torch.optim.Adam(
         model.parameters(), lr=float(hparams["learning_rate"])
     )
@@ -1312,12 +1352,14 @@ def train_variant(
         "network_energy", "cross_term", "forcing_floor",
         "forcing_velocity", "forcing_diffusion", "forcing_advection",
         "forcing_reaction", "forcing_higher_order", "grad_norm", "lr",
-        "validation_iter", "validation_residual",
+        "validation_iter", "validation_residual", "validation_terminal_mismatch",
     )}
     # Retention: argmin of the validation residual over the evaluations; the
     # saved parameters are exactly the evaluated ones.  The minimum training
     # mini-batch loss is tracked as a diagnostic only (it selects nothing).
     best_validation_residual = float("inf")
+    best_validation_criterion = float("inf")
+    best_validation_terminal_mismatch = float("nan")
     retained_iter = -1
     best_state = None
     best_training_batch_loss = float("inf")
@@ -1344,6 +1386,15 @@ def train_variant(
         problem["cell_name"], variant["name"], n_validation, validation_seed,
         validation_every,
     )
+    if soft_constraint:
+        logger.info(
+            "[%s/%s] soft constraint: objective L_pde + %.6g L_tc on %d fresh terminal "
+            "points per iteration (seed %d); selection on the validation residual plus "
+            "%.6g times the terminal mismatch on a fixed set of %d terminal points (seed %d)",
+            problem["cell_name"], variant["name"], terminal_penalty_weight,
+            n_terminal_penalty, terminal_penalty_seed, terminal_penalty_weight,
+            n_validation, terminal_validation_seed,
+        )
     logger.info(
         "[%s/%s] variant config: %s",
         problem["cell_name"], variant["name"],
@@ -1383,6 +1434,12 @@ def train_variant(
                     "P Psi relative L2 deviation = %.6e (tolerance 1e-3)",
                     variant["name"], cross_check_deviation,
                 )
+            elif soft_constraint:
+                logger.info(
+                    "[%s] soft constraint: no extension, hence no extension "
+                    "forcing — startup cross-check not applicable",
+                    variant["name"],
+                )
             else:
                 logger.info(
                     "[%s] no analytic-derivative bypass (datum-path "
@@ -1395,7 +1452,19 @@ def train_variant(
             model, x_interior, t_interior,
             generator_coefficients=generator_coefficients,
         )
-        loss = decomposition["loss"]
+        loss_pde = decomposition["loss"]
+        if soft_constraint:
+            x_penalty = scale_unit_samples_to_space(
+                torch.rand(n_terminal_penalty, generator=terminal_penalty_generator), problem
+            ).to(device)
+            t_penalty = torch.full_like(x_penalty, problem["terminal_time"])
+            with torch.no_grad():
+                datum_at_penalty = problem["terminal_datum"](x_penalty)
+            field_at_penalty = model(torch.stack([x_penalty, t_penalty], dim=1)).squeeze(-1)
+            loss_terminal_penalty = ((field_at_penalty - datum_at_penalty) ** 2).mean()
+            loss = loss_pde + terminal_penalty_weight * loss_terminal_penalty
+        else:
+            loss = loss_pde
         loss.backward()
         # Gradient-norm safeguard: clips at GRADIENT_NORM_SAFEGUARD_THRESHOLD,
         # records the pre-clip norm of this update, reports any activation.
@@ -1416,12 +1485,29 @@ def train_variant(
                 generator_coefficients=generator_coefficients,
                 chunk_size=int(hparams["n_interior"]), device=device,
             )
+            if soft_constraint:
+                with torch.no_grad():
+                    field_at_terminal_validation = model(
+                        torch.stack([x_terminal_validation, t_terminal_validation], dim=1)
+                    ).squeeze(-1)
+                    validation_terminal_mismatch = (
+                        (field_at_terminal_validation - datum_at_terminal_validation) ** 2
+                    ).mean().item()
+                validation_criterion = (
+                    validation_residual + terminal_penalty_weight * validation_terminal_mismatch
+                )
+                history["validation_terminal_mismatch"].append(validation_terminal_mismatch)
+            else:
+                validation_terminal_mismatch = float("nan")
+                validation_criterion = validation_residual
             history["validation_iter"].append(it)
             history["validation_residual"].append(validation_residual)
-            if math.isfinite(validation_residual) and (
-                validation_residual < best_validation_residual
+            if math.isfinite(validation_criterion) and (
+                validation_criterion < best_validation_criterion
             ):
+                best_validation_criterion = validation_criterion
                 best_validation_residual = validation_residual
+                best_validation_terminal_mismatch = validation_terminal_mismatch
                 retained_iter = it
                 best_state = {
                     key: value.detach().cpu().clone()
@@ -1441,7 +1527,7 @@ def train_variant(
                 ).mean().item()
             history["iter"].append(it)
             history["loss"].append(loss_value)
-            history["loss_pde"].append(loss_value)  # hard forms: loss == L_pde
+            history["loss_pde"].append(loss_pde.item())  # hard forms: loss == L_pde
             history["loss_tc"].append(terminal_mismatch)
             history["network_energy"].append(
                 decomposition["network_energy"].item()
@@ -1495,6 +1581,15 @@ def train_variant(
         variant["name"], retained_iter, best_validation_residual,
         best_training_batch_loss, best_training_batch_iter,
     )
+    if soft_constraint:
+        logger.info(
+            "[%s] soft constraint at the retained state: validation terminal mismatch "
+            "%.3e, validation objective %.3e (weight %.6g)",
+            variant["name"], best_validation_terminal_mismatch,
+            best_validation_criterion, terminal_penalty_weight,
+        )
+        history["validation_terminal_mismatch_at_retained_state"] = best_validation_terminal_mismatch
+        history["validation_objective_at_retained_state"] = best_validation_criterion
 
     history["retained_iter"] = retained_iter
     history["validation_residual_at_retained_state"] = best_validation_residual
@@ -1627,12 +1722,16 @@ def compute_error_metrics(model, problem) -> dict:
     rel_l2_corner_max = float(max(corner_rel_l2_per_slice))
 
     # Terminal-condition check: exactly zero for every hard form by
-    # construction (asserted — never silently accepted).
+    # construction (asserted — never silently accepted).  For a soft-constraint
+    # form the terminal datum is only penalised, and the relative L2 mismatch is
+    # the measured quantity tc_l2.
     tT = torch.full_like(x32, terminal_time)
     with torch.no_grad():
         u_terminal = model(torch.stack([x32, tT], dim=1)).squeeze(-1)
         datum_values = problem["terminal_datum"](x32)
-    if not torch.equal(u_terminal, datum_values):
+    if model.form in SOFT_CONSTRAINT_FORMS:
+        tc_l2 = float((u_terminal - datum_values).norm() / datum_values.norm())
+    elif not torch.equal(u_terminal, datum_values):
         terminal_mismatch = float(
             (u_terminal - datum_values).norm()
             / (datum_values.norm() + 1e-30)
@@ -1642,7 +1741,8 @@ def compute_error_metrics(model, problem) -> dict:
             f"relative L2 mismatch {terminal_mismatch:.3e} (expected exact "
             "floating-point equality; specification Section 3.3 item 4)."
         )
-    tc_l2 = 0.0  # asserted exact equality above
+    else:
+        tc_l2 = 0.0  # asserted exact equality above
 
     error_metrics = {
         "rel_l2": rel_l2,
@@ -1746,6 +1846,22 @@ def compute_terminal_target(model, problem, variant, extension_field) -> dict:
             torch.stack([x32, tT], dim=1)
         ).squeeze(-1)
     phi_terminal = phi_terminal.detach().cpu().numpy().astype(np.float64)
+
+    if variant["form"] in SOFT_CONSTRAINT_FORMS:
+        # Soft constraint: the trained field is the network itself, whose terminal
+        # profile should equal the datum.  The relative L2 distance is the terminal
+        # mismatch that the penalty leaves.
+        with torch.no_grad():
+            datum_values = problem["terminal_datum"](x32)
+        phi_star = datum_values.detach().cpu().numpy().astype(np.float64)
+        return {
+            "phi_theta_terminal": phi_terminal,
+            "phi_star_terminal": phi_star,
+            "terminal_target_distance": float(
+                np.linalg.norm(phi_terminal - phi_star) / np.linalg.norm(phi_star)
+            ),
+            "terminal_target_is_zero_target": False,
+        }
 
     is_zero_target = variant["name"] in (
         "exact_solution", "matched_exponential_factor"
@@ -2087,7 +2203,9 @@ def compute_spectra(
     resolved_band_edge = min(int(problem["forcing_band_edge"]), len(wavenumber_bins) - 1)
     positive_wavenumbers = np.arange(1, resolved_band_edge + 1)
     forcing_power_band = np.zeros(len(positive_wavenumbers))
-    for fraction in slice_fractions:
+    # A soft-constraint variant has no extension (closed_form_extension is None):
+    # its forcing side is zero and the cancellation ratio is undefined.
+    for fraction in (slice_fractions if closed_form_extension is not None else ()):
         forcing_coefficients = closed_form_extension.forcing_coefficient(
             positive_wavenumbers, float(fraction) * terminal_time
         )
@@ -2562,8 +2680,17 @@ def main(argv=None) -> int:
         )
         real_line_limit_path = is_real_line_problem(problem) and (
             variant["extension"] in (None, "transported_datum")
-        )
-        if real_line_limit_path:
+        ) and variant["form"] not in SOFT_CONSTRAINT_FORMS
+        if variant["form"] in SOFT_CONSTRAINT_FORMS:
+            # No extension: the forcing of the extension is zero, and the limits of
+            # the datum-path extensions do not apply.
+            forcing_floor_closed_form = 0.0
+            line_source_metrics = {}
+            logger.info(
+                "[%s] soft constraint: no extension, hence zero extension forcing "
+                "(closed-form floor 0); line-source limit not applicable", variant["name"],
+            )
+        elif real_line_limit_path:
             forcing_floor_closed_form = closed_form_forcing_floor(variant, problem)
             line_source_metrics = compute_real_line_limit_metrics(
                 model, problem, variant, extension_field
@@ -2662,6 +2789,15 @@ def main(argv=None) -> int:
                 for key, value in gradient_norm_record.items()
             },
         }
+
+        if variant["form"] in SOFT_CONSTRAINT_FORMS:
+            metrics["terminal_penalty_weight"] = float(variant["terminal_penalty_weight"])
+            metrics["validation_terminal_mismatch_at_retained_state"] = history[
+                "validation_terminal_mismatch_at_retained_state"
+            ]
+            metrics["validation_objective_at_retained_state"] = history[
+                "validation_objective_at_retained_state"
+            ]
 
         variant_dir = ablation_dir / f"variant_{variant['name']}"
         save_variant(variant_dir, model, history, metrics, slices, spectra)

@@ -24,9 +24,11 @@ The generator cells compare seven *variants* whose only intervention is the
 terminal-data extension ``Psi`` of the hard-constrained trial solution
 ``u_hat = (1 - lambda(t)) Phi_theta + Psi``; the control cell compares the
 matched exponential interpolation factor against the linear convex baseline.
-Soft forms are excluded (specification decision D2): the stage-2 axis is the
-theta-independent extension forcing ``P Psi``, on which the soft forms are
-silent.
+Soft forms are excluded from the generator cells (specification decision D2):
+the stage-2 axis is the theta-independent extension forcing ``P Psi``, on which
+the soft forms are silent.  They are appended to the full-datum and butterfly
+cells as a comparison with the penalised terminal condition (2026-10-18,
+``SOFT_CONSTRAINT_VARIANTS``, with the field ``terminal_penalty_weight``).
 
 Schema (specification Section 1.4 item 1).  Every variant entry has exactly
 the fields ``name``, ``form`` (one of the ``FORMS`` of
@@ -423,6 +425,39 @@ FULL_DATUM_FOURTH_ORDER_EXTRA_VARIANTS: list[dict] = [
     GRADED_GAUSSIAN_WIDTH_MATCHED_VARIANT,
 ]
 
+# Soft-constraint comparison (added 2026-10-18, pre-registration
+# documents/methodology/2026-10-18_preregistration_soft_constraint_comparison.md).
+# The trial field is the bare network Phi_theta (form ``soft_pinn``, no extension):
+# the terminal datum is not imposed by the model class but penalised in the
+# objective, L_pde + w L_tc, as in the physics-informed formulation of Raissi et
+# al. (2019), whose loss is the case w = 1.  The weight w has no canonical value,
+# so three weights are run and all three are reported; none is selected on the
+# evaluation error.  Appended last on the full-datum and butterfly cells.
+SOFT_CONSTRAINT_TERMINAL_PENALTY_WEIGHTS = (1.0, 10.0, 100.0)
+_SOFT_CONSTRAINT_COLOURS = {1.0: "#7f7f7f", 10.0: "#9467bd", 100.0: "#e377c2"}
+
+
+def _soft_constraint_variant(terminal_penalty_weight: float) -> dict:
+    return {
+        "name": f"soft_constraint_weight_{int(terminal_penalty_weight)}",
+        "form": "soft_pinn",
+        # The soft form has no interpolation factor; the field is required by the
+        # schema and unused.
+        "interpolation": "linear",
+        "extension": None,
+        "comparison_diffusivity_ratio": None,
+        "smoothing_scale_ratio": None,
+        "exponential_rate_gamma": None,
+        "terminal_penalty_weight": float(terminal_penalty_weight),
+        "color": _SOFT_CONSTRAINT_COLOURS[terminal_penalty_weight],
+        "label": rf"soft constraint, penalty weight ${int(terminal_penalty_weight)}$",
+    }
+
+
+SOFT_CONSTRAINT_VARIANTS: list[dict] = [
+    _soft_constraint_variant(weight) for weight in SOFT_CONSTRAINT_TERMINAL_PENALTY_WEIGHTS
+]
+
 BUTTERFLY_REAL_LINE_CELL_VARIANTS: list[dict] = [
     _generator_variant("convex_raw"),
     _generator_variant("constant_in_time"),
@@ -547,6 +582,7 @@ METHOD_VARIANTS: list[dict] = GENERATOR_CELL_VARIANTS + [
     SPLIT_FROZEN_MEAN_VARIANT,
     MATCHED_EXPONENTIAL_FACTOR_VARIANT,
     TRANSPORTED_DATUM_VARIANT,
+    *SOFT_CONSTRAINT_VARIANTS,
 ]
 
 
@@ -797,14 +833,14 @@ def variants_for_cell(cell_name: str) -> list[dict]:
         return list(VARIABLE_COEFFICIENT_FULL_DATUM_CELL_VARIANTS)
     if cell_conf["variant_set"] == "full_datum_second_order":
         return (list(FULL_DATUM_SECOND_ORDER_CELL_VARIANTS) + FULL_DATUM_SECOND_ORDER_ADDED_VARIANTS
-                + FULL_DATUM_SECOND_ORDER_EXTRA_VARIANTS)
+                + FULL_DATUM_SECOND_ORDER_EXTRA_VARIANTS + SOFT_CONSTRAINT_VARIANTS)
     if cell_conf["variant_set"] == "full_datum_fourth_order":
         return (list(FULL_DATUM_FOURTH_ORDER_CELL_VARIANTS) + FULL_DATUM_FOURTH_ORDER_ADDED_VARIANTS
-                + FULL_DATUM_FOURTH_ORDER_EXTRA_VARIANTS)
+                + FULL_DATUM_FOURTH_ORDER_EXTRA_VARIANTS + SOFT_CONSTRAINT_VARIANTS)
     if cell_conf["variant_set"] == "sixth_order":
         return list(SIXTH_ORDER_CELL_VARIANTS)
     if cell_conf["variant_set"] == "real_line_butterfly":
-        return list(BUTTERFLY_REAL_LINE_CELL_VARIANTS)
+        return list(BUTTERFLY_REAL_LINE_CELL_VARIANTS) + SOFT_CONSTRAINT_VARIANTS
     return list(CONTROL_CELL_VARIANTS)
 
 
