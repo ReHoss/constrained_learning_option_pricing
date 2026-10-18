@@ -51,8 +51,14 @@ def test_circle_samples_are_unchanged_and_line_samples_fill_the_window(problem):
     assert float(line_samples.min()) < -4.79 and float(line_samples.max()) > 4.19
 
 
-@pytest.mark.parametrize("variant_name", catalogue.variant_names(CELL))
-def test_every_variant_meets_the_datum_exactly_at_the_terminal_slice(problem, variant_name):
+@pytest.mark.parametrize(
+    "variant_name",
+    # The soft-constraint variants penalise the terminal mismatch instead of imposing it
+    # (test_split_extension_soft_constraint.py).
+    [name for name in catalogue.variant_names(CELL)
+     if catalogue.variant_by_name(CELL, name)["form"] not in runner.SOFT_CONSTRAINT_FORMS],
+)
+def test_every_hard_variant_meets_the_datum_exactly_at_the_terminal_slice(problem, variant_name):
     variant = catalogue.variant_by_name(CELL, variant_name)
     model, extension_field = runner.build_ansatz(variant, problem, SMALL_NETWORK, model_seed=0)
     first_linear_layer = next(

@@ -170,9 +170,11 @@ def test_full_datum_transported_field_terminal_profile_and_torch_path():
     ("g2_bernoulli_full", ["convex_raw", "graded_gaussian_mismatched", "graded_chen_mangasarian_narrow"]),
     ("g3_bernoulli_full", ["convex_raw", "graded_gaussian_width_matched"]),
 ])
-def test_extra_variants_are_appended_last_and_meet_their_datum(cell_name, extra_names):
+def test_extra_variants_precede_the_soft_constraint_variants_and_meet_their_datum(cell_name, extra_names):
     names = catalogue.variant_names(cell_name)
-    assert names[-len(extra_names):] == extra_names
+    soft_names = [variant["name"] for variant in catalogue.SOFT_CONSTRAINT_VARIANTS]
+    assert names[-len(soft_names):] == soft_names
+    assert names[-len(soft_names) - len(extra_names):-len(soft_names)] == extra_names
     problem = runner.build_problem(cell_name)
     small_network = dict(catalogue.DEFAULT_HPARAMS, net_width=8, net_blocks=1, net_layers_per_block=1)
     for variant_name in extra_names:
