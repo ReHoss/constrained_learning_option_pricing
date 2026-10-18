@@ -83,3 +83,6 @@ Written 2026-10-18 after Jean Zay array 1269248 completed (smoke test 1269151, t
 - The weight with the smallest median $\delta_\Gamma$ is $\chi=10$ on `g2` and on the butterfly cell, and $\chi=100$ on `g3`. No weight is selected; all three are reported.
 - The soft constraint has a smaller median than the algebraic kernel ($6.59\times10^{-3}$, $33.9$ and $5.09\times10^{-3}$) at every weight on `g3` and on the butterfly cell, and at every weight on `g2`.
 - The median validation residual of the soft constraint (the residual part of the selection criterion) ranges from $3.07\times10^{-7}$ to $6.95\times10^{-5}$ and increases with $\chi$ on every cell.
+
+**Deviation in the paper (author request, 2026-10-18).** « pour les résultats avec le soft control, prends le meilleurs parametre de regularisation ». Against Section 2 ("none is selected on the evaluation error"), the paper reports the soft constraint at the weight with the smallest median $\delta_\Gamma$ on each cell ($\chi=10$ on `g2` and on the butterfly cell, $\chi=100$ on `g3`). This post-hoc choice uses the evaluation error, hence the exact solution, and favours the soft constraint; the paper states it as such and keeps the three weights in its table of individual runs. The predictions S1 to S3 are unaffected, since they hold at every weight.
+
