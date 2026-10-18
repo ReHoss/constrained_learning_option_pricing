@@ -2846,6 +2846,11 @@ def main(argv=None) -> int:
             **gradient_norm_record,
             "git_commit": git_record["commit"],
             "git_tracked_modifications": git_record["tracked_modifications"],
+            # Soft-constraint fields (also in metrics.npz); absent for the hard forms.
+            **{key: metrics[key] for key in ("terminal_penalty_weight",
+                                             "validation_terminal_mismatch_at_retained_state",
+                                             "validation_objective_at_retained_state")
+               if key in metrics},
         }
 
     # In single-variant (array) runs write a per-variant summary to avoid
