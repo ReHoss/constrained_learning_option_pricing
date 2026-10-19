@@ -20,6 +20,7 @@ from learning_option_pricing.pde import (
     ConstantInTimeExtension,
     ConvexRawExtension,
     ExactSolutionExtension,
+    GradedChenMangasarianExtension,
     GradedGaussianExtension,
     PeriodisedBernoulliDatum,
     SplitSemigroupExtension,
@@ -343,3 +344,71 @@ def test_graded_extension_refuses_negative_diffusivity():
         GradedGaussianExtension(
             datum, advection_diffusion_reaction(), -0.1, TERMINAL_TIME
         )
+
+
+# ---------------------------------------------------------------------------
+# Chen--Mangasarian extension: scaled-variable quadrature of the forcing integral
+# ---------------------------------------------------------------------------
+
+
+def _chen_mangasarian_extension(generator, initial_smoothing_scale):
+    return GradedChenMangasarianExtension(
+        PeriodisedBernoulliDatum(1), generator, initial_smoothing_scale, TERMINAL_TIME
+    )
+
+
+@pytest.mark.parametrize("wavenumber", [1, 3, 17, 300, 4096, 65536])
+def test_chen_mangasarian_time_integral_matches_adaptive_quadrature(wavenumber):
+    # The panelled quadrature in z = |k| epsilon(t) matches adaptive quadrature
+    # in t, given the panel ends as break points, to 1e-9 relative, from a
+    # wavenumber whose time scale covers [0, T] to one where it is 1.5e-5 T.
+    from scipy.integrate import quad
+
+    initial_smoothing_scale = 0.5
+    extension = _chen_mangasarian_extension(
+        advection_diffusion_reaction(), initial_smoothing_scale
+    )
+    scaled_upper_limit = wavenumber * initial_smoothing_scale
+    break_times = [
+        TERMINAL_TIME * (1.0 - breakpoint / scaled_upper_limit)
+        for breakpoint in GradedChenMangasarianExtension.SCALED_PANEL_BREAKPOINTS
+        if 0.0 < breakpoint < scaled_upper_limit
+    ]
+
+    def squared_forcing(time):
+        return float(np.abs(extension.forcing_coefficient(np.array([wavenumber]), time))[0] ** 2)
+
+    reference, _ = quad(
+        squared_forcing, 0.0, TERMINAL_TIME, points=break_times or None,
+        limit=1000, epsabs=0.0, epsrel=1e-12,
+    )
+    panelled = extension.squared_forcing_time_integral(np.array([wavenumber]))[0]
+    assert panelled == pytest.approx(reference, rel=1e-9)
+
+
+def test_chen_mangasarian_time_integral_large_wavenumber_constant():
+    # At large |k| the forcing is a(k) m(z) c_k up to a relative O(1/|k|), so
+    # that the integral times |k| epsilon_0 / (|a(k)|^2 |c_k|^2) tends to
+    # int_0^infty (z K_1(z))^2 dz = 3 pi^2 / 32 (pre-registration of
+    # 2026-10-19, section 1).
+    initial_smoothing_scale = 0.5
+    generator = advection_diffusion_reaction()
+    extension = _chen_mangasarian_extension(generator, initial_smoothing_scale)
+    wavenumber = np.array([2**16])
+    integral = extension.squared_forcing_time_integral(wavenumber)[0]
+    symbol_squared = float(np.abs(generator.symbol(wavenumber))[0] ** 2)
+    datum_squared = float(np.abs(PeriodisedBernoulliDatum(1).fourier_coefficients(wavenumber))[0] ** 2)
+    normalised = integral * wavenumber[0] * initial_smoothing_scale / (symbol_squared * datum_squared)
+    assert normalised == pytest.approx(3.0 * math.pi**2 / 32.0, rel=1e-3)
+
+
+def test_chen_mangasarian_time_integral_vectorised_over_signed_band():
+    # The per-wavenumber integrals over a signed band equal the one-by-one values.
+    extension = _chen_mangasarian_extension(advection_diffusion_reaction(), 0.5)
+    band = symmetric_wavenumber_band(40)
+    vectorised = extension.squared_forcing_time_integral(band)
+    one_by_one = np.array(
+        [extension.squared_forcing_time_integral(np.array([k]))[0] for k in band]
+    )
+    np.testing.assert_allclose(vectorised, one_by_one, rtol=1e-14)
+

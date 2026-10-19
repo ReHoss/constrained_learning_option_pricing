@@ -456,9 +456,10 @@ class GradedChenMangasarianExtension(TerminalDataExtension):
     :math:`\partial_t \hat h` diverge logarithmically at the slice.
 
     The squared-forcing time integral has no closed form; it is evaluated by
-    Gauss--Legendre quadrature in time (the only quadrature among the
-    extensions of this module), with the node count stated in the docstring
-    of :meth:`squared_forcing_time_integral`.
+    Gauss--Legendre quadrature (the only quadrature among the extensions of
+    this module), in the scaled variable :math:`z = |k|\,\varepsilon(t)` on
+    panels refined at :math:`z = 0`, as stated in the docstring of
+    :meth:`squared_forcing_time_integral`.
 
     Args:
         datum: Terminal datum exposing ``fourier_coefficients``.
@@ -471,7 +472,12 @@ class GradedChenMangasarianExtension(TerminalDataExtension):
         ValueError: If ``initial_smoothing_scale`` is not strictly positive.
     """
 
-    GAUSS_LEGENDRE_TIME_NODES = 256
+    # Panels of the scaled variable z = |k| epsilon(t): geometric from 2^-16 to
+    # 64, after a first panel [0, 2^-16]. Beyond z = 64 the integrand is below
+    # e^{-128} times its value at z = 0, since m(z) and z K_0(z) decay like
+    # sqrt(z) e^{-z}; that part of [0, T] is omitted.
+    SCALED_PANEL_BREAKPOINTS = np.concatenate([[0.0], 2.0 ** np.arange(-16, 7)])
+    GAUSS_LEGENDRE_NODES_PER_PANEL = 16
 
     def __init__(
         self,
@@ -517,17 +523,63 @@ class GradedChenMangasarianExtension(TerminalDataExtension):
 
     def squared_forcing_time_integral(self, wavenumbers) -> np.ndarray:
         r"""Per-wavenumber :math:`\int_0^T |\widehat{Lh}(k, t)|^2\, dt` by
-        Gauss--Legendre quadrature with ``GAUSS_LEGENDRE_TIME_NODES`` nodes on
-        :math:`[0, T]`.  The integrand is continuous on :math:`[0, T]`; its
-        only non-analytic point is :math:`t = T`, where
-        :math:`z K_0(z) = -z \ln z + O(z)`.
+        Gauss--Legendre quadrature in the scaled variable.
+
+        For :math:`k \ne 0`, the substitution
+        :math:`z = |k|\,\varepsilon_0 (T - t)/T`, with
+        :math:`\mathrm dt = T\,\mathrm dz / (|k|\,\varepsilon_0)`, maps
+        :math:`[0, T]` onto :math:`[0, |k|\,\varepsilon_0]`.  The integrand
+        varies on the time scale :math:`T/(|k|\,\varepsilon_0)` near the slice,
+        which a fixed time grid does not resolve at large :math:`|k|`, whereas
+        in :math:`z` it varies on the unit scale.  The interval is split at
+        ``SCALED_PANEL_BREAKPOINTS`` clipped to :math:`|k|\,\varepsilon_0`, with
+        ``GAUSS_LEGENDRE_NODES_PER_PANEL`` nodes per panel.  The geometric
+        refinement at :math:`z = 0` handles the term :math:`z K_0(z) = -z\ln z +
+        O(z)`, the only non-analytic point of the integrand.  For :math:`k = 0`
+        the forcing is constant in time, since :math:`m(0) = 1` and
+        :math:`m'(0) = 0`.
         """
-        nodes, weights = np.polynomial.legendre.leggauss(self.GAUSS_LEGENDRE_TIME_NODES)
-        times = 0.5 * self.terminal_time * (nodes + 1.0)
-        half_length_weights = 0.5 * self.terminal_time * weights
         wavenumber_array = np.asarray(wavenumbers, dtype=np.float64)
-        forcing = self.forcing_coefficient(wavenumber_array[None, :], times[:, None])
-        return np.sum(half_length_weights[:, None] * np.abs(forcing) ** 2, axis=0)
+        flat_wavenumbers = wavenumber_array.ravel()
+        nodes, weights = np.polynomial.legendre.leggauss(
+            self.GAUSS_LEGENDRE_NODES_PER_PANEL
+        )
+        scaled_upper_limits = np.abs(flat_wavenumbers) * self.initial_smoothing_scale
+        integrals = np.zeros(flat_wavenumbers.shape, dtype=np.float64)
+        nonzero = scaled_upper_limits > 0.0
+        if np.any(~nonzero):
+            constant_forcing = self.forcing_coefficient(
+                flat_wavenumbers[~nonzero], self.terminal_time
+            )
+            integrals[~nonzero] = self.terminal_time * np.abs(constant_forcing) ** 2
+        if np.any(nonzero):
+            positive_wavenumbers = flat_wavenumbers[nonzero]
+            upper = scaled_upper_limits[nonzero]
+            breakpoints = self.SCALED_PANEL_BREAKPOINTS
+            accumulated = np.zeros(positive_wavenumbers.shape, dtype=np.float64)
+            for panel_start, panel_stop in zip(breakpoints[:-1], breakpoints[1:]):
+                lower_limit = np.minimum(panel_start, upper)
+                upper_limit = np.minimum(panel_stop, upper)
+                half_widths = 0.5 * (upper_limit - lower_limit)
+                active = half_widths > 0.0
+                if not np.any(active):
+                    break
+                scaled_nodes = (
+                    lower_limit[None, active]
+                    + half_widths[None, active] * (nodes[:, None] + 1.0)
+                )
+                times = self.terminal_time * (
+                    1.0 - scaled_nodes / upper[None, active]
+                )
+                forcing = self.forcing_coefficient(
+                    positive_wavenumbers[None, active], times
+                )
+                accumulated[active] += half_widths[active] * np.sum(
+                    weights[:, None] * np.abs(forcing) ** 2, axis=0
+                )
+            # dt = T dz / (|k| epsilon_0).
+            integrals[nonzero] = accumulated * self.terminal_time / upper
+        return integrals.reshape(wavenumber_array.shape)
 
 
 class ExactSolutionExtension(TerminalDataExtension):
