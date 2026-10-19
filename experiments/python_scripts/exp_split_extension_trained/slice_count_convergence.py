@@ -63,10 +63,14 @@ def slice_fractions(count: int) -> np.ndarray:
     return np.linspace(SLICE_RANGE[0], SLICE_RANGE[1], count)
 
 
-def cutoff_at_slice_counts(
-    run_directory: Path, variant_name: str, slice_counts, device: str
-) -> dict:
-    """The cutoff of one trained variant at each requested slice count."""
+def load_trained_variant(run_directory: Path, variant_name: str, device: str) -> dict:
+    """Rebuild the ansatz of a saved run deterministically and load its trained weights.
+
+    Returns:
+        Dictionary with the evaluation-mode ``model``, the ``problem``, the
+        ``variant``, its ``closed_form_extension`` (``None`` without an
+        extension), the ``cell`` name and the master ``seed``.
+    """
     import torch
 
     metadata = yaml.safe_load((run_directory / "metadata.yaml").read_text())
@@ -86,8 +90,24 @@ def cutoff_at_slice_counts(
     model.load_state_dict(state)
     model = model.to(device)
     model.eval()
+    return {
+        "model": model,
+        "problem": problem,
+        "variant": variant,
+        "closed_form_extension": build_closed_form_extension(variant, problem),
+        "cell": cell_name,
+        "seed": master_seed,
+    }
 
-    closed_form_extension = build_closed_form_extension(variant, problem)
+
+def cutoff_at_slice_counts(
+    run_directory: Path, variant_name: str, slice_counts, device: str
+) -> dict:
+    """The cutoff of one trained variant at each requested slice count."""
+    loaded = load_trained_variant(run_directory, variant_name, device)
+    model, problem, variant = loaded["model"], loaded["problem"], loaded["variant"]
+    closed_form_extension = loaded["closed_form_extension"]
+    cell_name, master_seed = loaded["cell"], loaded["seed"]
 
     cutoffs: dict[int, int | None] = {}
     for count in slice_counts:
