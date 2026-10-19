@@ -152,6 +152,7 @@ from learning_option_pricing.pricing.boundary_penalty import (  # noqa: E402
     weighted_boundary_penalties,
 )
 from learning_option_pricing.pricing.corner_similarity_sampling import CornerSimilaritySampling  # noqa: E402
+from learning_option_pricing.pricing.corner_triangle_sampling import CornerTriangleSampling  # noqa: E402
 from learning_option_pricing.pricing.terminal import bsm_operator  # noqa: E402
 from learning_option_pricing.utils.figure_layout import finalize_figure  # noqa: E402
 from learning_option_pricing.utils.run_context import (  # noqa: E402
@@ -214,6 +215,8 @@ DEFAULT_SPLIT_PADDING_DIFFUSION_LENGTHS = 6.0
 CORNER_TREATMENTS = ("smoothing", "subtraction", "enrichment", "learned_similarity_profile", "learned_barrier_location",
                      "penalty")
 #: The treatments that resolve the corner without a corner layer (no epsilon).
+#: Laws of the corner component of --corner-sampling (the default first).
+CORNER_SAMPLING_LAWS = ("similarity_variables", "l1_triangle")
 ANALYTIC_CORNER_TREATMENTS = ("subtraction", "enrichment", "learned_similarity_profile", "learned_barrier_location")
 #: The treatments without a corner layer, hence without an epsilon sweep: the analytic ones and the
 #: penalty baseline P (no hard terminal or barrier condition at all).
@@ -846,7 +849,7 @@ def train_one_epsilon(
     enrichment_delta1: float = DEFAULT_ENRICHMENT_DELTA1,
     similarity_profile_hidden_width: int = DEFAULT_SIMILARITY_PROFILE_HIDDEN_WIDTH,
     similarity_profile_hidden_depth: int = DEFAULT_SIMILARITY_PROFILE_HIDDEN_DEPTH,
-    corner_sampling: CornerSimilaritySampling | None = None,
+    corner_sampling: CornerSimilaritySampling | CornerTriangleSampling | None = None,
     best_state_selection: str = DEFAULT_BEST_STATE_SELECTION,
     validation_sampling: CornerSimilaritySampling | None = None,
     validation_every: int = DEFAULT_VALIDATION_EVERY,
@@ -2028,6 +2031,18 @@ def main() -> None:
                          help="Lower end of the log-uniform law of tau (with --corner-sampling).")
     parser.add_argument("--corner-sampling-similarity-variable-max", type=float, default=5.0,
                          help="Upper end of the uniform law of xi (with --corner-sampling).")
+    parser.add_argument("--corner-sampling-law", type=str, default="similarity_variables",
+                         choices=list(CORNER_SAMPLING_LAWS),
+                         help="Law of the corner component of --corner-sampling. 'similarity_variables' (default, "
+                              "the law of every run before this option): tau log-uniform and xi uniform as above. "
+                              "'l1_triangle' (control): uniform on the ell^1 triangle (s-B)+(T-t) <= "
+                              "--corner-sampling-triangle-size, density 2/delta^2, weights u/m with "
+                              "m = (1-p) u + p (2/delta^2) 1_triangle "
+                              "(learning_option_pricing.pricing.corner_triangle_sampling). The validation set of "
+                              "--best-state-selection validation is drawn from the similarity-variable law in both "
+                              "cases, so that it is the same set as for the other runs.")
+    parser.add_argument("--corner-sampling-triangle-size", type=float, default=0.1,
+                         help="Size delta of the ell^1 corner triangle (with --corner-sampling-law l1_triangle).")
     parser.add_argument("--best-state-selection", type=str, default=DEFAULT_BEST_STATE_SELECTION,
                          choices=list(BEST_STATE_SELECTIONS),
                          help="Criterion of the restored state. 'validation': the minimum of the weighted "
@@ -2243,15 +2258,26 @@ def main() -> None:
                   "--exclude-corner-from-collocation removes; the two flags are mutually exclusive.", file=sys.stderr)
             sys.exit(2)
         try:
-            corner_sampling = CornerSimilaritySampling(
-                barrier=args.B, truncation_price=args.s_inf, maturity=args.T, volatility=args.sigma,
-                corner_fraction=args.corner_sampling_fraction,
-                smallest_time_to_maturity=args.corner_sampling_smallest_time_to_maturity,
-                similarity_variable_max=args.corner_sampling_similarity_variable_max,
-            )
+            if args.corner_sampling_law == "l1_triangle":
+                corner_sampling = CornerTriangleSampling(
+                    barrier=args.B, truncation_price=args.s_inf, maturity=args.T,
+                    triangle_size=args.corner_sampling_triangle_size,
+                    corner_fraction=args.corner_sampling_fraction,
+                )
+            else:
+                corner_sampling = CornerSimilaritySampling(
+                    barrier=args.B, truncation_price=args.s_inf, maturity=args.T, volatility=args.sigma,
+                    corner_fraction=args.corner_sampling_fraction,
+                    smallest_time_to_maturity=args.corner_sampling_smallest_time_to_maturity,
+                    similarity_variable_max=args.corner_sampling_similarity_variable_max,
+                )
         except ValueError as error:
             print(f"ERROR: --corner-sampling: {error}", file=sys.stderr)
             sys.exit(2)
+    elif args.corner_sampling_law != "similarity_variables":
+        print("ERROR: --corner-sampling-law selects the law of the corner component of --corner-sampling; "
+              "it needs --corner-sampling.", file=sys.stderr)
+        sys.exit(2)
 
     validation_sampling = None
     if args.best_state_selection == "validation":
@@ -2427,6 +2453,8 @@ def main() -> None:
     corner_tag = "_nocorner" if args.exclude_corner_from_collocation else ""
     far_field_tag = "_farfield" if args.far_field_dirichlet else ""
     corner_sampling_tag = f"_cornersampling{args.corner_sampling_fraction:g}" if args.corner_sampling else ""
+    if args.corner_sampling and args.corner_sampling_law == "l1_triangle":
+        corner_sampling_tag += f"_l1triangle{args.corner_sampling_triangle_size:g}"
     out_dir = (Path(args.out_dir) if args.out_dir is not None else script_data_dir(__file__) / (
         f"{debug_prefix}{timestamp}_iters{args.iters}_eps{eps_tag}_seed{args.seed}{payoff_tag}{corner_tag}{far_field_tag}"
         f"{corner_sampling_tag}"
@@ -2506,6 +2534,20 @@ def main() -> None:
     )
     if corner_sampling is None:
         logger.info("  Collocation sampler: uniform on Omega (no --corner-sampling)")
+    elif isinstance(corner_sampling, CornerTriangleSampling):
+        effective_fraction = corner_sampling.effective_corner_fraction(args.n_f)
+        inside_weight = 1.0 / ((1.0 - effective_fraction)
+                               + effective_fraction / (corner_sampling.triangle_area() * corner_sampling.uniform_density()))
+        logger.info(
+            f"  Collocation sampler: mixture (--corner-sampling --corner-sampling-law l1_triangle, control law): "
+            f"{corner_sampling.number_of_corner_points(args.n_f)} of {args.n_f} points per batch (effective fraction "
+            f"{effective_fraction:g}) uniform on the ell^1 triangle (s-B)+(T-t) <= {corner_sampling.triangle_size:g} "
+            f"(area {corner_sampling.triangle_area():g}, density {1.0 / corner_sampling.triangle_area():g}), a draw whose "
+            f"t rounds to T in the training dtype redrawn; the rest uniform on Omega. Squared residuals weighted by "
+            f"u/m: {1.0 / (1.0 - effective_fraction):g} outside the triangle, {inside_weight:.6e} inside; the loss is an "
+            f"unbiased estimator of the same uniform-measure L2 norm as without the flag. The corner group is drawn "
+            f"from the same sampler generator, after the uniform group."
+        )
     else:
         effective_fraction = corner_sampling.effective_corner_fraction(args.n_f)
         logger.info(
@@ -2721,6 +2763,12 @@ def main() -> None:
             "analytic_residual": args.analytic_residual,
             "corner_exclusion_window": (corner_window if args.exclude_corner_from_collocation else None),
             "corner_sampling": (None if corner_sampling is None else {
+                "law": "l1_triangle",
+                "corner_fraction": corner_sampling.corner_fraction,
+                "effective_corner_fraction": corner_sampling.effective_corner_fraction(args.n_f),
+                "triangle_size": corner_sampling.triangle_size,
+            } if isinstance(corner_sampling, CornerTriangleSampling) else {
+                "law": "similarity_variables",
                 "corner_fraction": corner_sampling.corner_fraction,
                 "effective_corner_fraction": corner_sampling.effective_corner_fraction(args.n_f),
                 "smallest_time_to_maturity": corner_sampling.smallest_time_to_maturity,
