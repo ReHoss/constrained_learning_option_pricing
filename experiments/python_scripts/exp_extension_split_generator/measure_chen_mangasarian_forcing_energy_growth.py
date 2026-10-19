@@ -167,8 +167,28 @@ def log_log_slope(band_edges: np.ndarray, energy_values: np.ndarray, minimum_edg
     return float(np.polyfit(np.log(band_edges[selected]), np.log(energy_values[selected]), 1)[0])
 
 
+def evaluated_ranges(band_edges: np.ndarray) -> tuple[int, int, bool]:
+    """The first dyadic step of F1 and the smallest fitted edge of F2 and F4.
+
+    The pre-registered ranges start at 2^15 (F1) and 2^16 (F2, F4).  A run that
+    does not reach them (a ``--debug`` smoke run) uses its last three edges,
+    and the returned flag records that the pre-registered range was not
+    evaluated.
+    """
+    largest_log2 = int(np.log2(band_edges[-1]))
+    if largest_log2 >= FIT_MINIMUM_LOG2 + 2:
+        return F1_FIRST_STEP_LOG2, 2**FIT_MINIMUM_LOG2, True
+    fallback_log2 = max(int(np.log2(band_edges[0])), largest_log2 - 2)
+    return fallback_log2, 2**fallback_log2, False
+
+
 def analyse_cell(cell_name: str, problem: dict, band_edges: np.ndarray, curves: dict) -> dict:
     """The pre-registered verdicts F1-F4 of one cell."""
+    first_step_log2, fit_minimum_edge, pre_registered_range = evaluated_ranges(band_edges)
+    if not pre_registered_range:
+        LOGGER.warning("%s: band edges below the pre-registered range; F1 from 2^%d, fits from %d "
+                       "(smoke run, the verdicts are not the pre-registered ones)",
+                       cell_name, first_step_log2, fit_minimum_edge)
     prediction = predicted_chen_mangasarian_constant(problem)
     half_order = prediction["half_order"]
     chen = curves[CHEN_MANGASARIAN]
@@ -176,6 +196,9 @@ def analyse_cell(cell_name: str, problem: dict, band_edges: np.ndarray, curves: 
     constant = curves[CONSTANT_IN_TIME]
     summary = {
         "prediction": prediction,
+        "pre_registered_range_evaluated": pre_registered_range,
+        "f1_first_step_log2": first_step_log2,
+        "fit_minimum_band_edge": fit_minimum_edge,
         "energy_at_band_edge_4096": {
             key: float(values[band_edges == 4096][0]) for key, values in curves.items()
             if np.any(band_edges == 4096)
@@ -185,7 +208,7 @@ def analyse_cell(cell_name: str, problem: dict, band_edges: np.ndarray, curves: 
     if half_order == 1:
         predicted_increment = math.log(2.0) * prediction["sum_coefficient"]
         increments = {}
-        for step in range(F1_FIRST_STEP_LOG2, int(np.log2(band_edges[-1]))):
+        for step in range(first_step_log2, int(np.log2(band_edges[-1]))):
             lower, upper = 2**step, 2 ** (step + 1)
             increment = float(chen[band_edges == upper][0] - chen[band_edges == lower][0])
             increments[f"{step}->{step + 1}"] = {
@@ -204,7 +227,7 @@ def analyse_cell(cell_name: str, problem: dict, band_edges: np.ndarray, curves: 
         }
     if half_order == 2:
         predicted_leading_constant = prediction["sum_coefficient"] / 4.0
-        slope = log_log_slope(band_edges, chen, 2**FIT_MINIMUM_LOG2)
+        slope = log_log_slope(band_edges, chen, fit_minimum_edge)
         ratio = float(chen[-1] / (predicted_leading_constant * float(band_edges[-1]) ** 4))
         summary["f2"] = {
             "predicted_leading_constant": predicted_leading_constant,
@@ -217,7 +240,7 @@ def analyse_cell(cell_name: str, problem: dict, band_edges: np.ndarray, curves: 
         "relative_increment_over_last_dyadic_step": split_increment,
         "holds": split_increment < BOUNDED_RELATIVE_INCREMENT_TOLERANCE,
     }
-    constant_slope = log_log_slope(band_edges, constant, 2**FIT_MINIMUM_LOG2)
+    constant_slope = log_log_slope(band_edges, constant, fit_minimum_edge)
     summary["f4"] = {
         "predicted_slope": 4 * half_order - 3,
         "fitted_log_log_slope": constant_slope,
@@ -246,8 +269,9 @@ def render_energy_figure(run_directory: Path) -> Path:
         prediction = summary["cells"][cell_name]["prediction"]
         positive_edges = band_edges[band_edges >= 2**8]
         if prediction["half_order"] == 1:
-            anchor = curves[f"energy_curve__{cell_name}__{CHEN_MANGASARIAN}"][band_edges == 2**F1_FIRST_STEP_LOG2][0]
-            law = anchor + prediction["sum_coefficient"] * np.log(positive_edges / 2**F1_FIRST_STEP_LOG2)
+            anchor_edge = 2 ** summary["cells"][cell_name]["f1_first_step_log2"]
+            anchor = curves[f"energy_curve__{cell_name}__{CHEN_MANGASARIAN}"][band_edges == anchor_edge][0]
+            law = anchor + prediction["sum_coefficient"] * np.log(positive_edges / anchor_edge)
             law_label = r"Predicted law $C\,\ln K$ + const"
         else:
             law = prediction["sum_coefficient"] / 4.0 * positive_edges**4
