@@ -69,6 +69,11 @@ TWO_PI = 2.0 * math.pi
 # points on [0, 2*pi) times the eleven time slices {0, 0.1 T, ..., T};
 # the reference side is evaluated in float64.
 EVALUATION_GRID_SIZE = 1024
+# Paper times (time since the datum) and grid of --compute-greeks-at-times: the grid resolves
+# the second derivative of the butterfly reference, of width 0.5 * sqrt(tau), down to tau = 1e-3
+# (about 14 grid points per standard deviation on the window [-4.8, 4.2]).
+DEFAULT_GREEKS_PAPER_TIMES = "1,0.3,0.1,0.03,0.01,0.003,0.001"
+DEFAULT_GREEKS_GRID_POINTS = 8193
 EVALUATION_TIME_SLICE_COUNT = 11
 # Corner window (specification Section 3.3 item 3): circle distance to the
 # corner point at most pi / 16.
@@ -1941,11 +1946,14 @@ def compute_slices(model, problem, terminal_target: dict) -> dict:
     return out
 
 
-def compute_greeks(model, problem) -> dict:
-    r"""Delta and Gamma of the trained field and of the exact solution at the runner time 0.
+def compute_greeks(model, problem, runner_time: float = 0.0, spatial_grid=None) -> dict:
+    r"""Delta and Gamma of the trained field and of the exact solution at one runner time.
 
-    The runner time 0 carries the price at the initial date (the paper's
-    :math:`t = T`, time to maturity :math:`T`).  For the hard forms the trained
+    The default runner time 0 carries the price at the initial date (the paper's
+    :math:`t = T`, time to maturity :math:`T`); a runner time :math:`T - \tau`
+    gives the paper's time :math:`\tau`.  The default grid is the evaluation grid
+    of the problem; ``spatial_grid`` replaces it, for instance by a finer grid that
+    resolves the second derivative near the initial date.  For the hard forms the trained
     field is :math:`\hat u = (1 - \lambda)\,N_\theta + \Psi`; the spatial
     derivatives of the network part are obtained by autograd, those of the
     extension :math:`\Psi` from its closed-form derivative callables when the
@@ -1961,7 +1969,7 @@ def compute_greeks(model, problem) -> dict:
         ``delta_predicted``, ``gamma_predicted``, ``price_reference``,
         ``delta_reference``, ``gamma_reference`` (``float64``), and the scalar
         relative :math:`L^2` errors ``delta_rel_l2``, ``gamma_rel_l2`` on the
-        evaluation grid and, on the real line, ``delta_rel_l2_interior``,
+        grid and, on the real line, ``delta_rel_l2_interior``,
         ``gamma_rel_l2_interior`` on the interior window.
     """
     import numpy as np
@@ -1971,10 +1979,10 @@ def compute_greeks(model, problem) -> dict:
 
     device = next(model.parameters()).device
     exact_field = problem["exact_field"]
-    x64 = _evaluation_grid(problem)
+    x64 = _evaluation_grid(problem) if spatial_grid is None else np.asarray(spatial_grid, dtype=np.float64)
     parameter_dtype = next(model.parameters()).dtype
     coordinate = torch.as_tensor(x64, dtype=parameter_dtype, device=device).requires_grad_(True)
-    time_column = torch.zeros_like(coordinate).unsqueeze(-1)
+    time_column = torch.full_like(coordinate, float(runner_time)).unsqueeze(-1)
     coordinate_column = coordinate.unsqueeze(-1)
     network_value = model.free_network(torch.cat([coordinate_column, time_column], dim=1)).squeeze(-1)
 
@@ -2010,15 +2018,15 @@ def compute_greeks(model, problem) -> dict:
     def to_float64(values):
         return values.detach().cpu().numpy().astype(np.float64)
 
-    zero_time = np.zeros_like(x64)
+    runner_times = np.full_like(x64, float(runner_time))
     greeks = {
         "x": x64,
         "price_predicted": to_float64(price),
         "delta_predicted": to_float64(delta),
         "gamma_predicted": to_float64(gamma),
-        "price_reference": np.asarray(exact_field.field(x64, zero_time), dtype=np.float64),
-        "delta_reference": np.asarray(exact_field.space_derivative(x64, zero_time), dtype=np.float64),
-        "gamma_reference": np.asarray(exact_field.second_space_derivative(x64, zero_time), dtype=np.float64),
+        "price_reference": np.asarray(exact_field.field(x64, runner_times), dtype=np.float64),
+        "delta_reference": np.asarray(exact_field.space_derivative(x64, runner_times), dtype=np.float64),
+        "gamma_reference": np.asarray(exact_field.second_space_derivative(x64, runner_times), dtype=np.float64),
     }
 
     def relative_l2(predicted, reference, mask):
@@ -2037,20 +2045,23 @@ def compute_greeks(model, problem) -> dict:
     return greeks
 
 
-def compute_greeks_for_saved_run(run_directory: Path, device_name: str) -> int:
-    """Write ``greeks.npz`` for every saved variant of a run directory, from its ``model.pt``.
+def _reload_saved_variants(run_directory: Path, device_name: str, title: str):
+    """Yield every saved variant of a run directory, reloaded and checked against its recorded error.
 
     No training: each ansatz is rebuilt from ``metadata.yaml`` (cell, hyperparameters,
     master seed), its saved state is loaded, and the relative error at the runner time
     0 is recomputed and compared with the recorded ``rel_l2_t0`` (absolute tolerance
     ``max(1e-4 * recorded, 1e-6)``; a larger deviation raises, since the reloaded model
-    would then not be the trained one).  A summary ``greeks_summary.yaml`` gathers the scalar errors.
+    would then not be the trained one).  The startup block of the log (command line,
+    versions, device, cell, seeds, hyperparameters) is written first, under ``title``.
+
+    Yields:
+        ``(variant_name, variant_directory, model, variant_problem, reload_deviation)``.
     """
     import numpy as np
     import torch
     import yaml
 
-    start_time = time.time()
     with open(run_directory / "metadata.yaml") as metadata_file:
         metadata = yaml.safe_load(metadata_file)
     cell_name = metadata["cell"]
@@ -2063,7 +2074,7 @@ def compute_greeks_for_saved_run(run_directory: Path, device_name: str) -> int:
         device = torch.device(device_name)
 
     logger.info("=" * 72)
-    logger.info("GREEKS FROM SAVED MODELS (no training)")
+    logger.info(title)
     logger.info("=" * 72)
     logger.info("  command:   %s", " ".join(sys.argv))
     logger.info("  python:    %s | numpy %s | torch %s | cuda %s (version %s)",
@@ -2075,7 +2086,6 @@ def compute_greeks_for_saved_run(run_directory: Path, device_name: str) -> int:
     logger.info("  hparams:   %s", hparams)
 
     problem = build_problem(cell_name, hparams.get("truncation_wavenumber"))
-    greeks_summary: dict = {}
     for variant_directory in sorted(run_directory.glob("variant_*")):
         state_path = variant_directory / "models" / "model.pt"
         variant_name = variant_directory.name[len("variant_"):]
@@ -2101,21 +2111,91 @@ def compute_greeks_for_saved_run(run_directory: Path, device_name: str) -> int:
                 f"[{variant_name}] the reloaded model gives rel_l2_t0 = {recomputed_error:.6e}, "
                 f"recorded {recorded_error:.6e} (absolute deviation "
                 f"{abs(recomputed_error - recorded_error):.2e} > tolerance {reload_tolerance:.2e})")
+        logger.info("[%s] reloaded model reproduces rel_l2_t0 = %.6e (recorded %.6e, relative deviation %.1e)",
+                    variant_name, recomputed_error, recorded_error, reload_deviation)
+        yield variant_name, variant_directory, model, variant_problem, reload_deviation
 
+
+def compute_greeks_for_saved_run(run_directory: Path, device_name: str) -> int:
+    """Write ``greeks.npz`` for every saved variant of a run directory, from its ``model.pt``.
+
+    The models are reloaded and checked by :func:`_reload_saved_variants`; the Greeks are
+    taken at the runner time 0.  A summary ``greeks_summary.yaml`` gathers the scalar errors.
+    """
+    import numpy as np
+
+    start_time = time.time()
+    greeks_summary: dict = {}
+    for variant_name, variant_directory, model, variant_problem, reload_deviation in _reload_saved_variants(
+            run_directory, device_name, "GREEKS FROM SAVED MODELS (no training)"):
         greeks = compute_greeks(model, variant_problem)
         output_path = variant_directory / "greeks.npz"
         np.savez_compressed(output_path, **greeks)
         scalar_errors = {key: value for key, value in greeks.items() if key.endswith(("rel_l2", "rel_l2_interior"))}
         greeks_summary[variant_name] = {"reload_rel_l2_t0_deviation": reload_deviation, **scalar_errors}
-        logger.info("[%s] reloaded model reproduces rel_l2_t0 = %.6e (recorded %.6e, relative deviation %.1e); "
-                    "Greeks errors %s; wrote %s", variant_name, recomputed_error, recorded_error,
-                    reload_deviation, {key: f"{value:.3e}" for key, value in scalar_errors.items()}, output_path)
+        logger.info("[%s] Greeks errors %s; wrote %s", variant_name,
+                    {key: f"{value:.3e}" for key, value in scalar_errors.items()}, output_path)
 
     write_summary(run_directory / "greeks_summary.yaml", greeks_summary)
     logger.info("wrote %s (%d variants) in %.1f s", run_directory / "greeks_summary.yaml",
                 len(greeks_summary), time.time() - start_time)
     return 0
 
+
+def compute_greeks_at_times_for_saved_run(run_directory: Path, device_name: str, paper_times: list[float],
+                                          grid_points: int) -> int:
+    r"""Write ``greeks_at_times.npz`` for every saved variant: price, Delta and Gamma at several paper times.
+
+    The paper's time :math:`\tau \in (0, T]` is the time elapsed since the datum, that is the
+    time to maturity; it is evaluated at the runner time :math:`T - \tau`.  The grid has
+    ``grid_points`` equally spaced points of the spatial window on the real line, or of
+    :math:`[0, 2\pi)` on the circle, so that it can resolve second derivatives of width
+    :math:`\sqrt{\tau}` near the initial date.  The models are reloaded and checked by
+    :func:`_reload_saved_variants`; no training.  Each array of the saved file has one row
+    per paper time, in the order given; ``greeks_at_times_summary.yaml`` gathers the
+    relative errors per variant and time.
+    """
+    import numpy as np
+
+    start_time = time.time()
+    if grid_points < 2:
+        raise ValueError(f"grid_points must be at least 2, got {grid_points}")
+    summary: dict = {}
+    for variant_name, variant_directory, model, variant_problem, reload_deviation in _reload_saved_variants(
+            run_directory, device_name, "GREEKS AT SEVERAL TIMES FROM SAVED MODELS (no training)"):
+        terminal_time = float(variant_problem["terminal_time"])
+        if any(not (0.0 < paper_time <= terminal_time) for paper_time in paper_times):
+            raise ValueError(f"paper times must lie in (0, {terminal_time}], got {paper_times}")
+        if is_real_line_problem(variant_problem):
+            window_lower, window_upper = variant_problem["spatial_window"]
+            spatial_grid = np.linspace(window_lower, window_upper, grid_points)
+        else:
+            spatial_grid = np.linspace(0.0, TWO_PI, grid_points, endpoint=False)
+        per_time = [compute_greeks(model, variant_problem, runner_time=terminal_time - paper_time,
+                                   spatial_grid=spatial_grid) for paper_time in paper_times]
+        stacked = {"paper_times": np.asarray(paper_times, dtype=np.float64),
+                   "runner_times": terminal_time - np.asarray(paper_times, dtype=np.float64),
+                   "x": spatial_grid,
+                   "reload_rel_l2_t0_deviation": np.float64(reload_deviation)}
+        for key in per_time[0]:
+            if key != "x":
+                stacked[key] = np.stack([np.asarray(greeks[key], dtype=np.float64) for greeks in per_time])
+        output_path = variant_directory / "greeks_at_times.npz"
+        np.savez_compressed(output_path, **stacked)
+        error_keys = [key for key in per_time[0] if key.endswith(("rel_l2", "rel_l2_interior"))]
+        summary[variant_name] = {
+            "reload_rel_l2_t0_deviation": reload_deviation,
+            "paper_times": [float(paper_time) for paper_time in paper_times],
+            **{key: [float(greeks[key]) for greeks in per_time] for key in error_keys},
+        }
+        logger.info("[%s] Gamma relative errors at paper times %s: %s; wrote %s", variant_name, paper_times,
+                    [f"{greeks['gamma_rel_l2']:.3e}" for greeks in per_time], output_path)
+
+    write_summary(run_directory / "greeks_at_times_summary.yaml", summary)
+    logger.info("wrote %s (%d variants, %d times, %d grid points) in %.1f s",
+                run_directory / "greeks_at_times_summary.yaml", len(summary), len(paper_times), grid_points,
+                time.time() - start_time)
+    return 0
 
 def compute_spectra(
     model, problem, variant, closed_form_extension, slice_fractions=None
@@ -2359,6 +2439,21 @@ def build_parser() -> argparse.ArgumentParser:
              "training).",
     )
     parser.add_argument(
+        "--compute-greeks-at-times", type=str, default=None,
+        help="Write greeks_at_times.npz (price, Delta and Gamma at the paper times "
+             "of --greeks-paper-times, on --greeks-grid-points points) for every "
+             "saved variant of an existing run DIR, from its model.pt (no training).",
+    )
+    parser.add_argument(
+        "--greeks-paper-times", type=str, default=DEFAULT_GREEKS_PAPER_TIMES,
+        help="Comma-separated paper times tau in (0, T] (time since the datum) "
+             "for --compute-greeks-at-times.",
+    )
+    parser.add_argument(
+        "--greeks-grid-points", type=int, default=DEFAULT_GREEKS_GRID_POINTS,
+        help="Number of equally spaced grid points for --compute-greeks-at-times.",
+    )
+    parser.add_argument(
         "--init-only", action="store_true",
         help="Create dir + metadata + one config YAML per array task, print "
              "the absolute EXPDIR, then exit (login-node safe).",
@@ -2465,6 +2560,11 @@ def main(argv=None) -> int:
 
     if args.compute_greeks is not None:
         return compute_greeks_for_saved_run(Path(args.compute_greeks), args.device)
+
+    if args.compute_greeks_at_times is not None:
+        paper_times = [float(value) for value in args.greeks_paper_times.split(",")]
+        return compute_greeks_at_times_for_saved_run(Path(args.compute_greeks_at_times), args.device,
+                                                     paper_times, args.greeks_grid_points)
 
     # Array-worker contract: a per-task YAML fully specifies the task.
     is_worker = args.config_dir is not None and args.config_name is not None

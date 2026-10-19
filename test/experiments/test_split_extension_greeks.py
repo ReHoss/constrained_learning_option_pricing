@@ -109,3 +109,85 @@ def test_replay_mode_refuses_a_model_that_does_not_reproduce_the_recorded_error(
     run_directory, _, _, _ = write_saved_run(tmp_path, problem, "split_diffusion", recorded_shift=1e-2)
     with pytest.raises(RuntimeError, match="reloaded model"):
         runner.main(["--compute-greeks", str(run_directory), "--device", "cpu"])
+
+
+# --- Greeks at several paper times (figure of the butterfly Gamma, 2026-10-20) ---
+
+def test_default_arguments_give_the_initial_date_on_the_evaluation_grid(problem):
+    model, variant_problem = build_model(problem, "split_diffusion", zero_network_output=False)
+    default = runner.compute_greeks(model, variant_problem)
+    explicit = runner.compute_greeks(model, variant_problem, runner_time=0.0,
+                                     spatial_grid=runner._evaluation_grid(variant_problem))
+    for key in ("x", "price_predicted", "delta_predicted", "gamma_predicted", "gamma_reference"):
+        np.testing.assert_array_equal(default[key], explicit[key])
+
+
+@pytest.mark.parametrize("paper_time", [0.5, 0.01])
+def test_control_with_zero_network_reproduces_the_closed_form_greeks_at_positive_times(problem, paper_time):
+    model, variant_problem = build_model(problem, "exact_solution", zero_network_output=True)
+    terminal_time = variant_problem["terminal_time"]
+    grid = np.linspace(*variant_problem["spatial_window"], 4097)
+    greeks = runner.compute_greeks(model, variant_problem, runner_time=terminal_time - paper_time, spatial_grid=grid)
+    for greek in ("price", "delta", "gamma"):
+        reference = greeks[f"{greek}_reference"]
+        assert np.max(np.abs(greeks[f"{greek}_predicted"] - reference)) <= 1e-5 * np.max(np.abs(reference))
+
+
+@pytest.mark.parametrize("paper_time", [0.01, 0.001])
+def test_reference_gamma_is_three_gaussians_of_width_half_root_time(problem, paper_time):
+    # Butterfly cell: g(x) = (1 - |x|)^+, L = 0.125 d_xx + 0.6 d_x - 0.3, so that
+    # u*(x, t) = e^{-0.3 t} (G_s * g)(x + 0.6 t) with s = sqrt(2 * 0.125 * t) = 0.5 sqrt(t), and
+    # d_xx u* = e^{-0.3 t} [G_s(x + 0.6 t + 1) - 2 G_s(x + 0.6 t) + G_s(x + 0.6 t - 1)].
+    variant_problem = runner.problem_for_variant(problem, catalogue.variant_by_name(CELL, "exact_solution"))
+    exact_field = variant_problem["exact_field"]
+    runner_time = variant_problem["terminal_time"] - paper_time
+    standard_deviation = 0.5 * np.sqrt(paper_time)
+    peak_height = np.exp(-0.3 * paper_time) / (np.sqrt(2.0 * np.pi) * standard_deviation)
+    centres = np.array([-1.0, 0.0, 1.0]) - 0.6 * paper_time
+    gamma_at_centres = exact_field.second_space_derivative(centres, np.full(3, runner_time))
+    np.testing.assert_allclose(gamma_at_centres, peak_height * np.array([1.0, -2.0, 1.0]), rtol=1e-6)
+
+
+def test_greeks_at_a_positive_time_match_central_differences_in_double_precision(problem):
+    model, variant_problem = build_model(problem, "split_diffusion", zero_network_output=False)
+    model = model.double()
+    runner_time = 0.7 * variant_problem["terminal_time"]
+    greeks = runner.compute_greeks(model, variant_problem, runner_time=runner_time)
+    step = 1e-3
+    x = torch.as_tensor(greeks["x"], dtype=torch.float64)
+    with torch.no_grad():
+        def price(shift):
+            return model(torch.stack([x + shift, torch.full_like(x, runner_time)], dim=1)).squeeze(-1).numpy()
+        centre, right, left = price(0.0), price(step), price(-step)
+    np.testing.assert_allclose(greeks["price_predicted"], centre, rtol=0, atol=1e-12)
+    central_delta = (right - left) / (2 * step)
+    central_gamma = (right - 2 * centre + left) / step**2
+    assert np.max(np.abs(greeks["delta_predicted"] - central_delta)) <= 1e-5 * np.max(np.abs(central_delta))
+    assert np.max(np.abs(greeks["gamma_predicted"] - central_gamma)) <= 1e-4 * np.max(np.abs(central_gamma))
+
+
+def test_replay_at_times_writes_one_row_per_paper_time(tmp_path, problem):
+    run_directory, variant_directory, model, variant_problem = write_saved_run(tmp_path, problem, "split_diffusion")
+    assert runner.main(["--compute-greeks-at-times", str(run_directory), "--device", "cpu",
+                        "--greeks-paper-times", "1,0.01", "--greeks-grid-points", "257"]) == 0
+    saved = np.load(variant_directory / "greeks_at_times.npz")
+    terminal_time = variant_problem["terminal_time"]
+    np.testing.assert_array_equal(saved["paper_times"], [1.0, 0.01])
+    assert saved["gamma_predicted"].shape == (2, 257) and saved["x"].shape == (257,)
+    for row, paper_time in enumerate((1.0, 0.01)):
+        expected = runner.compute_greeks(model, variant_problem, runner_time=terminal_time - paper_time,
+                                         spatial_grid=saved["x"])
+        np.testing.assert_array_equal(saved["gamma_predicted"][row], expected["gamma_predicted"])
+        np.testing.assert_array_equal(saved["gamma_reference"][row], expected["gamma_reference"])
+    with open(run_directory / "greeks_at_times_summary.yaml") as summary_file:
+        summary = yaml.safe_load(summary_file)
+    assert summary["split_diffusion"]["paper_times"] == [1.0, 0.01]
+    assert len(summary["split_diffusion"]["gamma_rel_l2_interior"]) == 2
+
+
+@pytest.mark.parametrize("paper_times", ["0,0.5", "1.5"])
+def test_replay_at_times_refuses_times_outside_the_horizon(tmp_path, problem, paper_times):
+    run_directory, _, _, _ = write_saved_run(tmp_path, problem, "split_diffusion")
+    with pytest.raises(ValueError, match="paper times"):
+        runner.main(["--compute-greeks-at-times", str(run_directory), "--device", "cpu",
+                     "--greeks-paper-times", paper_times, "--greeks-grid-points", "65"])
