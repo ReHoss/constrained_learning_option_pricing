@@ -282,16 +282,20 @@ def render_energy_figure(run_directory: Path) -> Path:
         axis.set_xlabel("Band edge $K$")
         axis.set_ylabel("Forcing energy $E(K)$")
         axis.grid(True, which="both", alpha=0.3)
-    handles, labels = axes[0].get_legend_handles_labels()
-    legend = figure.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, -0.02), ncol=4,
-                           fontsize=8, frameon=True)
+    # One figure-level legend, with the predicted law of each panel (the two differ).
+    legend_entries: dict[str, object] = {}
+    for axis in axes:
+        for handle, label in zip(*axis.get_legend_handles_labels()):
+            legend_entries.setdefault(label, handle)
+    legend = figure.legend(list(legend_entries.values()), list(legend_entries.keys()), loc="upper center",
+                           bbox_to_anchor=(0.5, -0.02), ncol=3, fontsize=8, frameon=True)
     formula = (r"$E(K)=2\pi\sum_{0<|k|\leq K}\int_0^T|\widehat{\mathcal{L}h}(k,t)|^2\,dt$;"
                r"  Chen-Mangasarian: $\hat h(k,t)=m(\varepsilon(t)|k|)\,c_k$, $m(z)=zK_1(z)$,"
                r" $\varepsilon$ linear in time, $\varepsilon_0=\sqrt{2\nu T}$;"
                "\n"
                r"predicted $E(K)=\frac{\gamma_{2p}^2 I}{\pi^3\varepsilon_0}\sum_{k\leq K}k^{4p-5}(1+o(1))$,"
                r" $I=\int_0^\infty (zK_1(z))^2dz=3\pi^2/32$, $C=\gamma_{2p}^2I/(\pi^3\varepsilon_0)$")
-    figure.tight_layout(rect=[0, 0.12, 1, 1])
+    figure.tight_layout(rect=[0, 0.22, 1, 1])
     path = run_directory / ENERGY_FIGURE_FILENAME
     finalize_figure(figure, path, legends=[legend], formula=formula, axes=list(axes))
     return path
