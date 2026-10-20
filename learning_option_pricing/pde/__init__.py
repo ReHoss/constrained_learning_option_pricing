@@ -31,6 +31,10 @@ from learning_option_pricing.pde.periodic_extension_fields import (
     make_single_component_sine_cell,
     sine_cell_matched_exponential_rate,
 )
+from learning_option_pricing.pde.exact_trace_fields import (
+    ExactTraceAdaptiveBandField,
+    periodised_bernoulli_values,
+)
 from learning_option_pricing.pde.periodic_spectral_toolbox import (
     ConstantCoefficientGenerator,
     GeneratorSplit,
@@ -123,6 +127,8 @@ __all__ = [
     "build_split_diffusion_advection_extension_field",
     "build_split_diffusion_extension_field",
     "exact_solution_field",
+    "ExactTraceAdaptiveBandField",
+    "periodised_bernoulli_values",
     "make_single_component_sine_cell",
     "sine_cell_matched_exponential_rate",
     "ConstantCoefficientGenerator",
