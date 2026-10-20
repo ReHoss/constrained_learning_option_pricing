@@ -2244,6 +2244,46 @@ def compute_greeks_at_times_for_saved_run(run_directory: Path, device_name: str,
                 time.time() - start_time)
     return 0
 
+def reevaluate_saved_run_on_cell(run_directory: Path, device_name: str, evaluation_cell: str) -> int:
+    r"""Recompute the errors of the saved models of a run against the reference of another cell.
+
+    Each model is reloaded and checked against its own recorded error by
+    :func:`_reload_saved_variants`; no training.  For every variant of the run that the
+    evaluation cell also has, :func:`compute_error_metrics` is evaluated with the evaluation
+    cell's problem (its reference and its datum).  The use is the exact-trace study of
+    2026-10-20: the data-path variants of the full-datum cells (raw constant extension,
+    transported datum, soft constraint) were trained on the datum ``g`` itself and selected
+    without the reference, so their errors against the exact-trace reference are those a
+    retraining would give.  Writes ``reevaluation_<evaluation_cell>.yaml`` with the recorded
+    and the recomputed metrics of each variant.
+    """
+    import yaml
+
+    evaluation_problem = build_problem(evaluation_cell)
+    evaluation_variant_names = set(catalogue.variant_names(evaluation_cell))
+    output: dict = {}
+    for variant_name, _, model, _, reload_deviation in _reload_saved_variants(
+            run_directory, device_name, f"RE-EVALUATION OF SAVED MODELS ON CELL {evaluation_cell} (no training)"):
+        if variant_name not in evaluation_variant_names:
+            logger.info("[%s] not a variant of %s: skipped", variant_name, evaluation_cell)
+            continue
+        variant_problem = problem_for_variant(evaluation_problem, catalogue.variant_by_name(evaluation_cell, variant_name))
+        metrics = compute_error_metrics(model, variant_problem)
+        with open(run_directory / f"summary_{variant_name}.yaml") as summary_file:
+            recorded = yaml.safe_load(summary_file)[variant_name]
+        output[variant_name] = {
+            "evaluation_cell": evaluation_cell,
+            "reload_rel_l2_t0_deviation": reload_deviation,
+            "recorded": {key: recorded.get(key) for key in metrics},
+            "reevaluated": {key: float(value) for key, value in metrics.items()},
+        }
+        logger.info("[%s] rel_l2 recorded %.6e, against the %s reference %.6e", variant_name,
+                    float(recorded["rel_l2"]), evaluation_cell, float(metrics["rel_l2"]))
+    output_path = run_directory / f"reevaluation_{evaluation_cell}.yaml"
+    write_summary(output_path, output)
+    logger.info("wrote %s (%d variants)", output_path, len(output))
+    return 0
+
 def compute_spectra(
     model, problem, variant, closed_form_extension, slice_fractions=None
 ) -> dict:
@@ -2501,6 +2541,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of equally spaced grid points for --compute-greeks-at-times.",
     )
     parser.add_argument(
+        "--reevaluate-run", type=str, default=None,
+        help="Recompute the errors of the saved models of an existing run DIR against the "
+             "reference of --reevaluation-cell (no training); writes "
+             "reevaluation_<cell>.yaml in the run DIR.",
+    )
+    parser.add_argument(
+        "--reevaluation-cell", type=str, default=None,
+        help="Cell whose reference and datum --reevaluate-run uses.",
+    )
+    parser.add_argument(
         "--init-only", action="store_true",
         help="Create dir + metadata + one config YAML per array task, print "
              "the absolute EXPDIR, then exit (login-node safe).",
@@ -2607,6 +2657,11 @@ def main(argv=None) -> int:
 
     if args.compute_greeks is not None:
         return compute_greeks_for_saved_run(Path(args.compute_greeks), args.device)
+
+    if args.reevaluate_run is not None:
+        if args.reevaluation_cell is None:
+            build_parser().error("--reevaluate-run requires --reevaluation-cell")
+        return reevaluate_saved_run_on_cell(Path(args.reevaluate_run), args.device, args.reevaluation_cell)
 
     if args.compute_greeks_at_times is not None:
         paper_times = [float(value) for value in args.greeks_paper_times.split(",")]

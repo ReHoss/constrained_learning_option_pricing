@@ -86,3 +86,28 @@ def test_short_training_runs_with_the_analytic_forcing_cross_check(cell_name, va
         variant, problem, SMALL_TRAINING, num_iterations=4, seed=0, device=torch.device("cpu"), log_every=1)
     assert cross_check_deviation is not None and cross_check_deviation < 1e-3
     assert all(math.isfinite(value) for value in history["loss"])
+
+
+def test_reevaluation_recomputes_the_errors_of_a_saved_data_path_model_on_the_exact_trace_cell(tmp_path):
+    import yaml
+
+    full_cell, exact_cell = "g2_bernoulli_full", "g2_bernoulli_exact_trace"
+    variant = catalogue.variant_by_name(full_cell, "constant_in_time")
+    full_problem = runner.problem_for_variant(runner.build_problem(full_cell), variant)
+    model, _ = runner.build_ansatz(variant, full_problem, SMALL_TRAINING, model_seed=0)
+    run_directory = tmp_path / "run"
+    (run_directory / "variant_constant_in_time" / "models").mkdir(parents=True)
+    torch.save(model.state_dict(), run_directory / "variant_constant_in_time" / "models" / "model.pt")
+    recorded = runner.compute_error_metrics(model, full_problem)
+    runner.write_summary(run_directory / "metadata.yaml", {"cell": full_cell, "seed": 0, "hparams": SMALL_TRAINING})
+    runner.write_summary(run_directory / "summary_constant_in_time.yaml", {"constant_in_time": recorded})
+    assert runner.main(["--reevaluate-run", str(run_directory), "--reevaluation-cell", exact_cell, "--device", "cpu"]) == 0
+    with open(run_directory / f"reevaluation_{exact_cell}.yaml") as reevaluation_file:
+        result = yaml.safe_load(reevaluation_file)["constant_in_time"]
+    expected = runner.compute_error_metrics(
+        model, runner.problem_for_variant(runner.build_problem(exact_cell),
+                                          catalogue.variant_by_name(exact_cell, "constant_in_time")))
+    assert result["reevaluated"]["rel_l2"] == pytest.approx(expected["rel_l2"], rel=1e-12)
+    assert result["recorded"]["rel_l2"] == pytest.approx(recorded["rel_l2"], rel=1e-12)
+    # The two references differ by the truncation of the datum, about 2e-6 of its norm.
+    assert abs(result["reevaluated"]["rel_l2"] - recorded["rel_l2"]) <= 1e-4 * recorded["rel_l2"] + 1e-5
