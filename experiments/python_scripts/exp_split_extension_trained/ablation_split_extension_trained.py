@@ -236,15 +236,21 @@ def build_problem(cell_name: str, truncation_wavenumber: int | None = None) -> d
     }
     terminal_time = float(cell_conf["terminal_time"])
 
-    if cell_conf["datum"] in ("bernoulli_bandlimited", "bernoulli_full"):
+    if cell_conf["datum"] in ("bernoulli_bandlimited", "bernoulli_full", "bernoulli_exact_trace"):
         band_edge = int(cell_conf["truncation_wavenumber"])
         cosine_coefficients = bandlimited_bernoulli_cosine_coefficients(band_edge)
         sine_coefficients = None
-        exact_field = exact_solution_field(
-            generator_coefficients,
-            cosine_coefficients,
-            terminal_time=terminal_time,
-        )
+        if cell_conf["datum"] == "bernoulli_exact_trace":
+            # Exact-trace cells (author request 2026-10-20): the reference is e^{sL} g with the
+            # trace g itself and a band adapted to s, not the solution of the truncated datum.
+            exact_field = exact_trace_field(exact_solution_field, generator_coefficients, cell_conf,
+                                            terminal_time)
+        else:
+            exact_field = exact_solution_field(
+                generator_coefficients,
+                cosine_coefficients,
+                terminal_time=terminal_time,
+            )
         matched_exponential_rate = None
         sine_wavenumber = None
         sine_amplitude = None
@@ -266,7 +272,8 @@ def build_problem(cell_name: str, truncation_wavenumber: int | None = None) -> d
     else:  # pragma: no cover - guarded by the catalogue schema
         raise ValueError(f"Unknown datum kind {cell_conf['datum']!r}")
 
-    full_datum = cell_conf["datum"] == "bernoulli_full"
+    full_datum = cell_conf["datum"] in ("bernoulli_full", "bernoulli_exact_trace")
+    exact_trace = cell_conf["datum"] == "bernoulli_exact_trace"
     return {
         "cell_name": cell_name,
         "generator_coefficients": generator_coefficients,
@@ -276,6 +283,9 @@ def build_problem(cell_name: str, truncation_wavenumber: int | None = None) -> d
         # variants (problem_for_variant); the spectral objects above use the
         # reference band.
         "full_terminal_datum": full_bernoulli_datum_values if full_datum else None,
+        # Exact-trace cells: every spectral extension is wrapped by exact_trace_field, and
+        # every variant (problem_for_variant) sees the datum g itself.
+        "exact_trace_cell_configuration": cell_conf if exact_trace else None,
         "band_edge": band_edge,
         "cosine_coefficients": cosine_coefficients,
         "sine_coefficients": sine_coefficients,
@@ -292,6 +302,36 @@ def build_problem(cell_name: str, truncation_wavenumber: int | None = None) -> d
         "forcing_wavenumber_band": symmetric_wavenumber_band(band_edge),
         "variable_generator": None,
     }
+
+
+def exact_trace_field(builder, generator_coefficients: dict, cell_conf: dict, terminal_time: float,
+                      **builder_keyword_arguments):
+    r"""Field of ``builder`` with the trace :math:`g` itself and a band adapted to the time since the datum.
+
+    Wraps the registry builder in :class:`ExactTraceAdaptiveBandField` with the band policy of an
+    exact-trace cell (base band ``truncation_wavenumber``, ``maximum_band``, ``tail_exponent``) and
+    the bound :math:`|a_k| \le k^{-2}/\pi^2` of the Bernoulli datum.
+    """
+    import math
+
+    from learning_option_pricing.pde import (
+        ExactTraceAdaptiveBandField,
+        bandlimited_bernoulli_cosine_coefficients,
+        periodised_bernoulli_values,
+    )
+
+    return ExactTraceAdaptiveBandField(
+        builder, generator_coefficients,
+        datum_values=periodised_bernoulli_values,
+        cosine_coefficients_for_band=bandlimited_bernoulli_cosine_coefficients,
+        datum_amplitude_constant=1.0 / math.pi**2, datum_amplitude_exponent=2.0,
+        terminal_time=terminal_time,
+        base_band=int(cell_conf["truncation_wavenumber"]),
+        maximum_band=int(cell_conf["maximum_band"]),
+        tail_exponent=float(cell_conf["tail_exponent"]),
+        builder_keyword_arguments={key: value for key, value in builder_keyword_arguments.items()
+                                   if value is not None},
+    )
 
 
 def full_bernoulli_datum_values(x):
@@ -379,6 +419,8 @@ def problem_for_variant(problem: dict, variant: dict) -> dict:
     use the full datum; the extension variants and the exact reference keep
     the spectral datum at the reference band.  Every other cell is unchanged.
     """
+    if problem.get("exact_trace_cell_configuration") is not None:
+        return dict(problem, terminal_datum=problem["full_terminal_datum"])
     if problem.get("full_terminal_datum") is not None and variant["extension"] in (
         None, "transported_datum"
     ):
@@ -924,7 +966,7 @@ def _build_constant_coefficient_closed_form_extension(variant: dict, problem: di
         coefficients=problem["generator_coefficients"],
         name=problem["cell_name"],
     )
-    if problem["datum_kind"] in ("bernoulli_bandlimited", "bernoulli_full"):
+    if problem["datum_kind"] in ("bernoulli_bandlimited", "bernoulli_full", "bernoulli_exact_trace"):
         # On the retained band |k| <= K_g the truncated datum's coefficients
         # coincide exactly with the regularity-index-1 periodised Bernoulli
         # datum: c_k = 1 / (2 pi^2 k^2).
@@ -1202,14 +1244,19 @@ def build_ansatz(variant: dict, problem: dict, hparams: dict, *, model_seed: int
             extra_builder_arguments["initial_smoothing_scale"] = (
                 chen_mangasarian_initial_smoothing_scale(variant, problem)
             )
-        extension_field = builder(
-            problem["generator_coefficients"],
-            problem["cosine_coefficients"],
-            sine_coefficients=problem["sine_coefficients"],
-            comparison_diffusivity=comparison_diffusivity,
-            terminal_time=terminal_time,
-            **extra_builder_arguments,
-        )
+        if problem.get("exact_trace_cell_configuration") is not None:
+            extension_field = exact_trace_field(
+                builder, problem["generator_coefficients"], problem["exact_trace_cell_configuration"],
+                terminal_time, comparison_diffusivity=comparison_diffusivity, **extra_builder_arguments)
+        else:
+            extension_field = builder(
+                problem["generator_coefficients"],
+                problem["cosine_coefficients"],
+                sine_coefficients=problem["sine_coefficients"],
+                comparison_diffusivity=comparison_diffusivity,
+                terminal_time=terminal_time,
+                **extra_builder_arguments,
+            )
         if variant["name"] == "graded_gaussian_matched":
             _assert_graded_matched_agrees_with_split(extension_field, problem)
         extension_fn = extension_field.field

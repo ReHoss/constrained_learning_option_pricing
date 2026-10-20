@@ -412,6 +412,29 @@ FULL_DATUM_FOURTH_ORDER_ADDED_VARIANTS: list[dict] = [
     _generator_variant("exact_solution"),
     TRANSPORTED_DATUM_VARIANT,
 ]
+# Exact-trace cells (author request 2026-10-20: the circle comparisons on the datum g itself,
+# not on its truncation g_K).  On the full-datum cells above, the spectral extensions and the
+# reference are cosine sums over |k| <= 4096, so their trace is g_4096.  On the exact-trace cells,
+# every spectral field e^{sA} g has the trace g itself (closed form at s = 0) and, for s > 0, a band
+# chosen point by point so that the omitted components carry a factor at most e^{-Z}
+# (learning_option_pricing.pde.exact_trace_fields).  The square-root smoothing is not run: on g
+# its forcing energy is infinite (Proposition 4.2 of the paper), so no result on g exists for it.
+EXACT_TRACE_MAXIMUM_BAND = 2**21
+EXACT_TRACE_TAIL_EXPONENT = 40.0
+EXACT_TRACE_SECOND_ORDER_CELL_VARIANTS: list[dict] = [
+    _generator_variant("constant_in_time"),
+    _generator_variant("split_diffusion"),
+    _generator_variant("split_diffusion_advection"),
+    _generator_variant("exact_solution"),
+    TRANSPORTED_DATUM_VARIANT,
+]
+EXACT_TRACE_FOURTH_ORDER_CELL_VARIANTS: list[dict] = [
+    _generator_variant("constant_in_time"),
+    SPLIT_PRINCIPAL_VARIANT,
+    SPLIT_PRINCIPAL_ADVECTION_VARIANT,
+    _generator_variant("exact_solution"),
+    TRANSPORTED_DATUM_VARIANT,
+]
 # Variants of the paper's earlier comparison, run on the full datum as well (author request
 # 2026-10-13: computed for completeness, not reported in the paper nor in the talk); appended
 # last so that the order of the earlier variants is unchanged.
@@ -694,6 +717,38 @@ CELL_CONFIGS: dict[str, dict] = {
             r"$A=-0.05\,\partial_x^4+1.3\,\partial_x-0.4$,  $T=1$"
         ),
     },
+    "g2_bernoulli_exact_trace": {
+        # G2 with the datum g itself as the trace of every field (exact-trace cell).
+        "generator_coefficients": {2: 0.125, 1: -0.095, 0: -0.03},
+        "datum": "bernoulli_exact_trace",
+        "truncation_wavenumber": FULL_DATUM_REFERENCE_BAND_EDGE,   # base band
+        "maximum_band": EXACT_TRACE_MAXIMUM_BAND,
+        "tail_exponent": EXACT_TRACE_TAIL_EXPONENT,
+        "terminal_time": 1.0,
+        "corner_point": 0.0,
+        "variant_set": "exact_trace_second_order",
+        "short_label": r"$G_2$, exact trace $g$",
+        "label": (
+            r"$g(x)=\tfrac16-\tfrac{x}{2\pi}+\tfrac{x^2}{4\pi^2}$ on $[0,2\pi)$ (exact trace),  "
+            r"$A=0.125\,\partial_{xx}-0.095\,\partial_x-0.03$,  $T=1$"
+        ),
+    },
+    "g3_bernoulli_exact_trace": {
+        # G3 with the datum g itself as the trace of every field (exact-trace cell).
+        "generator_coefficients": {4: -0.05, 1: 1.3, 0: -0.4},
+        "datum": "bernoulli_exact_trace",
+        "truncation_wavenumber": FULL_DATUM_REFERENCE_BAND_EDGE,   # base band
+        "maximum_band": EXACT_TRACE_MAXIMUM_BAND,
+        "tail_exponent": EXACT_TRACE_TAIL_EXPONENT,
+        "terminal_time": 1.0,
+        "corner_point": 0.0,
+        "variant_set": "exact_trace_fourth_order",
+        "short_label": r"$G_3$, exact trace $g$",
+        "label": (
+            r"$g(x)=\tfrac16-\tfrac{x}{2\pi}+\tfrac{x^2}{4\pi^2}$ on $[0,2\pi)$ (exact trace),  "
+            r"$A=-0.05\,\partial_x^4+1.3\,\partial_x-0.4$,  $T=1$"
+        ),
+    },
     "sixth_order_bernoulli_bandlimited": {
         # Sixth-order generator (added 2026-10-11, pre-registration
         # 2026-10-11_preregistration_sixth_order_study.md):
@@ -837,6 +892,10 @@ def variants_for_cell(cell_name: str) -> list[dict]:
     if cell_conf["variant_set"] == "full_datum_fourth_order":
         return (list(FULL_DATUM_FOURTH_ORDER_CELL_VARIANTS) + FULL_DATUM_FOURTH_ORDER_ADDED_VARIANTS
                 + FULL_DATUM_FOURTH_ORDER_EXTRA_VARIANTS + SOFT_CONSTRAINT_VARIANTS)
+    if cell_conf["variant_set"] == "exact_trace_second_order":
+        return list(EXACT_TRACE_SECOND_ORDER_CELL_VARIANTS) + SOFT_CONSTRAINT_VARIANTS
+    if cell_conf["variant_set"] == "exact_trace_fourth_order":
+        return list(EXACT_TRACE_FOURTH_ORDER_CELL_VARIANTS) + SOFT_CONSTRAINT_VARIANTS
     if cell_conf["variant_set"] == "sixth_order":
         return list(SIXTH_ORDER_CELL_VARIANTS)
     if cell_conf["variant_set"] == "real_line_butterfly":
