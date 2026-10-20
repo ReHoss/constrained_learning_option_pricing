@@ -118,7 +118,9 @@ def test_mixed_batches_are_evaluated_point_by_point_with_torch():
     np.testing.assert_array_equal(values[:3], periodised_bernoulli_values(POINTS[:3]))
     np.testing.assert_allclose(values[3:6], band_field("exact_solution", ORDER_TWO, 2**20).field(POINTS[:3], t[3:6].numpy()),
                                atol=1e-13)
-    np.testing.assert_array_equal(values[6:], band_field("exact_solution", ORDER_TWO, 4096).field(POINTS[:3], t[6:].numpy()))
+    # torch and numpy sum the components in a different order: equal to rounding.
+    np.testing.assert_allclose(values[6:], band_field("exact_solution", ORDER_TWO, 4096).field(POINTS[:3], t[6:].numpy()),
+                               rtol=1e-14, atol=0)
 
 
 def test_derivative_callables_have_the_keys_of_the_base_field():
