@@ -1,0 +1,32 @@
+# Manifest of the circle comparisons on the datum g itself, exact-trace cells (pre-registration
+# documents/methodology/2026-10-20_preregistration_exact_trace_circle_cells.md).
+exact_trace_circle:
+  cells: [g2_bernoulli_exact_trace, g3_bernoulli_exact_trace]   # paper G_2 and G_3 with the full datum g as trace of every field and of the reference; T = 1
+  field_evaluation: ExactTraceAdaptiveBandField; closed form of g at s = 0; for s > 0 the smallest power-of-two band K >= 4096 with s (c K^r - b) >= 40, maximum 2^21, reported truncation beyond
+  part_a_retraining:
+    variants:
+      g2_bernoulli_exact_trace: [split_diffusion, split_diffusion_advection, graded_chen_mangasarian, exact_solution]
+      g3_bernoulli_exact_trace: [split_principal, split_principal_advection, graded_chen_mangasarian, exact_solution]
+      # graded_chen_mangasarian: the square-root smoothing (convolution with kappa_eps, eps(s) = eps_0 s / T), added by amendment before any run
+    seeds: [0, 1, 2]
+    tasks: 24
+    cluster: Jean Zay (IDRIS), NVIDIA V100 (gpu_p13), akz@v100, qos_gpu-t3
+    slurm_jobs: {smoke_test: 1352861, array: 1352862}
+    smoke_test: qos_gpu-dev, --debug, 300 iterations; analytic-vs-autograd cross-checks <= 3e-8; values not reported as results
+    code_revision: 893a300   # recorded in every metadata.yaml at the --init-only phase; no tracked modification
+    hyperparameters: identical to the full-datum series of 2026-10-08 and 2026-10-12 (20000 iterations, validation selection), checked at --init-only
+    run_directories: data/ablation_split_extension_trained/exact_trace_circle_2026-10-20/ (Jean Zay)
+    slurm_logs: data/ablation_split_extension_trained/exact_trace_circle_2026-10-20/slurm/ (Jean Zay)
+    launch_scripts: Jean Zay, $WORK/oym_migration/work/logs/constrained_learning_option_pricing/exact_trace_circle_2026-10-20/
+    run_directories_local: data/ablation_split_extension_trained/exact_trace_circle_2026-10-20/ (copied 2026-10-20, no checkpoint files exist, _debug_ excluded)
+  part_b_reevaluation:
+    models: raw constant (constant_in_time), transported_datum, soft constraint weights 1, 10, 100; 3 seeds on each cell; 30 models
+    source_runs: full_datum_sampling_2026-10-08, full_datum_remaining_choices_2026-10-12, soft_constraint_comparison_2026-10-18 (cells g2_bernoulli_full, g3_bernoulli_full)
+    slurm_job: 1352863   # prepost, akz@cpu, non-billed; no training
+    outputs: reevaluation_<exact-trace cell>.yaml beside each of the 18 source runs (Jean Zay and local copies)
+  band_counts:
+    script: experiments/python_scripts/exp_split_extension_trained/training_sampler_band_counts.py   # replay of the seeded samplers, no training
+    slurm_job: 1355845   # prepost, akz@cpu, non-billed; runs the exact-trace and Greeks tests first
+    code_revision: 6c475f3
+    output: data/ablation_split_extension_trained/exact_trace_circle_2026-10-20/diagnostics/training_sampler_band_counts.yaml
+  status: completed 2026-10-20, 24 admissible runs and 30 re-evaluated models; E1, E2, E3, E4 and E5 hold; E6 fails in its first part (median error of the square-root smoothing 0.320 times its K = 4096 median on g2 and 0.154 times on g3, below the predicted bound 0.8) and holds in its second (pre-registration section 4)
