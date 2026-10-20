@@ -129,14 +129,33 @@ def test_derivative_callables_have_the_keys_of_the_base_field():
         assert set(field.derivative_callables()) == set(band_field(kind, coefficients, 4096).derivative_callables())
 
 
+def test_square_root_convolution_has_the_datum_as_trace_and_a_band_growing_like_one_over_s():
+    field = ExactTraceAdaptiveBandField(
+        EXTENSION_FIELD_REGISTRY["graded_chen_mangasarian"], ORDER_TWO,
+        datum_values=periodised_bernoulli_values,
+        cosine_coefficients_for_band=bandlimited_bernoulli_cosine_coefficients,
+        datum_amplitude_constant=1.0 / math.pi**2, datum_amplitude_exponent=2.0, terminal_time=TERMINAL_TIME,
+        base_band=4096, maximum_band=2**21, builder_keyword_arguments={"initial_smoothing_scale": 0.5})
+    np.testing.assert_array_equal(field.field(POINTS, np.full_like(POINTS, TERMINAL_TIME)), periodised_bernoulli_values(POINTS))
+    # K(s) = 40 / (0.5 s): 80000 at s = 1e-3 -> 131072; 8e7 at s = 1e-6 -> capped at 2^21.
+    bands, capped = field.required_band(np.array([1e-3, 1e-6]))
+    np.testing.assert_array_equal(bands, [131072, 2**21])
+    np.testing.assert_array_equal(capped, [False, True])
+    times = np.full_like(POINTS, TERMINAL_TIME - 1e-3)
+    reference = EXTENSION_FIELD_REGISTRY["graded_chen_mangasarian"](
+        ORDER_TWO, bandlimited_bernoulli_cosine_coefficients(2**19), terminal_time=TERMINAL_TIME,
+        initial_smoothing_scale=0.5)
+    np.testing.assert_allclose(field.field(POINTS, times), reference.field(POINTS, times), rtol=0, atol=1e-13)
+
+
 def test_kinds_without_exponential_decay_are_refused():
     with pytest.raises(ValueError, match="no exponential decay"):
         ExactTraceAdaptiveBandField(
-            EXTENSION_FIELD_REGISTRY["graded_chen_mangasarian"], ORDER_TWO,
+            EXTENSION_FIELD_REGISTRY["graded_gaussian"], ORDER_TWO,
             datum_values=periodised_bernoulli_values,
             cosine_coefficients_for_band=bandlimited_bernoulli_cosine_coefficients,
             datum_amplitude_constant=1.0 / math.pi**2, datum_amplitude_exponent=2.0, terminal_time=TERMINAL_TIME,
-            base_band=4096, maximum_band=2**21, builder_keyword_arguments={"initial_smoothing_scale": 0.5})
+            base_band=4096, maximum_band=2**21, builder_keyword_arguments={"comparison_diffusivity": 0.1})
 
 
 def test_times_beyond_the_datum_slice_are_refused():

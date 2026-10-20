@@ -22,8 +22,10 @@ catalogue = importlib.import_module("_split_extension_catalogue")
 from learning_option_pricing.pde import ExactTraceAdaptiveBandField, periodised_bernoulli_values
 
 EXACT_TRACE_CELLS = ("g2_bernoulli_exact_trace", "g3_bernoulli_exact_trace")
-SPECTRAL_VARIANTS = {"g2_bernoulli_exact_trace": ("split_diffusion", "split_diffusion_advection", "exact_solution"),
-                     "g3_bernoulli_exact_trace": ("split_principal", "split_principal_advection", "exact_solution")}
+SPECTRAL_VARIANTS = {"g2_bernoulli_exact_trace": ("split_diffusion", "split_diffusion_advection", "exact_solution",
+                                                 "graded_chen_mangasarian"),
+                     "g3_bernoulli_exact_trace": ("split_principal", "split_principal_advection", "exact_solution",
+                                                 "graded_chen_mangasarian")}
 SMALL_TRAINING = dict(
     catalogue.DEFAULT_HPARAMS, net_width=8, net_blocks=1, net_layers_per_block=1,
     n_interior=64, n_terminal=32, n_validation=128, validation_every=2,
@@ -37,9 +39,8 @@ def test_the_runner_and_library_closed_forms_of_the_datum_coincide():
 
 
 @pytest.mark.parametrize("cell_name", EXACT_TRACE_CELLS)
-def test_exact_trace_cells_run_every_choice_but_the_square_root_smoothing(cell_name):
+def test_exact_trace_cells_run_the_six_choices_and_the_soft_constraint(cell_name):
     names = catalogue.variant_names(cell_name)
-    assert "graded_chen_mangasarian" not in names
     assert set(SPECTRAL_VARIANTS[cell_name]) | {"constant_in_time", "transported_datum"} <= set(names)
     assert names[-3:] == [variant["name"] for variant in catalogue.SOFT_CONSTRAINT_VARIANTS]
 

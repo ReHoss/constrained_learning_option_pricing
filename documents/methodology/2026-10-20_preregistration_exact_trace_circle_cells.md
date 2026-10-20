@@ -23,13 +23,18 @@ The exact-trace cells `g2_bernoulli_exact_trace` and `g3_bernoulli_exact_trace` 
 - at the datum slice, the closed form of $g$;
 - at time $s>0$ since the datum, the cosine series over the smallest power-of-two band $K\ge4096$ with $s\,(cK^{r}-b)\ge40$, up to $2^{21}$.
 
-Beyond $2^{21}$, a reported (never silent) truncation applies, with the bound of the omitted part. The square-root smoothing is not run: its forcing energy is infinite on $g$ (Proposition 4.2 of the paper).
+Beyond $2^{21}$, a reported (never silent) truncation applies, with the bound of the omitted part.
+
+**Amendment, 2026-10-20, before any run.** The author asked to include the convolution method, the square-root smoothing, in the comparisons (« je pense qu'il va falloir évaluer la méthode par convolution aussi »).
+- Its components carry the multiplier $zK_1(z)$, $z=karepsilon(s)$, $arepsilon(s)=arepsilon_0 s/T$, which decays like $e^{-z}$. Its band therefore grows like $40/(arepsilon_0 s)$ and exceeds $2^{21}$ for $s<40/(arepsilon_0 2^{21})$, about $3.8	imes10^{-5}$ on `g2` with $arepsilon_0=0.5$.
+- At those points the maximum band applies, and the truncation is reported with its bound.
+- Its forcing energy on $g$ is infinite (Proposition 4.2), so its sampled objective has no finite mean.
 
 ## 2. Design
 
 **Part A — retraining (Jean Zay, V100 `gpu_p13`, `akz@v100`, `qos_gpu-t3`).**
-- Variants: the three spectral variants on each exact-trace cell. On `g2`: `split_diffusion`, `split_diffusion_advection`, `exact_solution`. On `g3`: `split_principal`, `split_principal_advection`, `exact_solution`.
-- Seeds 0, 1, 2; 18 tasks.
+- Variants: the four spectral variants on each exact-trace cell. On `g2`: `split_diffusion`, `split_diffusion_advection`, `graded_chen_mangasarian`, `exact_solution`. On `g3`: `split_principal`, `split_principal_advection`, `graded_chen_mangasarian`, `exact_solution`.
+- Seeds 0, 1, 2; 24 tasks.
 - Hyperparameters identical to the 2026-10-08 and 2026-10-12 series (20000 iterations, validation selection), checked at `--init-only`.
 - A `--debug` smoke test on `qos_gpu-dev` comes first. Series folder: `exact_trace_circle_2026-10-20`.
 
@@ -44,9 +49,10 @@ These cover 3 seeds on each cell, 30 models. Their training used $g$, and their 
 
 - **E1 (trace).** Every retrained run passes the initial-value check against $g$ itself (`tc_l2` $=0$).
 - **E2 (re-evaluation).** For each re-evaluated model, $|\delta^{\mathrm{new}}-\delta^{\mathrm{old}}|\le10^{-3}\,\delta^{\mathrm{old}}$, where $\delta$ is the relative error on the evaluation grid.
-- **E3 (retrained medians).** For each spectral variant and cell, the median $\delta$ over the three seeds lies within a factor $1.25$ of the median of the corresponding $K=4096$ variant.
+- **E3 (retrained medians).** For each spectral variant except the square-root smoothing, and on each cell, the median $\delta$ over the three seeds lies within a factor $1.25$ of the median of the corresponding $K=4096$ variant.
 - **E4 (ordering).** On each cell, the medians satisfy: raw constant and transported datum $>$ soft constraint at its best weight $>$ highest-order split; and full-operator control $<$ highest-order split.
-- **E5 (bands).** No training point needs a band above $2^{21}$. On `g3`, no point needs a band above $4096$ for $s\ge3\times10^{-12}$.
+- **E5 (bands).** For the variants other than the square-root smoothing, no training point needs a band above $2^{21}$. On `g3`, no such point needs a band above $4096$ for $s\ge3\times10^{-12}$.
+- **E6 (square-root smoothing).** On each cell, the median $\delta$ of the square-root smoothing is at least $0.8$ times its median at $K=4096$: $6.59\times10^{-3}$ on `g2` and $33.9$ on `g3`. It also exceeds the median of the highest-order split on the same cell. The number of training points evaluated on the maximum band is reported.
 
 Admissibility follows the earlier series: finite metrics, no gradient-norm safeguard activation, and the initial-value check passed.
 

@@ -417,14 +417,17 @@ FULL_DATUM_FOURTH_ORDER_ADDED_VARIANTS: list[dict] = [
 # reference are cosine sums over |k| <= 4096, so their trace is g_4096.  On the exact-trace cells,
 # every spectral field e^{sA} g has the trace g itself (closed form at s = 0) and, for s > 0, a band
 # chosen point by point so that the omitted components carry a factor at most e^{-Z}
-# (learning_option_pricing.pde.exact_trace_fields).  The square-root smoothing is not run: on g
-# its forcing energy is infinite (Proposition 4.2 of the paper), so no result on g exists for it.
+# (learning_option_pricing.pde.exact_trace_fields).  The square-root smoothing (convolution of g
+# with the square-root kernel) is run as well (author request 2026-10-20): its components decay
+# like e^{-k eps(s)}, so the band grows like 1/s and the maximum band applies, with a reported
+# bound, at the points nearest the datum; its forcing energy on g is infinite (Proposition 4.2).
 EXACT_TRACE_MAXIMUM_BAND = 2**21
 EXACT_TRACE_TAIL_EXPONENT = 40.0
 EXACT_TRACE_SECOND_ORDER_CELL_VARIANTS: list[dict] = [
     _generator_variant("constant_in_time"),
     _generator_variant("split_diffusion"),
     _generator_variant("split_diffusion_advection"),
+    _generator_variant("graded_chen_mangasarian"),
     _generator_variant("exact_solution"),
     TRANSPORTED_DATUM_VARIANT,
 ]
@@ -432,6 +435,7 @@ EXACT_TRACE_FOURTH_ORDER_CELL_VARIANTS: list[dict] = [
     _generator_variant("constant_in_time"),
     SPLIT_PRINCIPAL_VARIANT,
     SPLIT_PRINCIPAL_ADVECTION_VARIANT,
+    _generator_variant("graded_chen_mangasarian"),
     _generator_variant("exact_solution"),
     TRANSPORTED_DATUM_VARIANT,
 ]

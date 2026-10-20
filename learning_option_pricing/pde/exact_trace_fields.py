@@ -44,6 +44,7 @@ SUPPORTED_EXTENSION_KINDS = (
     "split_principal",
     "split_principal_advection",
     "exact_solution",
+    "graded_chen_mangasarian",
 )
 DEFAULT_TAIL_EXPONENT = 40.0
 # Points times components evaluated per call of a band field: 2^24 float64 entries per
@@ -142,6 +143,12 @@ class ExactTraceAdaptiveBandField:
                 f"supported kinds: {SUPPORTED_EXTENSION_KINDS}")
         if self.extension_kind in ("split_diffusion", "split_diffusion_advection"):
             self.decay_order, self.decay_coefficient = 2, float(self.base_field.diffusivity)
+        elif self.extension_kind == "graded_chen_mangasarian":
+            # Convolution of the datum with the square-root kernel of width eps(s) = eps_0 s / T:
+            # the multiplier z K_1(z), z = k eps(s), is at most sqrt(pi z / 2) e^{-z} (1 + 3/(8z)) for
+            # z >= 1, so its components decay like e^{-s c k} with c = eps_0 / T (order one).
+            self.decay_order = 1
+            self.decay_coefficient = float(self.base_field.initial_smoothing_scale) / self.terminal_time
         else:
             self.decay_order = int(self.base_field.principal_order)
             self.decay_coefficient = abs(float(self.base_field.generator_coefficients[self.decay_order]))
@@ -154,6 +161,8 @@ class ExactTraceAdaptiveBandField:
 
     def _decay_rate_offset(self, field) -> float:
         """Smallest b >= 0 with decay_rate_k >= c k^r - b on the band of ``field``."""
+        if field.extension_kind == "graded_chen_mangasarian":
+            return 0.0   # no exponential rates: the multiplier bound above applies with b = 0
         arrays = field._numpy_coefficient_arrays
         lower_bound = self.decay_coefficient * arrays["wavenumbers"] ** self.decay_order
         return float(max(0.0, np.max(lower_bound - arrays["decay_rates"])))
@@ -223,7 +232,8 @@ class ExactTraceAdaptiveBandField:
             index = select(on_datum_slice)
             if method_name == "field":
                 # The datum on the input in its own dtype: the trace then equals datum_values(x) bit for bit.
-                output[index] = self._datum_values(x_original_flat[index])
+                datum = self._datum_values(x_original_flat[index])
+                output[index] = datum.to(torch.float64) if is_torch else datum
             else:
                 self._report("datum_slice_derivative", on_datum_slice.size,
                              f"[exact-trace {self.extension_kind}] {method_name} at the datum slice s = 0 is not "
