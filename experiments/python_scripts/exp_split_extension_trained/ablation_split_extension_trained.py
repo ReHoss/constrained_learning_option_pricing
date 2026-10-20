@@ -1306,6 +1306,38 @@ def make_samplers(problem: dict, hparams: dict, *, sampler_seed: int, device):
     return sample_interior, sample_terminal
 
 
+def draw_validation_points(problem: dict, hparams: dict, *, validation_seed: int):
+    """Return the fixed validation set ``(x, t)``, uniform on the cylinder, from its own seed."""
+    import torch
+
+    validation_generator = torch.Generator(device="cpu")
+    validation_generator.manual_seed(validation_seed)
+    n_validation = int(hparams["n_validation"])
+    x_validation = scale_unit_samples_to_space(
+        torch.rand(n_validation, generator=validation_generator), problem
+    )
+    t_validation = problem["terminal_time"] * torch.rand(
+        n_validation, generator=validation_generator
+    )
+    return x_validation, t_validation
+
+
+def logging_interval(num_iterations: int) -> int:
+    """Interval of the training log after the first 100 iterations (50 lines per run)."""
+    return max(1, num_iterations // 50)
+
+
+def is_logged_iteration(iteration: int, log_every: int, num_iterations: int) -> bool:
+    """Whether ``iteration`` is logged; a logged iteration also draws a terminal sampler batch.
+
+    Dense logging over the first 100 iterations (the transient where the network
+    learns to cancel the forcing), then every ``log_every``, and the last one. The
+    terminal batch drawn at a logged iteration advances the sampler generator, so
+    a replay of the training times must follow the same rule.
+    """
+    return iteration <= 100 or iteration % log_every == 0 or iteration == num_iterations
+
+
 # ===========================================================================
 # Training
 # ===========================================================================
@@ -1353,15 +1385,10 @@ def train_variant(
     # series): a FIXED point set, uniform on the cylinder like the training
     # batches, drawn once from its own derived seed.  It is the only thing that
     # selects the retained state; the evaluation parts never select.
-    validation_generator = torch.Generator(device="cpu")
-    validation_generator.manual_seed(validation_seed)
     n_validation = int(hparams["n_validation"])
     validation_every = int(hparams["validation_every"])
-    x_validation = scale_unit_samples_to_space(
-        torch.rand(n_validation, generator=validation_generator), problem
-    )
-    t_validation = problem["terminal_time"] * torch.rand(
-        n_validation, generator=validation_generator
+    x_validation, t_validation = draw_validation_points(
+        problem, hparams, validation_seed=validation_seed
     )
 
     # Soft constraint (pre-registration 2026-10-18): the terminal mismatch is
@@ -1570,7 +1597,7 @@ def train_variant(
 
         # Dense logging over the first 100 iterations (the transient where
         # the network learns to cancel the forcing), then every log_every.
-        if it <= 100 or it % log_every == 0 or it == num_iterations:
+        if is_logged_iteration(it, log_every, num_iterations):
             with torch.no_grad():
                 x_terminal, t_terminal = sample_terminal()
                 u_terminal = model(
@@ -2846,7 +2873,7 @@ def main(argv=None) -> int:
         if args.variant is not None
         else cell_variants
     )
-    log_every = max(1, hparams["num_iterations"] // 50)
+    log_every = logging_interval(hparams["num_iterations"])
 
     summary: dict = {}
     cell_problem = problem
