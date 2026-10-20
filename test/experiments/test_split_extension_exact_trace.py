@@ -114,6 +114,51 @@ def test_reevaluation_recomputes_the_errors_of_a_saved_data_path_model_on_the_ex
     assert abs(result["reevaluated"]["rel_l2"] - recorded["rel_l2"]) <= 1e-4 * recorded["rel_l2"] + 1e-5
 
 
+def test_the_sampler_replay_reproduces_the_training_times(monkeypatch):
+    band_count_diagnostic = importlib.import_module("training_sampler_band_counts")
+    cell_name = "g2_bernoulli_full"
+    variant = catalogue.variant_by_name(cell_name, "split_diffusion")
+    problem = runner.problem_for_variant(runner.build_problem(cell_name), variant)
+    # 103 iterations at logging interval 2: dense logging, then even iterations, then the last one.
+    num_iterations = 103
+    hparams = dict(SMALL_TRAINING, num_iterations=num_iterations)
+    drawn_training_times = []
+    original_make_samplers = runner.make_samplers
+
+    def recording_make_samplers(*args, **kwargs):
+        sample_interior, sample_terminal = original_make_samplers(*args, **kwargs)
+
+        def recording_sample_interior():
+            x, t = sample_interior()
+            drawn_training_times.append(t.detach().clone())
+            return x, t
+        return recording_sample_interior, sample_terminal
+
+    monkeypatch.setattr(runner, "make_samplers", recording_make_samplers)
+    runner.train_variant(variant, problem, hparams, num_iterations=num_iterations, seed=0,
+                         device=torch.device("cpu"), log_every=runner.logging_interval(num_iterations))
+    monkeypatch.setattr(runner, "make_samplers", original_make_samplers)
+    replayed = band_count_diagnostic.replay_training_times(problem, hparams, master_seed=0)
+    np.testing.assert_array_equal(replayed, torch.stack(drawn_training_times).numpy())
+
+
+def test_band_counts_report_the_points_above_the_maximum_band():
+    band_count_diagnostic = importlib.import_module("training_sampler_band_counts")
+    problem = runner.build_problem("g2_bernoulli_exact_trace")
+    variant = catalogue.variant_by_name("g2_bernoulli_exact_trace", "graded_chen_mangasarian")
+    _, field = runner.build_ansatz(variant, runner.problem_for_variant(problem, variant), SMALL_TRAINING,
+                                   model_seed=0)
+    terminal_time = problem["terminal_time"]
+    times = np.array([[terminal_time, terminal_time - 1e-7, 0.5], [0.0, terminal_time - 1e-2, 0.25]],
+                     dtype=np.float32)
+    counts = band_count_diagnostic.band_counts(field, times, terminal_time)
+    bands, capped = field.required_band(terminal_time - times.astype(np.float64)[times < terminal_time])
+    assert counts["points_on_datum_slice"] == 1
+    assert counts["points_above_maximum_band"] == int(np.count_nonzero(capped)) == 1
+    assert counts["first_row_above_maximum_band"]["row"] == 1
+    assert sum(counts["points_per_band"].values()) == bands.size == 5
+
+
 @pytest.mark.parametrize("cell_name", EXACT_TRACE_CELLS)
 def test_error_metrics_accept_the_exact_trace_of_every_hard_variant(cell_name):
     problem = runner.build_problem(cell_name)
