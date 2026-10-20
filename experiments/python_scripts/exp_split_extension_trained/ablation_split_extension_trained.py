@@ -209,6 +209,7 @@ def build_problem(cell_name: str, truncation_wavenumber: int | None = None) -> d
         bandlimited_bernoulli_cosine_coefficients,
         exact_solution_field,
         make_single_component_sine_cell,
+        periodised_bernoulli_values,
     )
 
     cell_conf = catalogue.cell_by_name(cell_name)
@@ -281,8 +282,11 @@ def build_problem(cell_name: str, truncation_wavenumber: int | None = None) -> d
         "datum_kind": cell_conf["datum"],
         # Full-datum cells: the unprojected datum, used by the datum-path
         # variants (problem_for_variant); the spectral objects above use the
-        # reference band.
-        "full_terminal_datum": full_bernoulli_datum_values if full_datum else None,
+        # reference band.  Exact-trace cells use the library closed form, computed
+        # in float64 and rounded to the input dtype, which equals the trace of the
+        # exact-trace fields bit for bit.
+        "full_terminal_datum": (periodised_bernoulli_values if exact_trace else full_bernoulli_datum_values)
+        if full_datum else None,
         # Exact-trace cells: every spectral extension is wrapped by exact_trace_field, and
         # every variant (problem_for_variant) sees the datum g itself.
         "exact_trace_cell_configuration": cell_conf if exact_trace else None,
@@ -2266,6 +2270,11 @@ def reevaluate_saved_run_on_cell(run_directory: Path, device_name: str, evaluati
             run_directory, device_name, f"RE-EVALUATION OF SAVED MODELS ON CELL {evaluation_cell} (no training)"):
         if variant_name not in evaluation_variant_names:
             logger.info("[%s] not a variant of %s: skipped", variant_name, evaluation_cell)
+            continue
+        if catalogue.variant_by_name(evaluation_cell, variant_name)["extension"] not in (None, "transported_datum"):
+            # A spectral field of a full-datum run has the trace g_4096: its model was trained on
+            # another datum and is retrained, not re-evaluated.
+            logger.info("[%s] spectral field trained with a truncated trace: skipped", variant_name)
             continue
         variant_problem = problem_for_variant(evaluation_problem, catalogue.variant_by_name(evaluation_cell, variant_name))
         metrics = compute_error_metrics(model, variant_problem)

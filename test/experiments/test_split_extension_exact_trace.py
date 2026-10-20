@@ -111,3 +111,30 @@ def test_reevaluation_recomputes_the_errors_of_a_saved_data_path_model_on_the_ex
     assert result["recorded"]["rel_l2"] == pytest.approx(recorded["rel_l2"], rel=1e-12)
     # The two references differ by the truncation of the datum, about 2e-6 of its norm.
     assert abs(result["reevaluated"]["rel_l2"] - recorded["rel_l2"]) <= 1e-4 * recorded["rel_l2"] + 1e-5
+
+
+@pytest.mark.parametrize("cell_name", EXACT_TRACE_CELLS)
+def test_error_metrics_accept_the_exact_trace_of_every_hard_variant(cell_name):
+    problem = runner.build_problem(cell_name)
+    for variant in catalogue.variants_for_cell(cell_name):
+        variant_problem = runner.problem_for_variant(problem, variant)
+        model, _ = runner.build_ansatz(variant, variant_problem, SMALL_TRAINING, model_seed=0)
+        metrics = runner.compute_error_metrics(model, variant_problem)   # raises on a trace mismatch
+        assert math.isfinite(metrics["rel_l2"])
+
+
+def test_reevaluation_skips_spectral_fields_trained_with_a_truncated_trace(tmp_path):
+    full_cell, exact_cell = "g2_bernoulli_full", "g2_bernoulli_exact_trace"
+    variant = catalogue.variant_by_name(full_cell, "split_diffusion")
+    full_problem = runner.problem_for_variant(runner.build_problem(full_cell), variant)
+    model, _ = runner.build_ansatz(variant, full_problem, SMALL_TRAINING, model_seed=0)
+    run_directory = tmp_path / "run"
+    (run_directory / "variant_split_diffusion" / "models").mkdir(parents=True)
+    torch.save(model.state_dict(), run_directory / "variant_split_diffusion" / "models" / "model.pt")
+    runner.write_summary(run_directory / "metadata.yaml", {"cell": full_cell, "seed": 0, "hparams": SMALL_TRAINING})
+    runner.write_summary(run_directory / "summary_split_diffusion.yaml",
+                         {"split_diffusion": runner.compute_error_metrics(model, full_problem)})
+    assert runner.main(["--reevaluate-run", str(run_directory), "--reevaluation-cell", exact_cell, "--device", "cpu"]) == 0
+    import yaml
+    with open(run_directory / f"reevaluation_{exact_cell}.yaml") as reevaluation_file:
+        assert yaml.safe_load(reevaluation_file) in ({}, None)

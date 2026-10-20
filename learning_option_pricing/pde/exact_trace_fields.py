@@ -66,13 +66,16 @@ def periodised_bernoulli_values(x):
 
     Its cosine series is :math:`\sum_{k \ge 1} \cos(kx)/(\pi^2 k^2)`; it is continuous with a
     first-derivative discontinuity at :math:`x = 0 \bmod 2\pi`.  Accepts numpy arrays or torch
-    tensors and keeps the dtype.
+    tensors and keeps the dtype; the value is computed in ``float64`` and then rounded to that
+    dtype, so that it equals bit for bit the trace of :class:`ExactTraceAdaptiveBandField`.
     """
     if isinstance(x, torch.Tensor):
-        unit_position = torch.remainder(x, TWO_PI) / TWO_PI
-    else:
-        unit_position = np.mod(np.asarray(x), TWO_PI) / TWO_PI
-    return unit_position * unit_position - unit_position + 1.0 / 6.0
+        unit_position = torch.remainder(x.to(torch.float64), TWO_PI) / TWO_PI
+        return (unit_position * unit_position - unit_position + 1.0 / 6.0).to(x.dtype)
+    array = np.asarray(x)
+    unit_position = np.mod(array.astype(np.float64), TWO_PI) / TWO_PI
+    values = unit_position * unit_position - unit_position + 1.0 / 6.0
+    return values.astype(array.dtype) if np.issubdtype(array.dtype, np.floating) else values
 
 
 class ExactTraceAdaptiveBandField:
