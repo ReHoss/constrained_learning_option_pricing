@@ -209,7 +209,6 @@ def build_problem(cell_name: str, truncation_wavenumber: int | None = None) -> d
         bandlimited_bernoulli_cosine_coefficients,
         exact_solution_field,
         make_single_component_sine_cell,
-        periodised_bernoulli_values,
     )
 
     cell_conf = catalogue.cell_by_name(cell_name)
@@ -282,11 +281,9 @@ def build_problem(cell_name: str, truncation_wavenumber: int | None = None) -> d
         "datum_kind": cell_conf["datum"],
         # Full-datum cells: the unprojected datum, used by the datum-path
         # variants (problem_for_variant); the spectral objects above use the
-        # reference band.  Exact-trace cells use the library closed form, computed
-        # in float64 and rounded to the input dtype, which equals the trace of the
-        # exact-trace fields bit for bit.
-        "full_terminal_datum": (periodised_bernoulli_values if exact_trace else full_bernoulli_datum_values)
-        if full_datum else None,
+        # reference band.  The exact-trace fields evaluate this same callable at
+        # the datum slice, so that every trace equals it bit for bit.
+        "full_terminal_datum": full_bernoulli_datum_values if full_datum else None,
         # Exact-trace cells: every spectral extension is wrapped by exact_trace_field, and
         # every variant (problem_for_variant) sees the datum g itself.
         "exact_trace_cell_configuration": cell_conf if exact_trace else None,
@@ -321,12 +318,13 @@ def exact_trace_field(builder, generator_coefficients: dict, cell_conf: dict, te
     from learning_option_pricing.pde import (
         ExactTraceAdaptiveBandField,
         bandlimited_bernoulli_cosine_coefficients,
-        periodised_bernoulli_values,
     )
 
+    # The datum callable of the full-datum cells, so that the trace of every field equals the
+    # datum of every variant bit for bit (the exact terminal identity of compute_error_metrics).
     return ExactTraceAdaptiveBandField(
         builder, generator_coefficients,
-        datum_values=periodised_bernoulli_values,
+        datum_values=full_bernoulli_datum_values,
         cosine_coefficients_for_band=bandlimited_bernoulli_cosine_coefficients,
         datum_amplitude_constant=1.0 / math.pi**2, datum_amplitude_exponent=2.0,
         terminal_time=terminal_time,

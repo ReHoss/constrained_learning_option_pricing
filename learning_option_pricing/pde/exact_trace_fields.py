@@ -200,6 +200,8 @@ class ExactTraceAdaptiveBandField:
             x_tensor = torch.as_tensor(x)
             t_tensor = t if isinstance(t, torch.Tensor) else torch.as_tensor(t, device=x_tensor.device)
             original_dtype = x_tensor.dtype
+            x_original, _ = torch.broadcast_tensors(x_tensor, t_tensor.to(x_tensor.dtype))
+            x_original_flat = x_original.reshape(-1)
             x64, t64 = torch.broadcast_tensors(x_tensor.to(torch.float64), t_tensor.to(torch.float64, copy=False))
             shape, x_flat, t_flat = x64.shape, x64.reshape(-1), t64.reshape(-1)
             time_since_datum = (self.terminal_time - t_flat).detach().cpu().numpy()
@@ -207,6 +209,7 @@ class ExactTraceAdaptiveBandField:
         else:
             x64, t64 = np.broadcast_arrays(np.asarray(x, dtype=np.float64), np.asarray(t, dtype=np.float64))
             shape, x_flat, t_flat = x64.shape, x64.reshape(-1), t64.reshape(-1)
+            x_original_flat = x_flat
             time_since_datum = self.terminal_time - t_flat
             output = np.empty(x_flat.shape, dtype=np.float64)
         if np.any(time_since_datum < 0.0):
@@ -219,7 +222,8 @@ class ExactTraceAdaptiveBandField:
         if on_datum_slice.size:
             index = select(on_datum_slice)
             if method_name == "field":
-                output[index] = self._datum_values(x_flat[index])
+                # The datum on the input in its own dtype: the trace then equals datum_values(x) bit for bit.
+                output[index] = self._datum_values(x_original_flat[index])
             else:
                 self._report("datum_slice_derivative", on_datum_slice.size,
                              f"[exact-trace {self.extension_kind}] {method_name} at the datum slice s = 0 is not "

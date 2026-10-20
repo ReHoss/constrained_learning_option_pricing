@@ -66,7 +66,7 @@ def test_spectral_fields_are_exact_trace_and_the_model_imposes_g(cell_name):
         x = torch.as_tensor(POINTS, dtype=torch.float32)
         with torch.no_grad():
             trace = model(torch.stack([x, torch.full_like(x, problem["terminal_time"])], dim=1)).squeeze(-1)
-        assert torch.equal(trace, periodised_bernoulli_values(x.double()).float())
+        assert torch.equal(trace, variant_problem["terminal_datum"](x))
 
 
 @pytest.mark.parametrize("cell_name", EXACT_TRACE_CELLS)
