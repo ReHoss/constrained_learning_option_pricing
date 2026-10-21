@@ -42,6 +42,8 @@ Extension kind               Retained operator               :math:`\rho`    :ma
 ``exact_solution``           :math:`A`                       :math:`r_0`     :math:`\mu`     Gaussian, :math:`\sigma = \sqrt{2\nu s}`
 ``graded_gaussian``          :math:`\nu_c\partial_{xx}`      :math:`0`       :math:`0`       Gaussian, :math:`\sigma = \sqrt{2\nu_c s}`
 ``graded_chen_mangasarian``  none                            :math:`0`       :math:`0`       algebraic, :math:`\varepsilon = \varepsilon_0 s / T`
+``square_root_smoothing_sqrt_time``  none                    :math:`0`       :math:`0`       algebraic, :math:`\varepsilon = \varepsilon_0 \sqrt{s/T}`
+``square_root_smoothing_sqrt_time_transported``  :math:`\mu\partial_x + r_0`  :math:`r_0`  :math:`\mu`  algebraic, :math:`\varepsilon = \varepsilon_0 \sqrt{s/T}`
 ===========================  ==============================  ==============  ==============  ===============================================
 
 The Gaussian smoothing is the convolution of :math:`y^+` with the centred normal
@@ -77,7 +79,15 @@ Analytic derivatives.  With :math:`y = x + \beta s`,
 
 where :math:`K_s = \nu_k K_{yy}` for the Gaussian kinds,
 :math:`K_s = (\varepsilon_0 / T) \sum_k w_k\,\partial_\varepsilon q` for the
-algebraic kind and :math:`K_s = 0` for ``transported_datum``.  Hence the forcing
+graded algebraic kind and :math:`K_s = 0` for ``transported_datum``.  For the two
+algebraic kinds with :math:`\varepsilon = \varepsilon_0 \sqrt{s/T}` (the width law of the
+exact-terminal-condition field of Zhang, Guo and Lu, 2026, page 9; the transported kind is
+that field's construction, whose centre :math:`K e^{-r\tau}` is the transported strike),
+:math:`\varepsilon\,\varepsilon' = \varepsilon_0^2/(2T)` and
+:math:`K_s = \tfrac{\varepsilon_0^2}{4T} \sum_k w_k / \sqrt{(y - a_k)^2 + \varepsilon^2}`.  Its
+value at :math:`s = 0` is the almost-everywhere limit
+:math:`\tfrac{\varepsilon_0^2}{4T} \sum_k w_k / |y - a_k|`, infinite at the kinks: the time
+derivative of these fields has no distributional limit at the datum.  Hence the forcing
 :math:`P h` vanishes for ``exact_solution``, equals :math:`r_0 h` for
 ``split_diffusion_advection`` and :math:`\mu\,\partial_x h + r_0 h` for
 ``split_diffusion``, and vanishes away from the lines
@@ -122,6 +132,8 @@ REAL_LINE_BUTTERFLY_FIELD_KINDS = (
     "exact_solution",
     "graded_gaussian",
     "graded_chen_mangasarian",
+    "square_root_smoothing_sqrt_time",
+    "square_root_smoothing_sqrt_time_transported",
 )
 
 # Per kind: (exponential rate source, transport velocity source, smoothing).
@@ -134,7 +146,15 @@ _KIND_STRUCTURE = {
     "exact_solution": ("reaction", "advection", "gaussian"),
     "graded_gaussian": (None, None, "gaussian"),
     "graded_chen_mangasarian": (None, None, "chen_mangasarian"),
+    "square_root_smoothing_sqrt_time": (None, None, "chen_mangasarian_sqrt_time"),
+    "square_root_smoothing_sqrt_time_transported": ("reaction", "advection", "chen_mangasarian_sqrt_time"),
 }
+# The algebraic smoothings, which take an initial smoothing scale eps_0.
+_ALGEBRAIC_SMOOTHING_KINDS = (
+    "graded_chen_mangasarian",
+    "square_root_smoothing_sqrt_time",
+    "square_root_smoothing_sqrt_time_transported",
+)
 
 
 def _midpoint_heaviside(values):
@@ -237,9 +257,9 @@ class RealLineButterflyField:
                 "comparison_diffusivity is mandatory for graded_gaussian and forbidden "
                 f"otherwise; kind {extension_kind!r}, received {comparison_diffusivity!r}"
             )
-        if (initial_smoothing_scale is not None) != (extension_kind == "graded_chen_mangasarian"):
+        if (initial_smoothing_scale is not None) != (extension_kind in _ALGEBRAIC_SMOOTHING_KINDS):
             raise ValueError(
-                "initial_smoothing_scale is mandatory for graded_chen_mangasarian and "
+                f"initial_smoothing_scale is mandatory for {_ALGEBRAIC_SMOOTHING_KINDS} and "
                 f"forbidden otherwise; kind {extension_kind!r}, received {initial_smoothing_scale!r}"
             )
         self.generator_coefficients = coefficients
@@ -267,7 +287,7 @@ class RealLineButterflyField:
                 self.smoothing_diffusivity = comparison_diffusivity
             else:
                 self.smoothing_diffusivity = self.diffusivity
-        elif smoothing == "chen_mangasarian":
+        elif smoothing in ("chen_mangasarian", "chen_mangasarian_sqrt_time"):
             initial_smoothing_scale = float(initial_smoothing_scale)
             if not (math.isfinite(initial_smoothing_scale) and initial_smoothing_scale > 0.0):
                 raise ValueError(
@@ -341,6 +361,25 @@ class RealLineButterflyField:
                     first = first + jump * distribution
                     second = second + jump * density / standard_deviation
                 time_part = self.smoothing_diffusivity * second
+            elif self.smoothing == "chen_mangasarian_sqrt_time":
+                # eps(s) = eps_0 sqrt(s/T); eps eps' = eps_0^2 / (2T), so K_s = (eps_0^2/(4T)) sum_k w_k / R_k,
+                # R_k = sqrt((y - a_k)^2 + eps^2), evaluated with eps = 0 at s = 0 (the a.e. limit, infinite
+                # at the kinks; not replaced by a finite value).
+                scale = self.initial_smoothing_scale * torch.sqrt(s64 / self.terminal_time)
+                safe_scale = torch.where(positive_mask, scale, torch.ones_like(scale))
+                for kink_point, jump in zip(self.datum.kink_points, self.datum.first_derivative_jumps):
+                    offset = y - kink_point
+                    root = torch.sqrt(offset * offset + safe_scale * safe_scale)
+                    profile = profile + jump * 0.5 * (offset + root)
+                    first = first + jump * 0.5 * (1.0 + offset / root)
+                    second = second + jump * 0.5 * safe_scale * safe_scale / (root * root * root)
+                    exact_root = torch.where(positive_mask, root, torch.abs(offset))
+                    time_part = time_part + jump / exact_root
+                time_part = (self.initial_smoothing_scale**2 / (4.0 * self.terminal_time)) * time_part
+                profile = torch.where(terminal_mask, self.datum.values(x64), profile)
+                first = torch.where(terminal_mask, self.datum.first_derivative_values(x64), first)
+                second = torch.where(terminal_mask, torch.zeros_like(second), second)
+                return factor, profile, first, second, time_part, terminal_mask
             else:  # chen_mangasarian
                 scale = self.initial_smoothing_scale * s64 / self.terminal_time
                 scale = torch.where(positive_mask, scale, torch.ones_like(scale))

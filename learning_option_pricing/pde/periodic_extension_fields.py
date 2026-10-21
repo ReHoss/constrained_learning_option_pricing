@@ -109,7 +109,24 @@ EXTENSION_FIELD_KINDS = (
     # Retained operator of orders 1 and 0 (added 2026-10-12, pre-registration
     # 2026-10-12_preregistration_transported_datum_on_the_circle.md).
     "transported_datum",
+    # Square-root smoothings with the width law in sqrt(s) (added 2026-10-21, pre-registration
+    # 2026-10-21_preregistration_square_root_time_smoothing.md).
+    "square_root_smoothing_sqrt_time",
+    "square_root_smoothing_sqrt_time_transported",
 )
+
+# Square-root smoothings: the datum convolved with the kernel eps^2 / (2 (y^2 + eps^2)^{3/2}),
+# whose Fourier multiplier is m(z) = z K_1(z) at z = k eps(s), s = T - t. The value is the exponent
+# q of the width law eps(s) = eps_0 (s / T)^q: q = 1 for the graded kind of the paper, q = 1/2 for
+# the width law of the exact-terminal-condition field of Zhang, Guo and Lu (2026, page 9), whose
+# width sqrt(beta(tau)) is proportional to sqrt(tau) as tau -> 0. The transported kind is in
+# addition centred on the datum transported by the terms of orders 1 and 0, as that field is:
+# its centre K e^{-r tau} is the strike transported by r s d_s - r.
+SQUARE_ROOT_SMOOTHING_TIME_EXPONENTS = {
+    "graded_chen_mangasarian": 1.0,
+    "square_root_smoothing_sqrt_time": 0.5,
+    "square_root_smoothing_sqrt_time_transported": 0.5,
+}
 
 # Orders 0, 1, 2 (stage-2 cells) and 4 (fourth-order cell, added 2026-09-29).
 # Order 3 is excluded: its symbol -i c_3 k^3 is a cubic phase, which the
@@ -364,19 +381,20 @@ class PeriodicExtensionField:
                 f"extension_kind {extension_kind!r}"
             )
 
-        if extension_kind == "graded_chen_mangasarian":
+        if extension_kind in SQUARE_ROOT_SMOOTHING_TIME_EXPONENTS:
             if initial_smoothing_scale is None or not initial_smoothing_scale > 0.0:
                 raise ValueError(
-                    "extension_kind 'graded_chen_mangasarian' requires a strictly "
+                    f"extension_kind {extension_kind!r} requires a strictly "
                     "positive initial_smoothing_scale, received "
                     f"{initial_smoothing_scale!r}"
                 )
         elif initial_smoothing_scale is not None:
             raise ValueError(
-                "initial_smoothing_scale applies to the 'graded_chen_mangasarian' "
-                f"kind only, received {initial_smoothing_scale!r} with "
-                f"extension_kind {extension_kind!r}"
+                "initial_smoothing_scale applies to the square-root smoothing kinds "
+                f"{tuple(SQUARE_ROOT_SMOOTHING_TIME_EXPONENTS)} only, received "
+                f"{initial_smoothing_scale!r} with extension_kind {extension_kind!r}"
             )
+        self.smoothing_time_exponent = SQUARE_ROOT_SMOOTHING_TIME_EXPONENTS.get(extension_kind)
         self.initial_smoothing_scale = (
             float(initial_smoothing_scale)
             if initial_smoothing_scale is not None
@@ -416,11 +434,12 @@ class PeriodicExtensionField:
                 normalised_coefficients[self.principal_order],
                 wavenumbers,
             )
-        elif extension_kind == "transported_datum":
+        elif extension_kind in ("transported_datum", "square_root_smoothing_sqrt_time_transported"):
             # Retained operator A = mu d_x + r_0 (orders 1 and 0): the field is
             # e^{r_0 s} g(x + mu s) with s = T - t, that is a rate -r_0 equal at
             # every wavenumber and the phase velocity mu; the semigroup is
             # dissipative exactly when r_0 <= 0, validated here (never clamped).
+            # The transported square-root smoothing multiplies each component by m(k eps(s)).
             decay_rates = np.full_like(wavenumbers, -self.reaction_coefficient)
             if decay_rates[0] < -DISSIPATIVITY_TOLERANCE:
                 raise ValueError(
@@ -429,9 +448,9 @@ class PeriodicExtensionField:
                 )
         elif extension_kind == "graded_gaussian":
             decay_rates = self.comparison_diffusivity * wavenumbers**2
-        elif extension_kind == "graded_chen_mangasarian":
+        elif extension_kind in ("graded_chen_mangasarian", "square_root_smoothing_sqrt_time"):
             # Not an exponential factor: the multiplier is evaluated in
-            # _component_terms; the decay-rate array is unused for this kind.
+            # _component_terms; the decay-rate array is unused for these kinds.
             decay_rates = np.zeros_like(wavenumbers)
         else:  # exact_solution
             decay_rates = (
@@ -456,6 +475,7 @@ class PeriodicExtensionField:
             "split_principal_advection",
             "exact_solution",
             "transported_datum",
+            "square_root_smoothing_sqrt_time_transported",
         ):
             phase_advection_velocity = self.advection_coefficient
         else:
@@ -530,10 +550,14 @@ class PeriodicExtensionField:
         x_expanded = x64[..., None]
         s_expanded = time_to_terminal[..., None]
         theta = x_expanded * wavenumbers + s_expanded * arrays["phase_advection_rates"]
-        if self.extension_kind == "graded_chen_mangasarian":
-            scaled = (
-                wavenumbers * self.initial_smoothing_scale * s_expanded / self.terminal_time
-            )
+        if self.extension_kind in SQUARE_ROOT_SMOOTHING_TIME_EXPONENTS:
+            if self.smoothing_time_exponent == 1.0:
+                # The arithmetic of the graded kind, unchanged bit for bit.
+                scaled = (
+                    wavenumbers * self.initial_smoothing_scale * s_expanded / self.terminal_time
+                )
+            else:
+                scaled = wavenumbers * self._smoothing_scale(s_expanded)
             if is_torch:
                 decay_factors = _chen_mangasarian_multiplier_torch(scaled)
                 cos_theta = torch.cos(theta)
@@ -546,6 +570,9 @@ class PeriodicExtensionField:
                 decay_factors = chen_mangasarian_multiplier(scaled)
                 cos_theta = np.cos(theta)
                 sin_theta = np.sin(theta)
+            if self.extension_kind == "square_root_smoothing_sqrt_time_transported":
+                exponential = torch.exp if is_torch else np.exp
+                decay_factors = decay_factors * exponential(-s_expanded * arrays["decay_rates"])
             return (
                 decay_factors,
                 cos_theta,
@@ -573,6 +600,16 @@ class PeriodicExtensionField:
             x64.shape,
         )
 
+    def _smoothing_scale(self, time_to_terminal):
+        r"""Width :math:`\varepsilon(s) = \varepsilon_0 (s/T)^q` of a square-root smoothing.
+
+        The linear law keeps the arithmetic ``eps_0 * s / T`` of the graded kind unchanged.
+        """
+        if self.smoothing_time_exponent == 1.0:
+            return self.initial_smoothing_scale * time_to_terminal / self.terminal_time
+        square_root = torch.sqrt if isinstance(time_to_terminal, torch.Tensor) else np.sqrt
+        return self.initial_smoothing_scale * square_root(time_to_terminal / self.terminal_time)
+
     @staticmethod
     def _cast_back(values, is_torch, original_dtype):
         """Cast a ``float64`` result to the caller's dtype (torch path only)."""
@@ -597,6 +634,8 @@ class PeriodicExtensionField:
         r"""Analytic time derivative :math:`\partial_t h(x, t)`."""
         if self.extension_kind == "graded_chen_mangasarian":
             return self._chen_mangasarian_time_derivative(x, t)
+        if self.extension_kind in SQUARE_ROOT_SMOOTHING_TIME_EXPONENTS:
+            return self._square_root_time_smoothing_time_derivative(x, t)
         decay, cos_theta, sin_theta, arrays, is_torch, dtype, _ = (
             self._component_terms(x, t)
         )
@@ -641,6 +680,49 @@ class PeriodicExtensionField:
             + arrays["sine_amplitudes"] * sin_theta
         )
         return self._cast_back(component_values.sum(-1), is_torch, original_dtype)
+
+    def _square_root_time_smoothing_time_derivative(self, x, t):
+        r"""Time derivative of a square-root smoothing with the width law
+        :math:`\varepsilon(s) = \varepsilon_0 \sqrt{s/T}`, :math:`s = T - t`.
+
+        For the component of wavenumber :math:`k`, :math:`z = k\,\varepsilon(s)`, and the product
+        :math:`\varepsilon(s)\,\varepsilon'(s)` equals :math:`\varepsilon_0^2/(2T)` at every
+        :math:`s > 0`, so :math:`\tfrac{\mathrm d}{\mathrm ds} m(z) = m'(z)\,k\,\varepsilon'(s)
+        = -k^2\,\tfrac{\varepsilon_0^2}{2T}\,K_0(z)`.  With the factor :math:`e^{-s d_k}` and the phase
+        :math:`s\,p_k` of the transported kind (:math:`d_k = p_k = 0` otherwise), and
+        :math:`\partial_t = -\partial_s`,
+
+        .. math::
+
+            \partial_t h = \sum_k e^{-s d_k}\Bigl[k^2 \tfrac{\varepsilon_0^2}{2T} K_0(z)
+            (a_k\cos\theta_k + b_k\sin\theta_k)
+            + m(z)\bigl(d_k (a_k\cos\theta_k + b_k\sin\theta_k)
+            + p_k (a_k\sin\theta_k - b_k\cos\theta_k)\bigr)\Bigr].
+
+        At :math:`s = 0`, :math:`K_0(0) = +\infty`: the series has no finite value at the datum
+        slice (the logarithmic divergence of the parabolic grading), and the evaluation there
+        returns a non-finite value; it is not replaced by a finite one.
+        """
+        decay, cos_theta, sin_theta, arrays, is_torch, dtype, _ = self._component_terms(x, t)
+        x64, time_to_terminal, _, _ = self._broadcast_float64(x, t)
+        wavenumbers = arrays["wavenumbers"]
+        scaled = wavenumbers * self._smoothing_scale(time_to_terminal[..., None])
+        if is_torch:
+            bessel_zero = torch.special.modified_bessel_k0(scaled)
+            exponential_factor = torch.exp(-time_to_terminal[..., None] * arrays["decay_rates"])
+        else:
+            from scipy.special import k0
+
+            bessel_zero = k0(scaled)
+            exponential_factor = np.exp(-time_to_terminal[..., None] * arrays["decay_rates"])
+        cosine_part = arrays["cosine_amplitudes"] * cos_theta + arrays["sine_amplitudes"] * sin_theta
+        sine_part = arrays["cosine_amplitudes"] * sin_theta - arrays["sine_amplitudes"] * cos_theta
+        smoothing_rate = wavenumbers**2 * (self.initial_smoothing_scale**2 / (2.0 * self.terminal_time))
+        component_values = (
+            exponential_factor * smoothing_rate * bessel_zero * cosine_part
+            + decay * (arrays["decay_rates"] * cosine_part + arrays["phase_advection_rates"] * sine_part)
+        )
+        return self._cast_back(component_values.sum(-1), is_torch, dtype)
 
     def space_derivative(self, x, t):
         r"""Analytic space derivative :math:`\partial_x h(x, t)`."""
@@ -978,6 +1060,50 @@ def build_graded_chen_mangasarian_extension_field(
     )
 
 
+def _build_square_root_time_smoothing_field(
+    extension_kind: str,
+    generator_coefficients: dict[int, float],
+    cosine_coefficients,
+    *,
+    sine_coefficients=None,
+    comparison_diffusivity: float | None = None,
+    initial_smoothing_scale: float | None = None,
+    terminal_time: float = 1.0,
+) -> PeriodicExtensionField:
+    if comparison_diffusivity is not None:
+        raise ValueError(
+            "comparison_diffusivity applies to the graded Gaussian extension "
+            f"only, received {comparison_diffusivity!r}"
+        )
+    return PeriodicExtensionField(
+        generator_coefficients,
+        cosine_coefficients,
+        extension_kind=extension_kind,
+        sine_coefficients=sine_coefficients,
+        initial_smoothing_scale=initial_smoothing_scale,
+        terminal_time=terminal_time,
+    )
+
+
+def build_square_root_smoothing_sqrt_time_extension_field(generator_coefficients, cosine_coefficients, **keywords):
+    r"""Square-root smoothing of the datum with the width law
+    :math:`\varepsilon(s) = \varepsilon_0 \sqrt{s/T}`, :math:`s = T - t` (the width law of the
+    exact-terminal-condition field of Zhang, Guo and Lu, 2026, page 9), without transport."""
+    return _build_square_root_time_smoothing_field(
+        "square_root_smoothing_sqrt_time", generator_coefficients, cosine_coefficients, **keywords)
+
+
+def build_square_root_smoothing_sqrt_time_transported_extension_field(
+        generator_coefficients, cosine_coefficients, **keywords):
+    r"""Square-root smoothing, width :math:`\varepsilon_0 \sqrt{s/T}`, of the datum transported by
+    the terms of orders 1 and 0: :math:`\hat h_k = m(k\,\varepsilon(s))\,e^{s(r_0 + i\mu k)}\hat g_k`.
+    This is the construction of the exact-terminal-condition field of Zhang, Guo and Lu (2026,
+    page 9), whose centre :math:`K e^{-r\tau}` is the strike transported by
+    :math:`r s\,\partial_s - r`."""
+    return _build_square_root_time_smoothing_field(
+        "square_root_smoothing_sqrt_time_transported", generator_coefficients, cosine_coefficients, **keywords)
+
+
 def exact_solution_field(
     generator_coefficients: dict[int, float],
     cosine_coefficients,
@@ -1015,6 +1141,8 @@ EXTENSION_FIELD_REGISTRY = {
     "split_principal": build_split_principal_extension_field,
     "split_principal_advection": build_split_principal_advection_extension_field,
     "transported_datum": build_transported_datum_extension_field,
+    "square_root_smoothing_sqrt_time": build_square_root_smoothing_sqrt_time_extension_field,
+    "square_root_smoothing_sqrt_time_transported": build_square_root_smoothing_sqrt_time_transported_extension_field,
 }
 
 

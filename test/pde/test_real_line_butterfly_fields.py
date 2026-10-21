@@ -42,7 +42,8 @@ def build_field(kind: str) -> RealLineButterflyField:
     extra_arguments = {}
     if kind == "graded_gaussian":
         extra_arguments["comparison_diffusivity"] = 0.5 * DIFFUSIVITY
-    if kind == "graded_chen_mangasarian":
+    if kind in ("graded_chen_mangasarian", "square_root_smoothing_sqrt_time",
+                "square_root_smoothing_sqrt_time_transported"):
         extra_arguments["initial_smoothing_scale"] = math.sqrt(2.0 * DIFFUSIVITY * TERMINAL_TIME)
     return RealLineButterflyField(
         GENERATOR_COEFFICIENTS, DATUM, extension_kind=kind, terminal_time=TERMINAL_TIME, **extra_arguments

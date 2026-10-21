@@ -14,7 +14,11 @@ different initial condition.  This module evaluates the field so that its trace 
   from the rates), and :math:`K(s)` is the smallest power of two, not below the base band,
   with :math:`s\,(c K^{r} - b) \ge Z`.  The omitted components then carry a factor at most
   :math:`e^{-Z}`, and with :math:`|a_k| \le A k^{-q}`, :math:`q > 1`, the omitted part of the
-  field is at most :math:`A\, e^{-Z} K^{1-q} / (q - 1)`.
+  field is at most :math:`A\, e^{-Z} K^{1-q} / (q - 1)`.  For the square-root smoothings the
+  components carry the multiplier :math:`m(z) = z K_1(z)` at :math:`z = k\,\varepsilon_0 (s/T)^{q_t}`
+  (:math:`q_t = 1` graded, :math:`q_t = 1/2` square-root time), the criterion reads
+  :math:`s^{q_t} c K \ge Z` with :math:`c = \varepsilon_0 / T^{q_t}`, and the bound uses
+  :math:`m(s^{q_t} c K)` in place of :math:`e^{-Z}`.
 
 Above the maximum band the field is evaluated on the maximum band; this truncation is reported
 (WARNING on first occurrence, DEBUG afterwards), with the number of points, the smallest
@@ -45,6 +49,16 @@ SUPPORTED_EXTENSION_KINDS = (
     "split_principal_advection",
     "exact_solution",
     "graded_chen_mangasarian",
+    "square_root_smoothing_sqrt_time",
+    "square_root_smoothing_sqrt_time_transported",
+)
+# Square-root smoothings: the component of wavenumber k carries the multiplier m(z) = z K_1(z) at
+# z = k eps(s), eps(s) = eps_0 (s/T)^q (q = 1 graded, q = 1/2 for the square-root-time kinds).
+# The multiplier decreases from 1 to 0, so the omitted components are bounded with m itself.
+SQUARE_ROOT_SMOOTHING_KINDS = (
+    "graded_chen_mangasarian",
+    "square_root_smoothing_sqrt_time",
+    "square_root_smoothing_sqrt_time_transported",
 )
 DEFAULT_TAIL_EXPONENT = 40.0
 # Points times components evaluated per call of a band field: 2^24 float64 entries per
@@ -141,14 +155,21 @@ class ExactTraceAdaptiveBandField:
             raise ValueError(
                 f"extension kind {self.extension_kind!r} has no exponential decay of its components; "
                 f"supported kinds: {SUPPORTED_EXTENSION_KINDS}")
+        # Exponent q of the decay law s^q (c k^r - b): q = 1 for the semigroups, and the width-law
+        # exponent for the square-root smoothings.
+        self.decay_time_exponent = 1.0
         if self.extension_kind in ("split_diffusion", "split_diffusion_advection"):
             self.decay_order, self.decay_coefficient = 2, float(self.base_field.diffusivity)
-        elif self.extension_kind == "graded_chen_mangasarian":
-            # Convolution of the datum with the square-root kernel of width eps(s) = eps_0 s / T:
-            # the multiplier z K_1(z), z = k eps(s), is at most sqrt(pi z / 2) e^{-z} (1 + 3/(8z)) for
-            # z >= 1, so its components decay like e^{-s c k} with c = eps_0 / T (order one).
+        elif self.extension_kind in SQUARE_ROOT_SMOOTHING_KINDS:
+            # Convolution of the datum with the square-root kernel of width eps(s) = eps_0 (s/T)^q:
+            # the multiplier z K_1(z), z = k eps(s) = s^q (eps_0 / T^q) k, is at most
+            # sqrt(pi z / 2) e^{-z} (1 + 3/(8z)) for z >= 1, so its components decay like
+            # e^{-s^q c k} with c = eps_0 / T^q (order one). The transported kind has the further
+            # factor e^{s r_0} <= 1 (r_0 <= 0, validated by the field).
             self.decay_order = 1
-            self.decay_coefficient = float(self.base_field.initial_smoothing_scale) / self.terminal_time
+            self.decay_time_exponent = float(self.base_field.smoothing_time_exponent)
+            self.decay_coefficient = (float(self.base_field.initial_smoothing_scale)
+                                      / self.terminal_time ** self.decay_time_exponent)
         else:
             self.decay_order = int(self.base_field.principal_order)
             self.decay_coefficient = abs(float(self.base_field.generator_coefficients[self.decay_order]))
@@ -161,8 +182,8 @@ class ExactTraceAdaptiveBandField:
 
     def _decay_rate_offset(self, field) -> float:
         """Smallest b >= 0 with decay_rate_k >= c k^r - b on the band of ``field``."""
-        if field.extension_kind == "graded_chen_mangasarian":
-            return 0.0   # no exponential rates: the multiplier bound above applies with b = 0
+        if field.extension_kind in SQUARE_ROOT_SMOOTHING_KINDS:
+            return 0.0   # the multiplier bound applies with b = 0 (the transported factor is at most 1)
         arrays = field._numpy_coefficient_arrays
         lower_bound = self.decay_coefficient * arrays["wavenumbers"] ** self.decay_order
         return float(max(0.0, np.max(lower_bound - arrays["decay_rates"])))
@@ -182,15 +203,32 @@ class ExactTraceAdaptiveBandField:
         time_since_datum = np.asarray(time_since_datum, dtype=np.float64)
         if np.any(time_since_datum <= 0.0):
             raise ValueError("required_band applies to positive times since the datum")
+        # s^q, with the semigroup arithmetic s itself unchanged for q = 1.
+        decay_time = (time_since_datum if self.decay_time_exponent == 1.0
+                      else time_since_datum ** self.decay_time_exponent)
         needed = ((self.tail_exponent + self.decay_rate_offset * time_since_datum)
-                  / (self.decay_coefficient * time_since_datum)) ** (1.0 / self.decay_order)
+                  / (self.decay_coefficient * decay_time)) ** (1.0 / self.decay_order)
         exponents = np.ceil(np.log2(np.maximum(needed, 1.0)))
         bands = np.where(needed <= self.base_band, float(self.base_band), 2.0 ** exponents)
         capped = bands > self.maximum_band
         return np.minimum(bands, float(self.maximum_band)).astype(np.int64), capped
 
     def omitted_part_bound(self, time_since_datum: float, band: int) -> float:
-        r"""Bound of the omitted part of the field, :math:`A e^{-s(cK^r - b)} K^{1-q}/(q-1)`."""
+        r"""Bound of the omitted part of the field, :math:`A\,\phi\,K^{1-q}/(q-1)`.
+
+        For the semigroups, :math:`\phi = e^{-s(cK^r - b)}`.  For the square-root smoothings,
+        :math:`\phi = m(c\,s^{q_t} K)` with the multiplier :math:`m(z) = z K_1(z)` itself, which
+        decreases from 1, so that it bounds every omitted component; the factor
+        :math:`e^{-z}` alone would understate it by up to :math:`\sqrt{\pi z/2}\,(1 + 3/(8z))`
+        (corrected 2026-10-21, before which the warnings of the graded kind used :math:`e^{-z}`).
+        """
+        if self.extension_kind in SQUARE_ROOT_SMOOTHING_KINDS:
+            from learning_option_pricing.pde.terminal_data_extensions import chen_mangasarian_multiplier
+
+            scaled = self.decay_coefficient * time_since_datum ** self.decay_time_exponent * band
+            factor = float(chen_mangasarian_multiplier(scaled))
+            return (self.datum_amplitude_constant * factor * band ** (1.0 - self.datum_amplitude_exponent)
+                    / (self.datum_amplitude_exponent - 1.0))
         exponent = time_since_datum * (self.decay_coefficient * band**self.decay_order - self.decay_rate_offset)
         return (self.datum_amplitude_constant * math.exp(-exponent) * band ** (1.0 - self.datum_amplitude_exponent)
                 / (self.datum_amplitude_exponent - 1.0))

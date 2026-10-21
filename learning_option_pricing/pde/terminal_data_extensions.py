@@ -582,6 +582,127 @@ class GradedChenMangasarianExtension(TerminalDataExtension):
         return integrals.reshape(wavenumber_array.shape)
 
 
+class SquareRootTimeSmoothingExtension(TerminalDataExtension):
+    r"""Square-root smoothing with the width law :math:`\varepsilon(t) = \varepsilon_0\sqrt{(T-t)/T}`.
+
+    The datum, optionally transported by a subset :math:`S` of the generator orders (the orders 1
+    and 0 for the construction of the exact-terminal-condition field of Zhang, Guo and Lu, 2026,
+    page 9), is convolved with the kernel of :class:`GradedChenMangasarianExtension`:
+
+    .. math::
+
+        \hat h(k, t) = m\bigl(|k|\,\varepsilon(t)\bigr)\, e^{(T-t)\, a_S(k)}\, c_k,
+        \qquad m(z) = z K_1(z).
+
+    With :math:`s = T - t`, :math:`\varepsilon\,\varepsilon' = \varepsilon_0^2/(2T)` at every
+    :math:`s > 0`, so :math:`\tfrac{\mathrm d}{\mathrm ds} m(|k|\varepsilon) = -k^2
+    \tfrac{\varepsilon_0^2}{2T} K_0(|k|\varepsilon)` and
+
+    .. math::
+
+        \partial_t \hat h(k, t) = \Bigl[k^2 \tfrac{\varepsilon_0^2}{2T} K_0(z)
+        - m(z)\, a_S(k)\Bigr] e^{(T-t)\,a_S(k)}\, c_k ,\qquad z = |k|\,\varepsilon(t),
+
+    which diverges logarithmically at the slice :math:`t = T` (the reason the paper's graded kind
+    uses the linear law). It is square-integrable in time: in the variable :math:`z`,
+    :math:`\mathrm dt = 2T z\,\mathrm dz/(k^2\varepsilon_0^2)`, whose factor :math:`z` makes
+    :math:`K_0(z)^2` integrable at :math:`z = 0`. The squared-forcing time integral is evaluated by
+    Gauss--Legendre quadrature in :math:`z`, on the panels of
+    :class:`GradedChenMangasarianExtension`.
+
+    Args:
+        datum: Terminal datum exposing ``fourier_coefficients``.
+        generator: The constant-coefficient generator.
+        initial_smoothing_scale: The scale :math:`\varepsilon_0 > 0` at :math:`t = 0`.
+        terminal_time: The horizon ``T > 0``.
+        transported_orders: The subset :math:`S` of the transport, empty for none.
+
+    Raises:
+        ValueError: If ``initial_smoothing_scale`` is not strictly positive.
+    """
+
+    SCALED_PANEL_BREAKPOINTS = GradedChenMangasarianExtension.SCALED_PANEL_BREAKPOINTS
+    GAUSS_LEGENDRE_NODES_PER_PANEL = GradedChenMangasarianExtension.GAUSS_LEGENDRE_NODES_PER_PANEL
+
+    def __init__(self, datum, generator: ConstantCoefficientGenerator, initial_smoothing_scale: float,
+                 terminal_time: float = 1.0, transported_orders=()) -> None:
+        super().__init__(datum, generator, terminal_time)
+        if not initial_smoothing_scale > 0.0:
+            raise ValueError(f"initial_smoothing_scale must be strictly positive, received {initial_smoothing_scale!r}")
+        self.initial_smoothing_scale = float(initial_smoothing_scale)
+        self.transported_orders = tuple(transported_orders)
+        self.generator_split = generator.split(self.transported_orders) if self.transported_orders else None
+
+    def _transport_symbol(self, wavenumbers) -> np.ndarray:
+        if self.generator_split is None:
+            return np.zeros(np.shape(np.asarray(wavenumbers)), dtype=np.float64)
+        return self.generator_split.subset_symbol(wavenumbers)
+
+    def smoothing_scale_at(self, time) -> np.ndarray:
+        r"""Width :math:`\varepsilon(t) = \varepsilon_0 \sqrt{(T - t)/T}`."""
+        time_array = np.asarray(time, dtype=np.float64)
+        return self.initial_smoothing_scale * np.sqrt((self.terminal_time - time_array) / self.terminal_time)
+
+    def extension_coefficient(self, wavenumbers, time) -> np.ndarray:
+        wavenumber_array = np.abs(np.asarray(wavenumbers, dtype=np.float64))
+        time_array = np.asarray(time, dtype=np.float64)
+        scaled = wavenumber_array * self.smoothing_scale_at(time_array)
+        transport = np.exp((self.terminal_time - time_array) * self._transport_symbol(wavenumbers))
+        return chen_mangasarian_multiplier(scaled) * transport * self.datum.fourier_coefficients(wavenumbers)
+
+    def extension_coefficient_time_derivative(self, wavenumbers, time) -> np.ndarray:
+        from scipy.special import k0
+
+        wavenumber_array = np.abs(np.asarray(wavenumbers, dtype=np.float64))
+        time_array = np.asarray(time, dtype=np.float64)
+        scaled = wavenumber_array * self.smoothing_scale_at(time_array)
+        transport_symbol = self._transport_symbol(wavenumbers)
+        transport = np.exp((self.terminal_time - time_array) * transport_symbol)
+        smoothing_rate = wavenumber_array**2 * self.initial_smoothing_scale**2 / (2.0 * self.terminal_time)
+        # The zero mode has no smoothing term (k = 0); at the slice (z = 0, k != 0) the term is +inf.
+        with np.errstate(invalid="ignore"):
+            smoothing_term = np.where(wavenumber_array > 0.0, smoothing_rate * k0(scaled), 0.0)
+        return ((smoothing_term - chen_mangasarian_multiplier(scaled) * transport_symbol)
+                * transport * self.datum.fourier_coefficients(wavenumbers))
+
+    def squared_forcing_time_integral(self, wavenumbers) -> np.ndarray:
+        r"""Per-wavenumber :math:`\int_0^T |\widehat{Lh}(k, t)|^2\, dt` by Gauss--Legendre quadrature in
+        :math:`z = |k|\,\varepsilon_0\sqrt{(T-t)/T}`, with :math:`T - t = T z^2/(k^2\varepsilon_0^2)` and
+        :math:`\mathrm dt = 2T z\,\mathrm dz/(k^2\varepsilon_0^2)`. For :math:`k = 0` the forcing is
+        that of the transported constant, a closed form in time evaluated by the same quadrature in
+        :math:`t`."""
+        wavenumber_array = np.asarray(wavenumbers, dtype=np.float64)
+        flat_wavenumbers = wavenumber_array.ravel()
+        nodes, weights = np.polynomial.legendre.leggauss(self.GAUSS_LEGENDRE_NODES_PER_PANEL)
+        scaled_upper_limits = np.abs(flat_wavenumbers) * self.initial_smoothing_scale
+        integrals = np.zeros(flat_wavenumbers.shape, dtype=np.float64)
+        nonzero = scaled_upper_limits > 0.0
+        if np.any(~nonzero):
+            times = 0.5 * self.terminal_time * (nodes[:, None] + 1.0)
+            forcing = self.forcing_coefficient(flat_wavenumbers[None, ~nonzero], times)
+            integrals[~nonzero] = 0.5 * self.terminal_time * np.sum(weights[:, None] * np.abs(forcing) ** 2, axis=0)
+        if np.any(nonzero):
+            positive_wavenumbers = flat_wavenumbers[nonzero]
+            upper = scaled_upper_limits[nonzero]
+            accumulated = np.zeros(positive_wavenumbers.shape, dtype=np.float64)
+            breakpoints = self.SCALED_PANEL_BREAKPOINTS
+            for panel_start, panel_stop in zip(breakpoints[:-1], breakpoints[1:]):
+                lower_limit = np.minimum(panel_start, upper)
+                upper_limit = np.minimum(panel_stop, upper)
+                half_widths = 0.5 * (upper_limit - lower_limit)
+                active = half_widths > 0.0
+                if not np.any(active):
+                    break
+                scaled_nodes = lower_limit[None, active] + half_widths[None, active] * (nodes[:, None] + 1.0)
+                times = self.terminal_time * (1.0 - (scaled_nodes / upper[None, active]) ** 2)
+                forcing = self.forcing_coefficient(positive_wavenumbers[None, active], times)
+                jacobian = 2.0 * self.terminal_time * scaled_nodes / upper[None, active] ** 2
+                accumulated[active] += half_widths[active] * np.sum(
+                    weights[:, None] * jacobian * np.abs(forcing) ** 2, axis=0)
+            integrals[nonzero] = accumulated
+        return integrals.reshape(wavenumber_array.shape)
+
+
 class ExactSolutionExtension(TerminalDataExtension):
     r"""Exact solution :math:`\hat h(k, t) = e^{(T-t)\, a(k)}\, c_k` of the evolution.
 

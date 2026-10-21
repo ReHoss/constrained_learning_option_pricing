@@ -47,6 +47,7 @@ from learning_option_pricing.pde import (
     symmetric_wavenumber_band,
     total_strip_forcing_squared,
 )
+from learning_option_pricing.pde.periodic_extension_fields import SQUARE_ROOT_SMOOTHING_TIME_EXPONENTS
 
 TWO_PI = 2.0 * math.pi
 TERMINAL_TIME = 1.0
@@ -75,7 +76,7 @@ def _build_field(extension_kind, generator_coefficients, truncation_wavenumber):
     )
     initial_smoothing_scale = (
         TEST_INITIAL_SMOOTHING_SCALE
-        if extension_kind == "graded_chen_mangasarian"
+        if extension_kind in SQUARE_ROOT_SMOOTHING_TIME_EXPONENTS
         else None
     )
     return PeriodicExtensionField(
@@ -319,7 +320,7 @@ def test_registry_keys_and_builders():
     for schema_key, builder in EXTENSION_FIELD_REGISTRY.items():
         extra_arguments = (
             {"initial_smoothing_scale": TEST_INITIAL_SMOOTHING_SCALE}
-            if schema_key == "graded_chen_mangasarian"
+            if schema_key in SQUARE_ROOT_SMOOTHING_TIME_EXPONENTS
             else {}
         )
         built = builder(
