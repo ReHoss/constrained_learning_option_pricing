@@ -643,21 +643,24 @@ class SquareRootTimeSmoothingExtension(TerminalDataExtension):
         time_array = np.asarray(time, dtype=np.float64)
         return self.initial_smoothing_scale * np.sqrt((self.terminal_time - time_array) / self.terminal_time)
 
-    def extension_coefficient(self, wavenumbers, time) -> np.ndarray:
+    # The coefficients are computed from the time since the datum s = T - t, so that a small s keeps
+    # its relative precision (the quadrature uses s = T (z / z_max)^2, below the resolution of t).
+
+    def _coefficient_since_datum(self, wavenumbers, time_since_datum) -> np.ndarray:
         wavenumber_array = np.abs(np.asarray(wavenumbers, dtype=np.float64))
-        time_array = np.asarray(time, dtype=np.float64)
-        scaled = wavenumber_array * self.smoothing_scale_at(time_array)
-        transport = np.exp((self.terminal_time - time_array) * self._transport_symbol(wavenumbers))
+        time_since_datum = np.asarray(time_since_datum, dtype=np.float64)
+        scaled = wavenumber_array * self.initial_smoothing_scale * np.sqrt(time_since_datum / self.terminal_time)
+        transport = np.exp(time_since_datum * self._transport_symbol(wavenumbers))
         return chen_mangasarian_multiplier(scaled) * transport * self.datum.fourier_coefficients(wavenumbers)
 
-    def extension_coefficient_time_derivative(self, wavenumbers, time) -> np.ndarray:
+    def _time_derivative_since_datum(self, wavenumbers, time_since_datum) -> np.ndarray:
         from scipy.special import k0
 
         wavenumber_array = np.abs(np.asarray(wavenumbers, dtype=np.float64))
-        time_array = np.asarray(time, dtype=np.float64)
-        scaled = wavenumber_array * self.smoothing_scale_at(time_array)
+        time_since_datum = np.asarray(time_since_datum, dtype=np.float64)
+        scaled = wavenumber_array * self.initial_smoothing_scale * np.sqrt(time_since_datum / self.terminal_time)
         transport_symbol = self._transport_symbol(wavenumbers)
-        transport = np.exp((self.terminal_time - time_array) * transport_symbol)
+        transport = np.exp(time_since_datum * transport_symbol)
         smoothing_rate = wavenumber_array**2 * self.initial_smoothing_scale**2 / (2.0 * self.terminal_time)
         # The zero mode has no smoothing term (k = 0); at the slice (z = 0, k != 0) the term is +inf.
         with np.errstate(invalid="ignore"):
@@ -665,12 +668,23 @@ class SquareRootTimeSmoothingExtension(TerminalDataExtension):
         return ((smoothing_term - chen_mangasarian_multiplier(scaled) * transport_symbol)
                 * transport * self.datum.fourier_coefficients(wavenumbers))
 
+    def _forcing_since_datum(self, wavenumbers, time_since_datum) -> np.ndarray:
+        return (self._time_derivative_since_datum(wavenumbers, time_since_datum)
+                + self.generator.symbol(wavenumbers) * self._coefficient_since_datum(wavenumbers, time_since_datum))
+
+    def extension_coefficient(self, wavenumbers, time) -> np.ndarray:
+        return self._coefficient_since_datum(wavenumbers, self.terminal_time - np.asarray(time, dtype=np.float64))
+
+    def extension_coefficient_time_derivative(self, wavenumbers, time) -> np.ndarray:
+        return self._time_derivative_since_datum(
+            wavenumbers, self.terminal_time - np.asarray(time, dtype=np.float64))
+
     def squared_forcing_time_integral(self, wavenumbers) -> np.ndarray:
         r"""Per-wavenumber :math:`\int_0^T |\widehat{Lh}(k, t)|^2\, dt` by Gauss--Legendre quadrature in
-        :math:`z = |k|\,\varepsilon_0\sqrt{(T-t)/T}`, with :math:`T - t = T z^2/(k^2\varepsilon_0^2)` and
-        :math:`\mathrm dt = 2T z\,\mathrm dz/(k^2\varepsilon_0^2)`. For :math:`k = 0` the forcing is
-        that of the transported constant, a closed form in time evaluated by the same quadrature in
-        :math:`t`."""
+        :math:`z = |k|\,\varepsilon_0\sqrt{s/T}`, :math:`s = T - t`, with :math:`s = T z^2/(k^2\varepsilon_0^2)` and
+        :math:`\mathrm ds = 2T z\,\mathrm dz/(k^2\varepsilon_0^2)`; the coefficients are evaluated at :math:`s`
+        directly. For :math:`k = 0` the forcing is that of the transported constant, integrated by
+        Gauss--Legendre quadrature in :math:`s`."""
         wavenumber_array = np.asarray(wavenumbers, dtype=np.float64)
         flat_wavenumbers = wavenumber_array.ravel()
         nodes, weights = np.polynomial.legendre.leggauss(self.GAUSS_LEGENDRE_NODES_PER_PANEL)
@@ -678,8 +692,8 @@ class SquareRootTimeSmoothingExtension(TerminalDataExtension):
         integrals = np.zeros(flat_wavenumbers.shape, dtype=np.float64)
         nonzero = scaled_upper_limits > 0.0
         if np.any(~nonzero):
-            times = 0.5 * self.terminal_time * (nodes[:, None] + 1.0)
-            forcing = self.forcing_coefficient(flat_wavenumbers[None, ~nonzero], times)
+            times_since_datum = 0.5 * self.terminal_time * (nodes[:, None] + 1.0)
+            forcing = self._forcing_since_datum(flat_wavenumbers[None, ~nonzero], times_since_datum)
             integrals[~nonzero] = 0.5 * self.terminal_time * np.sum(weights[:, None] * np.abs(forcing) ** 2, axis=0)
         if np.any(nonzero):
             positive_wavenumbers = flat_wavenumbers[nonzero]
@@ -694,8 +708,8 @@ class SquareRootTimeSmoothingExtension(TerminalDataExtension):
                 if not np.any(active):
                     break
                 scaled_nodes = lower_limit[None, active] + half_widths[None, active] * (nodes[:, None] + 1.0)
-                times = self.terminal_time * (1.0 - (scaled_nodes / upper[None, active]) ** 2)
-                forcing = self.forcing_coefficient(positive_wavenumbers[None, active], times)
+                times_since_datum = self.terminal_time * (scaled_nodes / upper[None, active]) ** 2
+                forcing = self._forcing_since_datum(positive_wavenumbers[None, active], times_since_datum)
                 jacobian = 2.0 * self.terminal_time * scaled_nodes / upper[None, active] ** 2
                 accumulated[active] += half_widths[active] * np.sum(
                     weights[:, None] * jacobian * np.abs(forcing) ** 2, axis=0)

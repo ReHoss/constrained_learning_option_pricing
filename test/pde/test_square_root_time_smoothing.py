@@ -119,6 +119,19 @@ def test_closed_form_counterpart_coincides_with_the_field(kind, coefficients):
         assert abs(closed_form - brute_force) <= 1e-6 * brute_force
 
 
+@pytest.mark.parametrize("coefficients", [ORDER_TWO, ORDER_FOUR])
+@pytest.mark.parametrize("transported_orders", [(), (0, 1)])
+def test_squared_forcing_time_integral_is_finite_up_to_large_wavenumbers(coefficients, transported_orders):
+    """The quadrature evaluates the coefficients at s = T (z / z_max)^2 directly: through t = T - s,
+    s ~ 1e-19 T collapses to 0 at |k| eps_0 ~ 2048, where K_0(0) = +inf (smoke test of 2026-10-21)."""
+    counterpart = SquareRootTimeSmoothingExtension(
+        PeriodisedBernoulliDatum(1), ConstantCoefficientGenerator(coefficients=coefficients, name="test"),
+        SMOOTHING_SCALE, TERMINAL_TIME, transported_orders=transported_orders)
+    integrals = counterpart.squared_forcing_time_integral(np.array([1, 64, 1024, 4096, -4096]))
+    assert np.all(np.isfinite(integrals)) and np.all(integrals > 0.0)
+    assert integrals[3] == integrals[4]
+
+
 def test_time_derivative_is_not_finite_at_the_datum_slice_on_the_circle():
     field = circle_field("square_root_smoothing_sqrt_time", ORDER_TWO)
     x = np.array([0.3, 1.0])
