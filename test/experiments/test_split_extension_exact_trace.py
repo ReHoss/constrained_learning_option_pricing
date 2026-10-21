@@ -46,6 +46,12 @@ def test_exact_trace_cells_run_the_six_choices_and_the_soft_constraint(cell_name
     assert names[-3:] == [variant["name"] for variant in catalogue.SOFT_CONSTRAINT_VARIANTS]
 
 
+def test_every_variant_of_every_cell_is_accepted_by_the_variant_option():
+    accepted = set(catalogue.all_variant_names())
+    for cell_name in catalogue.CELL_CONFIGS:
+        assert set(catalogue.variant_names(cell_name)) <= accepted, cell_name
+
+
 @pytest.mark.parametrize("cell_name", EXACT_TRACE_CELLS)
 def test_the_reference_and_every_variant_have_the_datum_itself_as_trace(cell_name):
     problem = runner.build_problem(cell_name)
