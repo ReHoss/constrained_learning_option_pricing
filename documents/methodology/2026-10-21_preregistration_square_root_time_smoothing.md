@@ -69,4 +69,55 @@ The reported bound of the omitted part of a square-root smoothing used $e^{-z}$.
 
 ## 6. Outcome
 
-To be written after the runs.
+Written 2026-10-21 after the runs.
+
+**Runs.**
+- Jean Zay array 1371281, 18 tasks on V100 (`gpu_p13`, `akz@v100`), revision 9c3b863, no tracked modification. Hyperparameters coincide with the butterfly series of 2026-10-09 and the exact-trace series of 2026-10-20, checked at `--init-only`.
+- Before the array:
+  - a first smoke test (1370738) failed before any computation: the variants were missing from the `--variant` choices (fixed in a3fa3d4, with a test);
+  - the second smoke test (1370793) passed on the six cases;
+  - it showed an infinite closed-form forcing floor on the circle, a rounding artefact of the quadrature (fixed in 9c3b863; CPU check 1370969: $1.09\times10^{-4}$ against a training median of $1.02\times10^{-4}$);
+  - 350 tests passed.
+
+**Admissibility.** All 18 runs are admissible:
+- `tc_l2` $=0$;
+- no gradient-norm safeguard activation and no non-finite norm;
+- analytic-versus-autograd cross-check at most $9.0\times10^{-8}$.
+
+**Medians of $\delta$ over the three seeds.** The comparators are read from their saved series.
+
+| Case | Square-root time | Square-root time, transported | Linear square-root smoothing | Highest-order split | Full-operator control |
+|---|---|---|---|---|---|
+| Butterfly on $\mathbb R$ | $1.198\times10^{-3}$ | $1.172\times10^{-3}$ | $5.087\times10^{-3}$ | $5.719\times10^{-4}$ | $3.247\times10^{-5}$ |
+| $G_1$ on $\mathbb T$ | $7.650\times10^{-4}$ | $6.177\times10^{-4}$ | $2.111\times10^{-3}$ | $4.938\times10^{-4}$ | $7.696\times10^{-5}$ |
+| $G_2$ on $\mathbb T$ | $0.3979$ | $0.2667$ | $5.213$ | $4.904\times10^{-4}$ | $4.403\times10^{-5}$ |
+
+Individual values:
+- butterfly: square-root time 1.198, 1.124 and 1.921, transported 1.172, 1.385 and $0.933\times10^{-3}$;
+- $G_1$: 0.765, 1.098 and 0.747, transported 0.480, 1.049 and $0.618\times10^{-3}$;
+- $G_2$: 0.398, 0.667 and 0.137, transported 0.267, 0.706 and 0.188 (seeds 0, 1, 2).
+
+**Z1 holds.** At order two, both variants are below the linear smoothing: by factors 0.236 and 0.230 on the butterfly, and 0.362 and 0.293 on $G_1$.
+
+**Z2 holds.** At order two, both variants are above the highest-order split: by factors 2.10 and 2.05 on the butterfly, and 1.55 and 1.25 on $G_1$.
+
+**Z3 holds.** On $G_2$, the medians are 811 and 544 times that of the highest-order split. They are also below the linear smoothing, by factors of about 13 and 20.
+
+**Z4 holds on the medians,** with ratios transported to plain of 0.978 (butterfly), 0.807 ($G_1$) and 0.670 ($G_2$). The three seed ranges of the two variants overlap in every case, so three seeds do not separate them. On the butterfly the difference of the medians is 2.2 %.
+
+**Forcing diagnostics (recorded by the runs).**
+- On the butterfly, the median training forcing floor is $4.12\times10^{-2}$ without transport (closed form $4.14\times10^{-2}$) and $1.86\times10^{-3}$ with transport (closed form $2.17\times10^{-3}$). Centring on the transported discontinuities divides the floor by about 22, while the median error changes by 2.2 %.
+- On $G_1$, the closed-form floors are $1.09\times10^{-4}$ and $7.40\times10^{-5}$.
+- On $G_2$, the closed-form floor on the base band, $8.77\times10^{5}$, is that of the band $K=4096$; Section 2 predicts an infinite value on $g$, which this finite band value does not test.
+
+**Bands.**
+- No training point lies above the maximum band.
+- With the law in $\sqrt s$, the band $2^{21}$ is reached only for $s<(40/(\varepsilon_0 2^{21}/\sqrt T))^2$: $1.5\times10^{-9}$ on $G_1$ and $8.1\times10^{-10}$ on $G_2$, both below the smallest sampled time $2^{-24}\simeq6.0\times10^{-8}$.
+
+**Terminal-target diagnostic.**
+- Non-finite on the circle, as predicted.
+- On the butterfly it is finite (0.975 to 0.979), because the evaluation grid avoids the discontinuities, where the almost-everywhere limit $\varepsilon_0^2/(4T|y-a_k|)$ is infinite. The value depends on the grid and is not reported as a result.
+
+**Not established.**
+- That the finiteness of the forcing energy at order two causes the gain over the linear smoothing: the runs measure both, not the link.
+- The effect of the transport (Z4) is not resolved by three seeds.

@@ -1,0 +1,17 @@
+# Manifest of the square-root-time smoothing study (pre-registration
+# documents/methodology/2026-10-21_preregistration_square_root_time_smoothing.md).
+square_root_time_smoothing:
+  cells: [butterfly_real_line, g2_bernoulli_exact_trace, g3_bernoulli_exact_trace]   # butterfly on R; G_1 and G_2 on the circle with the datum g as trace
+  variants: [square_root_smoothing_sqrt_time, square_root_smoothing_sqrt_time_transported]
+    # width eps(s) = eps_0 sqrt(s/T), eps_0 = sqrt(2 nu_ref T); the transported variant is the construction of Zhang, Guo and Lu (2026, page 9)
+  seeds: [0, 1, 2]
+  tasks: 18
+  cluster: Jean Zay (IDRIS), NVIDIA V100 (gpu_p13), akz@v100, qos_gpu-t3
+  slurm_jobs: {tests: [1370518, 1370969], smoke_test_failed_before_computation: 1370738, smoke_test: 1370793, array: 1371281}
+  code_revision: 9c3b863   # recorded in every metadata.yaml at --init-only; no tracked modification
+  hyperparameters: identical to butterfly_real_line_2026-10-09 and exact_trace_circle_2026-10-20, checked at --init-only
+  run_directories: data/ablation_split_extension_trained/square_root_time_smoothing_2026-10-21/ (Jean Zay)
+  slurm_logs: data/ablation_split_extension_trained/square_root_time_smoothing_2026-10-21/slurm/ (Jean Zay)
+  launch_scripts: Jean Zay, $WORK/oym_migration/work/logs/constrained_learning_option_pricing/square_root_time_smoothing_2026-10-21/
+  run_directories_local: data/ablation_split_extension_trained/square_root_time_smoothing_2026-10-21/ (copied 2026-10-21, no checkpoint files exist, _debug_ excluded)
+  status: completed 2026-10-21, 18 admissible runs; Z1, Z2, Z3 hold; Z4 holds on the medians but the seed ranges overlap (pre-registration section 6)
