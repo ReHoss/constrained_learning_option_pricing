@@ -22,10 +22,11 @@ catalogue = importlib.import_module("_split_extension_catalogue")
 from learning_option_pricing.pde import ExactTraceAdaptiveBandField, periodised_bernoulli_values
 
 EXACT_TRACE_CELLS = ("g2_bernoulli_exact_trace", "g3_bernoulli_exact_trace")
+SQUARE_ROOT_TIME_SMOOTHINGS = ("square_root_smoothing_sqrt_time", "square_root_smoothing_sqrt_time_transported")
 SPECTRAL_VARIANTS = {"g2_bernoulli_exact_trace": ("split_diffusion", "split_diffusion_advection", "exact_solution",
-                                                 "graded_chen_mangasarian"),
+                                                 "graded_chen_mangasarian") + SQUARE_ROOT_TIME_SMOOTHINGS,
                      "g3_bernoulli_exact_trace": ("split_principal", "split_principal_advection", "exact_solution",
-                                                 "graded_chen_mangasarian")}
+                                                 "graded_chen_mangasarian") + SQUARE_ROOT_TIME_SMOOTHINGS}
 SMALL_TRAINING = dict(
     catalogue.DEFAULT_HPARAMS, net_width=8, net_blocks=1, net_layers_per_block=1,
     n_interior=64, n_terminal=32, n_validation=128, validation_every=2,
@@ -81,6 +82,22 @@ def test_away_from_the_datum_the_reference_equals_the_full_datum_cell_reference(
 @pytest.mark.parametrize("cell_name,variant_name", [("g2_bernoulli_exact_trace", "split_diffusion"),
                                                     ("g3_bernoulli_exact_trace", "split_principal")])
 def test_short_training_runs_with_the_analytic_forcing_cross_check(cell_name, variant_name):
+    variant = catalogue.variant_by_name(cell_name, variant_name)
+    problem = runner.problem_for_variant(runner.build_problem(cell_name), variant)
+    _, history, cross_check_deviation = runner.train_variant(
+        variant, problem, SMALL_TRAINING, num_iterations=4, seed=0, device=torch.device("cpu"), log_every=1)
+    assert cross_check_deviation is not None and cross_check_deviation < 1e-3
+    assert all(math.isfinite(value) for value in history["loss"])
+
+
+@pytest.mark.parametrize("cell_name,variant_name", [
+    ("g2_bernoulli_exact_trace", "square_root_smoothing_sqrt_time"),
+    ("g2_bernoulli_exact_trace", "square_root_smoothing_sqrt_time_transported"),
+    ("g3_bernoulli_exact_trace", "square_root_smoothing_sqrt_time_transported"),
+    ("butterfly_real_line", "square_root_smoothing_sqrt_time"),
+    ("butterfly_real_line", "square_root_smoothing_sqrt_time_transported"),
+])
+def test_square_root_time_smoothings_train_with_the_analytic_forcing_cross_check(cell_name, variant_name):
     variant = catalogue.variant_by_name(cell_name, variant_name)
     problem = runner.problem_for_variant(runner.build_problem(cell_name), variant)
     _, history, cross_check_deviation = runner.train_variant(

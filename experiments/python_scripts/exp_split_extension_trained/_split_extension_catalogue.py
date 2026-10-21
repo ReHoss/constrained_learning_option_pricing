@@ -395,6 +395,39 @@ TRANSPORTED_DATUM_VARIANT: dict = {
     "label": r"transported datum $\{\partial_x,1\}$: $P\Psi=0$ off the kink lines",
 }
 
+# Square-root smoothings with the width law eps(s) = eps_0 sqrt(s/T), s = T - t (added 2026-10-21,
+# author request « tu peux lancer une campagne de résultats pour la convolution utilisée par Zhang » ;
+# pre-registration documents/methodology/2026-10-21_preregistration_square_root_time_smoothing.md).
+# The width law is that of the exact-terminal-condition field of Zhang, Guo and Lu (2026, page 9),
+# whose width sqrt(beta(tau)) = K sqrt(1 - e^{-2 r tau}) is proportional to sqrt(tau) as tau -> 0;
+# eps_0 = sqrt(2 nu_ref T) is the final width of the graded kind (the Appendix B rule of the paper).
+# The transported variant is that field's construction: its centre K e^{-r tau} is the strike
+# transported by r s d_s - r, hence the smoothing of the datum transported by the orders 1 and 0.
+SQUARE_ROOT_TIME_SMOOTHING_VARIANTS: list[dict] = [
+    {
+        "name": "square_root_smoothing_sqrt_time",
+        "form": "hard_constant",
+        "interpolation": "linear",
+        "extension": "square_root_smoothing_sqrt_time",
+        "comparison_diffusivity_ratio": None,
+        "smoothing_scale_ratio": 1.0,
+        "exponential_rate_gamma": None,
+        "color": "#98df8a",  # light green
+        "label": r"square-root smoothing, $\varepsilon=\varepsilon_0\sqrt{(T-t)/T}$",
+    },
+    {
+        "name": "square_root_smoothing_sqrt_time_transported",
+        "form": "hard_constant",
+        "interpolation": "linear",
+        "extension": "square_root_smoothing_sqrt_time_transported",
+        "comparison_diffusivity_ratio": None,
+        "smoothing_scale_ratio": 1.0,
+        "exponential_rate_gamma": None,
+        "color": "#2ca02c",  # green
+        "label": r"square-root smoothing of the transported datum, $\varepsilon=\varepsilon_0\sqrt{(T-t)/T}$",
+    },
+]
+
 # The remaining choices of h of the CMAP median table on the full-datum cells (added
 # 2026-10-12, pre-registration 2026-10-12_preregistration_full_datum_remaining_choices.md).
 # The split and the control are Fourier sums truncated at FULL_DATUM_REFERENCE_BAND_EDGE,
@@ -896,14 +929,19 @@ def variants_for_cell(cell_name: str) -> list[dict]:
     if cell_conf["variant_set"] == "full_datum_fourth_order":
         return (list(FULL_DATUM_FOURTH_ORDER_CELL_VARIANTS) + FULL_DATUM_FOURTH_ORDER_ADDED_VARIANTS
                 + FULL_DATUM_FOURTH_ORDER_EXTRA_VARIANTS + SOFT_CONSTRAINT_VARIANTS)
+    # The square-root-time smoothings (added 2026-10-21) come after the earlier variants and before
+    # the soft constraint, so that the order of the earlier variants is unchanged.
     if cell_conf["variant_set"] == "exact_trace_second_order":
-        return list(EXACT_TRACE_SECOND_ORDER_CELL_VARIANTS) + SOFT_CONSTRAINT_VARIANTS
+        return (list(EXACT_TRACE_SECOND_ORDER_CELL_VARIANTS) + SQUARE_ROOT_TIME_SMOOTHING_VARIANTS
+                + SOFT_CONSTRAINT_VARIANTS)
     if cell_conf["variant_set"] == "exact_trace_fourth_order":
-        return list(EXACT_TRACE_FOURTH_ORDER_CELL_VARIANTS) + SOFT_CONSTRAINT_VARIANTS
+        return (list(EXACT_TRACE_FOURTH_ORDER_CELL_VARIANTS) + SQUARE_ROOT_TIME_SMOOTHING_VARIANTS
+                + SOFT_CONSTRAINT_VARIANTS)
     if cell_conf["variant_set"] == "sixth_order":
         return list(SIXTH_ORDER_CELL_VARIANTS)
     if cell_conf["variant_set"] == "real_line_butterfly":
-        return list(BUTTERFLY_REAL_LINE_CELL_VARIANTS) + SOFT_CONSTRAINT_VARIANTS
+        return (list(BUTTERFLY_REAL_LINE_CELL_VARIANTS) + SQUARE_ROOT_TIME_SMOOTHING_VARIANTS
+                + SOFT_CONSTRAINT_VARIANTS)
     return list(CONTROL_CELL_VARIANTS)
 
 

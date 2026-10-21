@@ -962,6 +962,7 @@ def _build_constant_coefficient_closed_form_extension(variant: dict, problem: di
         GradedGaussianExtension,
         PeriodisedBernoulliDatum,
         SplitSemigroupExtension,
+        SquareRootTimeSmoothingExtension,
     )
 
     generator = ConstantCoefficientGenerator(
@@ -998,6 +999,12 @@ def _build_constant_coefficient_closed_form_extension(variant: dict, problem: di
     if variant["extension"] == "transported_datum":
         # Retained operator of orders 1 and 0 on the circle (added 2026-10-12).
         return SplitSemigroupExtension(datum, generator, (0, 1), terminal_time)
+    if variant["extension"] in ("square_root_smoothing_sqrt_time", "square_root_smoothing_sqrt_time_transported"):
+        # Square-root smoothing with the width law eps_0 sqrt((T - t)/T) (added 2026-10-21), the
+        # transported kind centred on the datum transported by the orders 1 and 0.
+        return SquareRootTimeSmoothingExtension(
+            datum, generator, chen_mangasarian_initial_smoothing_scale(variant, problem), terminal_time,
+            transported_orders=(0, 1) if variant["extension"].endswith("_transported") else ())
     if variant["extension"] == "graded_gaussian":
         comparison_diffusivity = (
             float(variant["comparison_diffusivity_ratio"])
@@ -1482,12 +1489,17 @@ def train_variant(
         {key: value for key, value in variant.items() if key not in ("color", "label")},
     )
     if variant.get("smoothing_scale_ratio") is not None:
+        width_law = ("square-root grading eps(t) = eps_0 sqrt((T - t)/T)"
+                     if variant["extension"].startswith("square_root_smoothing_sqrt_time")
+                     else "linear grading eps(t) = eps_0 (T - t)/T")
+        transport = (", centred on the datum transported by the orders 1 and 0"
+                     if variant["extension"].endswith("_transported") else "")
         logger.info(
-            "[%s/%s] Chen--Mangasarian initial smoothing scale eps_0 = %.6e "
-            "(ratio %.3f times sqrt(2 nu_ref T)), linear grading eps(t) = eps_0 (T - t)/T",
+            "[%s/%s] square-root smoothing, initial smoothing scale eps_0 = %.6e "
+            "(ratio %.3f times sqrt(2 nu_ref T)), %s%s",
             problem["cell_name"], variant["name"],
             chen_mangasarian_initial_smoothing_scale(variant, problem),
-            float(variant["smoothing_scale_ratio"]),
+            float(variant["smoothing_scale_ratio"]), width_law, transport,
         )
 
     # Periodic checkpointing is deliberately omitted: a single run trains
